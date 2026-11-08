@@ -1,0 +1,78 @@
+name: 问题反馈
+description: 报告知萤的功能异常、崩溃、保存或显示问题。
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先搜索已有的 Issue，并使用可公开的示例复现问题。
+        请勿上传真实笔记、完整设备日志、API Key、签名材料或其他个人数据。
+  - type: textarea
+    id: summary
+    attributes:
+      label: 问题描述
+      description: 简述在哪个页面、执行什么操作时出现了什么异常。
+      placeholder: 例如：编辑一篇绑定本地文件夹的笔记后，切换工作区再返回，刚输入的内容没有保存。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 写明必要的初始状态；偶发问题请说明出现频率。无法稳定复现时，请描述最近一次触发过程。
+      placeholder: |
+        1. 新建工作区并绑定本地文件夹
+        2. 新建一篇示例笔记，输入……
+        3. 执行……
+        4. 出现……
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果
+      description: 你期望发生什么？
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+      description: 实际发生了什么？如有报错，请附原文，并去除个人数据。
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 知萤版本与来源
+      description: 填写应用版本、下载来源；自行构建时附分支和提交 SHA。
+      placeholder: "例如：1.2.0，GitHub Release；或 main，自行构建，提交 abc1234"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 设备与系统环境
+      description: 请明确是真机还是模拟器；构建问题还需填写 DevEco Studio、SDK 版本及失败的命令。
+      placeholder: |
+        - 设备类型：真机 / 模拟器
+        - 设备型号与形态：手机 / 平板 / 二合一
+        - HarmonyOS 版本：
+        - DevEco Studio / SDK 版本（仅开发问题）：
+        - 构建命令（仅构建问题）：
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 补充材料（可选）
+      description: 可附脱敏截图、录屏、最小示例 Markdown，或与问题直接相关的少量脱敏报错。请勿附完整日志或备份。
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 我已搜索已有 Issue；如有相关问题，已在描述中提供链接。
+          required: true
+        - label: 我已检查文字及附件，去除了个人笔记、密钥、签名材料和其他敏感信息。
+          required: true

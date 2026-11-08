@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 贡献指南与 PR 规范
+    url: https://github.com/peryixing-lab/LexiNote/blob/main/CONTRIBUTING.md
+    about: 提交代码、文档或设计提案前，请先查看贡献范围、验证要求和文件提交规范。

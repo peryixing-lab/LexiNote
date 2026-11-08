@@ -65,7 +65,7 @@ build-profile.example.json5  不含本地签名的构建配置模板
 
 ## 参与贡献
 
-欢迎通过 Issue 反馈问题或提出建议，也欢迎提交 Pull Request。提交前请说明测试环境和验证方式；界面改动可附截图。请勿提交个人笔记、设备日志、签名材料或其他敏感信息。
+欢迎使用 [Issue 模板](https://github.com/peryixing-lab/LexiNote/issues/new/choose)反馈问题或提出建议，也欢迎提交 Pull Request。提交前请阅读 [贡献指南与 PR 规范](CONTRIBUTING.md)，说明改动范围、测试环境和验证结果；界面改动请附相关截图或录屏。请勿提交个人笔记、完整设备日志、签名材料或其他敏感信息。
 
 ## 许可证
 

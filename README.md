@@ -38,8 +38,7 @@ Obsidian API 兼容层。
 - 安全边界尚未完成专项验证，**目前只应安装你自己编写或已审查的插件**；`isDesktopOnly` 的插件会被拒绝。
 
 开发原生插件请阅读 [LexiNote 原生插件制作规范](docs/native-plugin-authoring.md)，其中包含包结构、清单、
-SDK API、错误码、模板与验收清单。Harness 插件源码和构建方式见 [Harness 插件](plugins/harness/README.md)，
-Obsidian 兼容范围见 [兼容性说明](docs/obsidian-compatibility.md)。
+SDK API、错误码、模板与验收清单。Obsidian 兼容范围见 [兼容性说明](docs/obsidian-compatibility.md)。
 
 ## 开发环境
 

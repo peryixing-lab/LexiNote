@@ -19,16 +19,19 @@ const service={
 };
 class Prop{constructor(key,propValue){this.key=key;this.propValue=propValue;}}
 const moduleScope={exports:{}};
-vm.runInThisContext('(function(module,LexiStorageService,NoteProperty){'+js+'})')(moduleScope,service,Prop);
+const pluginEditors=new Map();
+const pluginRegistry={controllerFor:id=>pluginEditors.get(id)||null,register:(id,controller)=>pluginEditors.set(id,controller),unregister:id=>pluginEditors.delete(id)};
+class PluginSelection {constructor(){this.start=0;this.end=0;}}
+vm.runInThisContext('(function(module,LexiStorageService,NoteProperty,LexiEditorRegistry,LexiLiveSelection){'+js+'})')(moduleScope,service,Prop,pluginRegistry,PluginSelection);
 function subject(){
  current={id:'n',vaultId:'v',title:'T',content:'原文\n- [ ] 事项',notebook:'笔记',editorLevel:'pro',tags:[],properties:[],updatedAt:1,trashedAt:0,path:'/n.md'};
- writes=[];reads=0;dialogs=[];copies=0;failSave=false;beforeSave=undefined;beforeRead=undefined;
+ writes=[];reads=0;dialogs=[];copies=0;failSave=false;beforeSave=undefined;beforeRead=undefined;pluginEditors.clear();
  const p=new moduleScope.exports();
  Object.assign(p,{note:clone(current),baseTitle:current.title,baseContent:current.content,titleText:current.title,contentText:current.content,
   notebookText:current.notebook,editorTier:'pro',editRevision:0,savedEditRevision:0,pendingSave:undefined,
   pageAttached:true,pageVisible:true,pageLoaded:true,abilityForeground:true,templateMode:false,conflictVisible:false,conflictResolving:false,
   externalReadRevision:0,selectionStart:4,selectionEnd:4,viewMode:'live',undoStack:[{title:'旧历史',content:'历史正文'}],redoStack:[],
-  liveController:{finishEditing(){}},context:()=>({}),getUIContext:()=>({showAlertDialog:d=>dialogs.push(d)}),
+  liveController:{finishEditing(){}},pluginController:{},pluginRegisteredNoteId:'',context:()=>({}),getUIContext:()=>({showAlertDialog:d=>dialogs.push(d)}),
   refreshDerived(){this.refreshed=(this.refreshed||0)+1;},restoreEditorSelection(a,b,body,focus){this.restored={a,b,body,focus};},
   scheduleSave(){this.scheduled=(this.scheduled||0)+1;},toast(text){this.toastText=text;}});
  return p;

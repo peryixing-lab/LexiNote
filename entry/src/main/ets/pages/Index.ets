@@ -1,3 +1,11 @@
+import { LexiHotkeySettings } from '../core/LexiHotkeySettings';
+import { LexiHotkeyRecorder } from '../core/LexiHotkeyRecorder';
+import { LexiShortcutRouter } from '../core/LexiShortcutRouter';
+import { LexiAppearanceSettings } from '../core/LexiAppearanceSettings';
+import { LexiI18n } from '../core/LexiI18n';
+import { LexiMathBitmapHost } from '../components/LexiMathBitmapHost';
+import { PluginManager, PluginUiBridge } from '../plugin/core/PluginManager';
+import { PluginKeyboardFocus } from '../plugin/core/PluginKeyboardFocus';
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { accessibility } from '@kit.AccessibilityKit';
 import { CustomTheme, curves, LengthMetrics, uiMaterial } from '@kit.ArkUI';
@@ -8,15 +16,20 @@ import { LexiNavigation } from '../components/LexiNavigation';
 import { LexiLaunchScreen } from '../components/LexiLaunchScreen';
 import { LexiWelcomeGuide } from '../components/LexiWelcomeGuide';
 import { LexiHomeTab } from '../components/LexiHomeTab';
+import { LexiMobilePluginPanel } from '../components/LexiMobilePluginPanel';
 import { LexiVaultTab } from '../components/LexiVaultTab';
 import { LexiExploreTab } from '../components/LexiExploreTab';
+import { LexiProfileTab } from '../components/LexiProfileTab';
 import { LexiContextActionHost } from '../components/LexiContextActionHost';
 import { LexiContextTarget } from '../core/LexiContextModels';
 import { LexiNoteDestinationPicker } from '../components/LexiNoteDestinationPicker';
-import { LexiSettingsTab } from '../components/LexiSettingsTab';
-import { LexiHarnessModalDialog } from '../components/LexiHarnessPanel';
-import { LexiHarnessService } from '../harness/LexiHarnessService';
-import { LexiHarnessUiActionRequest } from '../harness/LexiHarnessTools';
+
+import { LexiSettingsWindow } from '../components/LexiSettingsWindow';
+import { LexiTrashPanel } from '../components/LexiTrashPanel';
+import { LexiSettingsActions } from '../core/LexiSettingsActions';
+import { LexiInterfaceSettings } from '../core/LexiInterfaceSettings';
+import { LexiEditorSettings } from '../core/LexiEditorSettings';
+import { LexiWorkspacePreferences } from '../core/LexiWorkspacePreferences';
 import { LexiTemplatePicker } from '../components/LexiTemplatePicker';
 import { LexiTemplateItem } from '../core/LexiTemplateLibrary';
 import { LexiTemplates } from '../core/LexiTemplates';
@@ -31,6 +44,7 @@ import { LexiLinkActions } from '../core/LexiLinkActions';
 import { LexiShareDraft } from '../core/LexiShareContent';
 import { LexiShareCapture } from '../core/LexiShareCapture';
 import { LexiStorageService } from '../core/LexiStorageService';
+import { LexiFolderStore } from '../core/LexiFolderStore';
 import { MarkdownEngine } from '../core/MarkdownEngine';
 import { GraphData, GraphLayout } from '../core/GraphLayout';
 import {
@@ -51,6 +65,17 @@ import {
 @Entry
 @Component
 struct Index {
+  @StorageProp('lexiLanguage') private interfaceLanguage: string = LexiI18n.language();
+
+  private tr(source: string, args: string[] = []): string {
+    return LexiI18n.text(source, this.interfaceLanguage, args);
+  }
+
+  @StorageProp('lexiMathBitmapNeeded') private mathBitmapNeeded: boolean = false;
+  @StorageProp('lexiPluginRuntimeNeeded') private pluginRuntimeNeeded: boolean = false;
+  @StorageProp('lexiPluginRuntimeState') @Watch('pluginRuntimeReady') private pluginRuntimeState: string = 'absent';
+  @StorageProp('lexiPluginRevision') @Watch('pluginRevisionChanged') private pluginRevision: number = 0;
+  private pluginNoticeSeen: number = 0;
   @StorageProp('lexiContinuationIncoming') @Watch('nativeLaunchChanged') private continuationIncoming: string = '';
   @StorageProp('lexiFormLaunch') @Watch('nativeLaunchChanged') private formLaunch: string = '';
   @StorageProp('lexiDeepLinkLaunch') @Watch('nativeLaunchChanged') private deepLinkLaunch: string = '';
@@ -92,7 +117,13 @@ struct Index {
   @State quickText: string = '';
   @State quickSaving: boolean = false;
   @State private showTemplates: boolean = false;
-  @State private showHarnessDialog: boolean = false;
+  @State private showPluginWindow: boolean = false;
+  @State private showSettingsWindow: boolean = false;
+  @State private showTrashWindow: boolean = false;
+  @State private settingsCategory: string = 'about';
+  @StorageLink('lexiSettingsStorageLocation') private storageLocation: string = 'internal';
+  @StorageLink('lexiSettingsStorageAccessBusy') private storageAccessBusy: boolean = false;
+  @StorageProp('lexiStorageAccessRevision') @Watch('storageAccessChanged') private storageAccessRevision: number = 0;
   @State private noteTemplates: LexiTemplateItem[] = [];
   @State private dailyTemplateId: string = '';
   @State private templateBusy: boolean = false;
@@ -118,16 +149,17 @@ struct Index {
   @State graphShowTags: boolean = false;
   @State selectedGraphId: string = '';
   // Settings
-  @State theme: string = 'system';
-  @State defaultTier: string = 'simple';
-  @State busy: boolean = false;
-  @State dataStatus: string = '';
-  @State lastBackup: string = '';
+  @StorageLink('lexiSettingsTheme') theme: string = 'system';
+  @StorageLink('lexiSettingsDefaultTier') defaultTier: string = 'simple';
+  @StorageLink('lexiSettingsBusy') busy: boolean = false;
+  @StorageLink('lexiSettingsDataStatus') dataStatus: string = '';
+  @StorageLink('lexiSettingsLastBackup') lastBackup: string = '';
 
   private fullGraph: GraphData = new GraphData();
   private graphBuildSequence: number = 0;
   private graphScopeSequence: number = 0;
   private refreshSequence: number = 0;
+  private settingsVaultId: string = '';
   private listening: boolean = false;
   private startupRunning: boolean = false;
   private tabScrollers: Scroller[] = [new Scroller(), new Scroller(), new Scroller(), new Scroller()];
@@ -171,6 +203,7 @@ struct Index {
         if (to === 'navBar' && this.ready) {
           this.refresh().catch(() => { this.toast('读取最新笔记失败'); });
           if (this.reopenTemplatesAfterEditor) { this.reopenTemplatesAfterEditor = false; this.openTemplates(); }
+          this.storageAccessChanged();
         }
       }
     });
@@ -182,7 +215,19 @@ struct Index {
       this.listening = false;
     }
     this.pathStack.disableAnimation(this.reduceMotion || this.wide());
+    this.bindSettingsActions();
     this.initialize();
+  }
+
+  private bindSettingsActions(): void {
+    LexiSettingsActions.selectTheme = (value: string): void => { this.setTheme(value); };
+    LexiSettingsActions.selectTier = (value: string): void => { this.setDefaultTier(value); };
+    LexiSettingsActions.exportBackup = (): void => { this.exportBackup(); };
+    LexiSettingsActions.exportMarkdown = (): void => { this.exportMarkdown(); };
+    LexiSettingsActions.importFiles = (): void => { this.importFiles(); };
+    LexiSettingsActions.rebuildIndex = (): void => { this.rebuildIndex(); };
+    LexiSettingsActions.chooseStorage = (): void => { this.chooseStorageFolder(); };
+    LexiSettingsActions.showInfo = (title: string, message: string): void => { this.information(title, message); };
   }
 
   aboutToDisappear(): void {
@@ -190,41 +235,99 @@ struct Index {
   }
 
   onBackPress(): boolean {
-    if (this.showHarnessDialog) { this.showHarnessDialog = false; return true; }
+    if (this.showSettingsWindow) { this.closeSettings(); return true; }
     if (this.showWelcome) { this.finishWelcome(); return true; }
     if (this.pathStack.size() > 0) { return false; }
     if (this.activeTab !== 0) { this.selectTab(0); return true; }
     return false;
   }
 
-  private handleHarnessUiAction(req: LexiHarnessUiActionRequest): void {
-    this.refresh().then((): void => {
-      if (req.action === 'open-note' && req.targetId) {
-        this.showHarnessDialog = false;
-        this.openNote(req.targetId);
-      } else if (req.action === 'open-group' && req.targetId) {
-        this.openContextContent(req.targetId, 'group');
-      } else if (req.action === 'open-map' && req.targetId) {
-        this.showHarnessDialog = false;
-        this.openMap(req.targetId);
-      } else if (req.action === 'open-canvas' && req.targetId) {
-        this.showHarnessDialog = false;
-        this.openCanvas(req.targetId);
-      } else if (req.action === 'select-section' && req.targetId) {
-        const sec = Number(req.targetId);
-        if (!Number.isNaN(sec)) {
-          this.showHarnessDialog = false;
-          this.selectTab(sec);
-        }
-      } else if (req.action === 'set-theme' && req.targetId) {
-        this.setTheme(req.targetId);
+  private openSettings(category: string): void {
+    if (!this.wide()) {
+      AppStorage.setOrCreate('lexiSettingsInitialCategory', category);
+      AppStorage.setOrCreate('lexiSettingsWorkspaceName', this.activeVaultName());
+      this.pathStack.pushPathByName('settings', undefined);
+      return;
+    }
+    this.settingsCategory = category;
+    this.showSettingsWindow = true;
+  }
+
+  private closeSettings(): void {
+    LexiHotkeyRecorder.cancel();
+    this.showSettingsWindow = false;
+    this.storageAccessChanged();
+  }
+
+  private openTrash(): void {
+    if (this.wide()) {
+      this.showTrashWindow = true;
+      return;
+    }
+    this.pathStack.pushPathByName('trash', undefined);
+  }
+
+  onPageShow(): void { this.storageAccessChanged(); }
+
+  private storageAccessChanged(): void {
+    this.requestStorageAfterFirstNote().catch((): void => {
+      this.toast(this.tr('笔记已保存在应用内部，可稍后在“设置 → 关于”中授权文档目录。'));
+    });
+  }
+
+  private async requestStorageAfterFirstNote(): Promise<void> {
+    if (!this.ready || this.showWelcome || this.storageAccessBusy || this.showSettingsWindow ||
+      this.showNoteDestination || this.showTemplates || this.destinationBusy || this.templateBusy ||
+      this.handlingNativeLaunch || this.dailyOpening || this.quickSaving || this.busy) { return; }
+    this.storageAccessBusy = true;
+    try {
+      if (!await LexiStorageService.takeStorageAccessPrompt()) { return; }
+      const choice = await this.getUIContext().getPromptAction().showDialog({
+        title: this.tr('第一篇笔记已保存'),
+        message: this.tr('笔记目前保存在应用内部。你可以授权文档目录，方便在文件管理器中访问和备份；不授权也能继续使用。') +
+          '\n\n' + this.tr('可随时在“设置 → 关于”中重新授权文档目录。') +
+          (LexiFolderStore.canChooseStorageFolder() ? '' : '\n' + this.tr('此设备使用系统提供的应用文档目录，无需手动选择文件夹。')),
+        buttons: [{ text: this.tr('继续内部保存'), color: $r('app.color.text_secondary') },
+          { text: this.tr('授权文档目录'), color: $r('app.color.brand') }]
+      });
+      if (choice.index === 1) { await this.authorizeStorageFolder(); }
+      else { this.toast(this.tr('将继续保存在应用内部；可在“设置 → 关于”中重新授权，卸载应用前请导出备份。')); }
+    } finally {
+      try { this.storageLocation = await LexiStorageService.storageLocationStatus(); }
+      finally { this.storageAccessBusy = false; }
+    }
+  }
+
+  private async authorizeStorageFolder(): Promise<void> {
+    try {
+      const uri = await LexiFolderStore.chooseStorageRoot(this.context());
+      if (!uri) {
+        this.toast(this.storageLocation === 'external' ? this.tr('已取消更改，笔记保留在原保存位置。') :
+          this.tr('笔记继续保存在应用内部，可在“设置 → 关于”中重新授权；卸载前请导出备份。'));
+        return;
       }
-    }).catch((): void => {});
+      await LexiStorageService.configureLocalRoot(this.context(), uri);
+      await this.refresh();
+      this.toast(this.tr('已设置文档目录，现有笔记已保留。'));
+    } catch {
+      this.toast(this.tr('文档目录暂不可用，已有笔记已保留；可稍后在“设置 → 关于”中重试。'));
+    }
+  }
+
+  private async chooseStorageFolder(): Promise<void> {
+    if (this.storageAccessBusy) { return; }
+    this.storageAccessBusy = true;
+    try { await this.authorizeStorageFolder(); }
+    finally {
+      try { this.storageLocation = await LexiStorageService.storageLocationStatus(); }
+      finally { this.storageAccessBusy = false; }
+    }
   }
 
   private context(): common.UIAbilityContext { return this.getUIContext().getHostContext() as common.UIAbilityContext; }
   private toast(message: string): void { this.getUIContext().getPromptAction().showToast({ message: message }); }
   private wide(): boolean { return this.viewportWidth >= 840; }
+
   private pagePadding(): number { return this.viewportWidth >= 1200 ? 32 : 24; }
   private activeNotes(): NoteItem[] { return this.projectNotes().filter((n: NoteItem): boolean => n.trashedAt === 0); }
   private trashedNotes(): NoteItem[] { return this.notes.filter((n: NoteItem): boolean => n.trashedAt > 0); }
@@ -240,25 +343,20 @@ struct Index {
     this.startupStep = 0;
     try {
       await LexiStorageService.init(this.context());
-      await LexiHarnessService.init(this.context());
-      LexiHarnessService.setUiActionHandler((req: LexiHarnessUiActionRequest): void => {
-        this.handleHarnessUiAction(req);
-      });
       this.startupStep = 1;
-      this.theme = await LexiStorageService.getSetting('theme', 'system');
-      this.applyTheme(this.theme);
-      this.defaultTier = await LexiStorageService.getSetting('defaultTier', 'simple');
-      this.lastBackup = await LexiStorageService.getSetting('lastBackup', '');
-      this.graphShowTags = await LexiStorageService.getSetting('graphShowTags', 'false') === 'true';
-      this.viewMode = await LexiStorageService.getSetting('vaultViewMode', 'list');
+      await this.startPluginSystem();
+      await this.loadWorkspaceSettings(await LexiStorageService.getActiveVaultId());
       this.startupStep = 2;
       try { await LexiStorageService.refreshFolders(await LexiStorageService.getActiveVaultId()); }
       catch (error) { this.dataStatus = (error as Error).message; this.toast(this.dataStatus); }
       await this.refresh();
       this.showWelcome = await LexiStorageService.getSetting('onboarding_completed_v1', '') !== 'true';
       if (this.continuationIncoming || this.formLaunch || this.deepLinkLaunch || this.externalMarkdownIncoming) { this.showWelcome = false; }
+      this.storageLocation = await LexiStorageService.storageLocationStatus();
       this.ready = true;
+      this.pluginRuntimeReady();
       this.nativeLaunchChanged();
+      this.storageAccessChanged();
     } catch {
       this.startupError = this.startupStep === 0 ? '本地知识库暂时无法打开，请重试。已有笔记会完整保留。' :
         '索引读取未完成，请重试。笔记正文仍以 Markdown 文件保存在本机。';
@@ -267,8 +365,46 @@ struct Index {
     }
   }
 
+  /**
+   * Starts the plugin host after storage is ready. Failure is contained: it must never
+   * stop the user from opening notes.
+   */
+  private async startPluginSystem(): Promise<void> {
+    try {
+      await PluginManager.init(this.context());
+      const bridge = new PluginUiBridge();
+      bridge.notice = (_message: string, _timeout: number): void => {};
+      bridge.openFile = (noteId: string): void => { this.openNote(noteId); };
+      bridge.hasConfirm = false;
+      PluginManager.setUiBridge(bridge);
+      PluginManager.requestRuntime();
+    } catch (error) {
+      this.dataStatus = (error as Error).message;
+    }
+  }
+
+  private pluginRevisionChanged(): void {
+    const notices = PluginManager.recentNotices();
+    if (notices.length === 0) { return; }
+    const latest = notices[notices.length - 1];
+    if (latest.at <= this.pluginNoticeSeen) { return; }
+    this.pluginNoticeSeen = latest.at;
+    this.toast(latest.message);
+  }
+
+  private pluginRuntimeReady(): void {
+    // Wide windows keep one long-lived runtime behind the workspace sidebar. Narrow screens
+    // mount the runtime inside the plugin sheet, which enables exactly the plugin it shows.
+    if (this.ready && this.wide() && this.pluginRuntimeState === 'ready') {
+      PluginManager.restoreWorkspace().catch((): void => { this.toast('工作区插件恢复失败，请在插件设置中重试'); });
+    }
+  }
+
   private workspaceSelectionChanged(): void {
-    if (this.ready) { this.refresh().catch((): void => { this.toast('刷新工作区失败，现有笔记仍然保留'); }); }
+    if (this.ready) {
+      this.refresh().catch((): void => { this.toast('刷新工作区失败，现有笔记仍然保留'); })
+        .finally((): void => { this.storageAccessChanged(); });
+    }
   }
 
   private nativeLaunchChanged(): void {
@@ -411,7 +547,7 @@ struct Index {
           }
         }
       } while (this.nativeLaunchAgain || this.continuationIncoming || this.formLaunch || this.deepLinkLaunch || this.externalMarkdownIncoming);
-    } finally { this.handlingNativeLaunch = false; }
+    } finally { this.handlingNativeLaunch = false; this.storageAccessChanged(); }
   }
 
   private async syncDesktopCards(): Promise<void> {
@@ -423,6 +559,7 @@ struct Index {
     try {
       await LexiStorageService.setSetting('onboarding_completed_v1', 'true');
       this.showWelcome = false;
+      this.storageAccessChanged();
     } catch { this.toast('引导完成状态未保存，请重试'); }
   }
 
@@ -459,6 +596,7 @@ struct Index {
     await LexiStorageService.flushPendingWrites();
     const vaults = await LexiStorageService.getVaults();
     const vaultId = await LexiStorageService.getActiveVaultId();
+    if (this.settingsVaultId !== vaultId) { await this.loadWorkspaceSettings(vaultId); }
     const projects = await LexiStorageService.getProjects(vaultId);
     const projectId = await LexiStorageService.getActiveProjectId(vaultId);
     const notes = await LexiStorageService.getNotes(vaultId);
@@ -475,6 +613,26 @@ struct Index {
     this.mentions = MarkdownEngine.findUnlinkedMentions(active, this.links);
     this.rebuildGraph();
     this.syncDesktopCards();
+  }
+
+  private async loadWorkspaceSettings(vaultId: string): Promise<void> {
+    await PluginManager.changeWorkspace(vaultId);
+    await LexiI18n.load();
+    await LexiAppearanceSettings.load();
+    await LexiHotkeySettings.load();
+    await LexiInterfaceSettings.load();
+    await LexiEditorSettings.load();
+    this.theme = await LexiStorageService.getSetting('theme', 'system');
+    this.applyTheme(this.theme);
+    this.defaultTier = await LexiStorageService.getSetting('defaultTier', 'simple');
+    this.lastBackup = await LexiStorageService.getSetting('lastBackup', '');
+    this.graphShowTags = await LexiStorageService.getSetting('graphShowTags', 'false') === 'true';
+    this.viewMode = await LexiStorageService.getSetting('vaultViewMode', 'list');
+    this.storageLocation = await LexiStorageService.storageLocationStatus();
+    this.dataStatus = '';
+    AppStorage.setOrCreate('lexiWorkspaceOpenMode', LexiWorkspacePreferences.openMode(
+      await LexiStorageService.getSetting('workspaceOpenMode', 'ask')));
+    this.settingsVaultId = vaultId;
   }
 
   private async rebuildGraph(): Promise<void> {
@@ -499,7 +657,10 @@ struct Index {
   }
 
   private selectTab(index: number): void {
-    if (this.wide()) { this.activeTab = index; return; }
+    if (this.wide()) {
+      if (index === 3) { this.openSettings('about'); return; }
+      this.activeTab = index; return;
+    }
     if (this.activeTab !== index) {
       this.tabsController.changeIndex(index);
       return;
@@ -514,7 +675,7 @@ struct Index {
   }
 
   private tabTitle(index: number): string {
-    return ['首页', '知识库', '关联', '我的'][index] ?? 'LexiNote';
+    return this.tr(['首页', '知识库', '关联', '我的'][index] ?? 'LexiNote');
   }
 
   private updateTitleCollapse(index: number): void {
@@ -535,6 +696,10 @@ struct Index {
   }
 
   private openNote(noteId: string): void {
+    if (noteId.length === 0) { return; }
+    this.openNoteArkui(noteId);
+  }
+  private openNoteArkui(noteId: string): void {
     if (this.wide()) {
       this.activeTab = 1; this.desktopOpenMode = 'tab'; this.desktopNoteId = noteId; this.desktopOpenRevision++; return;
     }
@@ -603,7 +768,7 @@ struct Index {
       const note = await LexiStorageService.openOrCreateDailyNote(this.context(), this.activeVaultId, this.activeProjectId);
       this.desktopNoteSaved(note); this.openNote(note.id);
     } catch { this.toast('今日笔记暂时无法打开，请检查工作区后重试'); }
-    finally { this.dailyOpening = false; }
+    finally { this.dailyOpening = false; this.storageAccessChanged(); }
   }
 
   private async openTemplates(): Promise<void> {
@@ -623,7 +788,7 @@ struct Index {
         title.trim(), this.activeVaultId, this.activeProjectId);
       this.showTemplates = false; this.desktopNoteSaved(note); this.openNote(note.id);
     } catch { this.toast('从模板创建失败，请重试'); }
-    finally { this.templateBusy = false; }
+    finally { this.templateBusy = false; this.storageAccessChanged(); }
   }
 
   private async setDailyTemplate(templateId: string): Promise<void> {
@@ -633,7 +798,7 @@ struct Index {
       await LexiStorageService.setDailyTemplate(templateId);
       this.dailyTemplateId = templateId; this.toast('日记模板已更新，将用于新建的今日笔记');
     } catch { this.toast('设置日记模板失败'); }
-    finally { this.templateBusy = false; }
+    finally { this.templateBusy = false; this.storageAccessChanged(); }
   }
 
   private async newTemplate(): Promise<void> {
@@ -645,7 +810,7 @@ struct Index {
       template.content = '# {{title}}\n\n';
       id = (await LexiStorageService.saveTemplate(template)).id;
     } catch { this.toast('无法新建模板，请重试'); }
-    finally { this.templateBusy = false; }
+    finally { this.templateBusy = false; this.storageAccessChanged(); }
     if (id) { this.editTemplate(id); }
   }
 
@@ -672,11 +837,21 @@ struct Index {
       this.dailyTemplateId = await LexiStorageService.getDailyTemplate();
       this.toast('模板已删除');
     } catch { throw new Error('删除模板失败，请重试'); }
-    finally { this.templateBusy = false; }
+    finally { this.templateBusy = false; this.storageAccessChanged(); }
   }
 
   private async executeDesktopCommand(command: string, noteId: string, title: string): Promise<void> {
-    if (command === 'daily') { await this.openDailyNote(); }
+    if (command === 'trash') { this.openTrash(); }
+    else if (command === 'daily-prev' || command === 'daily-next') {
+      const current = await LexiStorageService.getNoteById(noteId);
+      const date = current && /^\d{4}-\d{2}-\d{2}$/.test(current.title) ? new Date(current.title + 'T12:00:00') : new Date();
+      date.setDate(date.getDate() + (command === 'daily-prev' ? -1 : 1));
+      const title = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+      let note = (await LexiStorageService.getNotes(this.activeVaultId)).find((item: NoteItem): boolean => item.trashedAt === 0 && item.title === title && item.notebook === '日常记录 / 日记' && (item.projectId || '') === this.activeProjectId);
+      if (!note) { const fresh = new NoteItem(); fresh.vaultId = this.activeVaultId; fresh.projectId = this.activeProjectId; fresh.title = title; fresh.notebook = '日常记录 / 日记'; fresh.noteType = 'markdown'; fresh.editorLevel = 'pro'; note = await LexiStorageService.saveNote(this.context(), fresh); }
+      await this.refresh(); this.openNote(note.id);
+    }
+    else if (command === 'daily') { await this.openDailyNote(); }
     else if (command === 'templates') { await this.openTemplates(); }
     else if (command === 'quick' || command === 'study' || command === 'new') {
       this.createNote(command === 'new' ? 'markdown' : command);
@@ -718,6 +893,31 @@ struct Index {
     if (!this.templateBusy) { action.dismiss(); }
   }
 
+  /**
+   * Narrow screens have no workspace rail, so installed plugins open in a half-modal sheet.
+   * Publish the workspace first so a plugin view sees the same active file the desktop
+   * sidebar would have given it.
+   */
+  private openPluginWindow(): void {
+    if (this.showPluginWindow) { return; }
+    try {
+      PluginManager.publishWorkspace('main', this.activeVaultId, this.lastEditedNoteId, []);
+    } catch {
+      // A stale workspace snapshot is better than blocking the panel.
+    }
+    this.showPluginWindow = true;
+  }
+
+  private managePluginsFromWindow(): void {
+    this.showPluginWindow = false;
+    setTimeout((): void => { this.openSettings('plugins'); }, 280);
+  }
+
+  @Builder
+  private pluginSheet() {
+    LexiMobilePluginPanel({ onManagePlugins: (): void => { this.managePluginsFromWindow(); } })
+  }
+
   private async chooseNoteDestination(type: string, content: string, action: string): Promise<void> {
     if (this.showNoteDestination || this.destinationBusy) { return; }
     this.destinationBusy = true;
@@ -730,7 +930,7 @@ struct Index {
       this.pendingNoteAction = action;
       this.showNoteDestination = true;
     } catch { this.toast('无法读取工作区，请重试'); }
-    finally { this.destinationBusy = false; }
+    finally { this.destinationBusy = false; this.storageAccessChanged(); }
   }
 
   private async confirmNoteDestination(vaultId: string, projectId: string): Promise<void> {
@@ -766,7 +966,7 @@ struct Index {
         this.pathStack.pushPathByName('noteEditor', param);
       }
     } catch { this.toast('保存位置不可用，请重新选择；输入内容已保留'); }
-    finally { this.destinationBusy = false; }
+    finally { this.destinationBusy = false; this.storageAccessChanged(); }
   }
 
   @Builder
@@ -775,6 +975,7 @@ struct Index {
       busy: this.destinationBusy, saveOnly: this.pendingNoteAction === 'quick',
       onConfirm: (vaultId: string, projectId: string): void => { this.confirmNoteDestination(vaultId, projectId); } })
   }
+
   private async createDesktopNote(type: string, content: string): Promise<void> {
     try {
       const note = new NoteItem();
@@ -818,7 +1019,8 @@ struct Index {
       if (fromNoteId.length > 0) {
         const srcNote = await LexiStorageService.getNoteById(fromNoteId);
         if (srcNote) {
-          fresh.projectId = srcNote.projectId || this.activeProjectId;
+          fresh.vaultId = srcNote.vaultId;
+          fresh.projectId = srcNote.projectId || '';
           fresh.title = `${MarkdownEngine.displayTitle(srcNote)} · 导图`;
           fresh.nodes = MarkdownEngine.markdownToMindMapNodes(
             MarkdownEngine.displayTitle(srcNote),
@@ -911,6 +1113,7 @@ struct Index {
       this.toast('保存失败，内容仍保留在输入框');
     } finally {
       this.quickSaving = false;
+      this.storageAccessChanged();
     }
   }
   private expandQuick(): void {
@@ -965,14 +1168,24 @@ struct Index {
   }
   private async switchVault(vaultId: string): Promise<void> {
     if (vaultId === this.activeVaultId) { return; }
+    await LexiEditorSettings.flush();
+    await LexiInterfaceSettings.flush();
+    await LexiAppearanceSettings.flush();
+    await LexiHotkeySettings.flush();
+    const previous = this.activeVaultId;
     try {
+      await PluginManager.suspendWorkspace();
       await LexiStorageService.setActiveVaultId(vaultId);
       try { await LexiStorageService.refreshFolders(vaultId); } catch (error) { this.toast((error as Error).message); }
       this.tagFilter = '';
       this.selectedGraphId = '';
       await this.refresh();
       this.toast(`已切换到「${this.activeVaultName()}」`);
-    } catch { this.toast('切换知识库失败'); }
+    } catch (error) {
+      await LexiStorageService.setActiveVaultId(previous);
+      await this.loadWorkspaceSettings(previous);
+      throw error as Error;
+    }
   }
   private async setTheme(value: string): Promise<void> {
     try { await LexiStorageService.setSetting('theme', value); this.theme = value; this.applyTheme(value); }
@@ -1018,7 +1231,7 @@ struct Index {
       this.toast('完整备份已导出');
     } catch (error) {
       this.dataStatus = (error as Error).message || '备份未完成';
-    } finally { this.busy = false; }
+    } finally { this.busy = false; this.storageAccessChanged(); }
   }
   private async exportMarkdown(): Promise<void> {
     this.busy = true;
@@ -1028,7 +1241,7 @@ struct Index {
       this.toast('Markdown 已导出');
     } catch (error) {
       this.dataStatus = (error as Error).message || '导出未完成';
-    } finally { this.busy = false; }
+    } finally { this.busy = false; this.storageAccessChanged(); }
   }
   private async importFiles(): Promise<void> {
     const choice = await this.getUIContext().getPromptAction().showDialog({
@@ -1045,7 +1258,7 @@ struct Index {
       this.toast(message);
     } catch (error) {
       this.dataStatus = (error as Error).message || '导入未完成';
-    } finally { this.busy = false; }
+    } finally { this.busy = false; this.storageAccessChanged(); }
   }
   private async rebuildIndex(): Promise<void> {
     this.busy = true;
@@ -1055,16 +1268,16 @@ struct Index {
       this.dataStatus = `已从 Markdown 文件重建 ${count} 篇笔记的链接与标签索引。`;
       this.toast('索引已重建');
     } catch { this.dataStatus = '重建索引失败，原始文件未受影响。'; }
-    finally { this.busy = false; }
+    finally { this.busy = false; this.storageAccessChanged(); }
   }
   private information(title: string, message: string): void {
     this.getUIContext().getPromptAction().showDialog({ title: title, message: message, buttons: [{ text: '知道了', color: $r('app.color.brand') }] });
   }
   private createMenu(): MenuElement[] {
     return [
-      { value: '笔记', action: (): void => { this.createNote('quick'); } },
-      { value: '思维导图', action: (): void => { this.createMap(); } },
-      { value: '自由白板', action: (): void => { this.createCanvas(); } }
+      { value: this.tr('笔记'), action: (): void => { this.createNote('quick'); } },
+      { value: this.tr('思维导图'), action: (): void => { this.createMap(); } },
+      { value: this.tr('自由白板'), action: (): void => { this.createCanvas(); } }
     ];
   }
 
@@ -1116,20 +1329,6 @@ struct Index {
         Blank()
 
         Button({ type: ButtonType.Circle, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-          LexiIcon({ name: 'spark', iconSize: 19 })
-        }
-        .id(`header-ai-${index}`)
-        .width(40)
-        .height(40)
-        .padding(0)
-        .backgroundColor(this.immersiveSupported ? Color.Transparent : $r('app.color.brand_soft'))
-        .systemMaterial(this.immersiveSupported ? this.titleActiveChipMaterial : undefined)
-        .accessibilityText('打开知萤 AI 助手')
-        .onClick((): void => {
-          this.showHarnessDialog = true;
-        })
-
-        Button({ type: ButtonType.Circle, buttonStyle: ButtonStyleMode.TEXTUAL }) {
           LexiIcon({ name: 'plus', iconSize: 20 })
         }
         .id(`header-create-${index}`)
@@ -1138,7 +1337,7 @@ struct Index {
         .padding(0)
         .backgroundColor(this.immersiveSupported ? Color.Transparent : $r('app.color.brand_soft'))
         .systemMaterial(this.immersiveSupported ? this.titleActiveChipMaterial : undefined)
-        .accessibilityText('新建内容')
+        .accessibilityText(this.tr('新建内容'))
         .bindMenu(this.createMenu())
       }
       .id(`primary-title-${index}`)
@@ -1173,7 +1372,7 @@ struct Index {
               quickSaving: this.quickSaving,
               onOpenDaily: (): void => { this.openDailyNote(); },
               onOpenTemplates: (): void => { this.openTemplates(); },
-              onOpenAi: (): void => { this.showHarnessDialog = true; },
+              onOpenPlugins: (): void => { this.openPluginWindow(); },
               onQuickTextChange: (val: string): void => { this.quickText = val; },
               onSaveQuick: (): void => { this.saveQuick(); },
               onExpandQuick: (): void => { this.expandQuick(); },
@@ -1242,25 +1441,16 @@ struct Index {
               onOpenNote: (noteId: string): void => { this.openNote(noteId); }
             })
           } else {
-            LexiSettingsTab({
+            LexiProfileTab({
               isWide: this.wide(),
               pagePadding: this.pagePadding(),
               bottomInset: this.bottomInset,
               titleCollapsed: this.titleCollapsed[3],
-              theme: this.theme,
-              defaultTier: this.defaultTier,
-              busy: this.busy,
-              dataStatus: this.dataStatus,
-              lastBackup: this.lastBackup,
-              onSelectTheme: (theme: string): void => { this.setTheme(theme); },
-              onSelectTier: (tier: string): void => { this.setDefaultTier(tier); },
-              onExportBackup: (): void => { this.exportBackup(); },
-              onExportMarkdown: (): void => { this.exportMarkdown(); },
-              onImportFiles: (): void => { this.importFiles(); },
-              onRebuildIndex: (): void => { this.rebuildIndex(); },
-              onOpenHelp: (): void => { this.openHelp(); },
-              onOpenTrash: (): void => { this.pathStack.pushPathByName('trash', undefined); },
-              onShowInfo: (title: string, msg: string): void => { this.information(title, msg); }
+              deletedCount: this.trashedNotes().length,
+              noteCount: this.activeNotes().length,
+              activeVaultName: this.activeVaultName(),
+              onOpenSettings: (): void => { this.openSettings('about'); },
+              onOpenTrash: (): void => { this.openTrash(); }
             })
           }
         }
@@ -1355,28 +1545,7 @@ struct Index {
               onOpenNode: (id: string): void => { this.openGraphNode(id); },
               onOpenNote: (noteId: string): void => { this.openNote(noteId); }
             })
-          } else {
-            LexiSettingsTab({
-              isWide: this.wide(),
-              pagePadding: this.pagePadding(),
-              bottomInset: this.bottomInset,
-              titleCollapsed: this.titleCollapsed[3],
-              theme: this.theme,
-              defaultTier: this.defaultTier,
-              busy: this.busy,
-              dataStatus: this.dataStatus,
-              lastBackup: this.lastBackup,
-              onSelectTheme: (theme: string): void => { this.setTheme(theme); },
-              onSelectTier: (tier: string): void => { this.setDefaultTier(tier); },
-              onExportBackup: (): void => { this.exportBackup(); },
-              onExportMarkdown: (): void => { this.exportMarkdown(); },
-              onImportFiles: (): void => { this.importFiles(); },
-              onRebuildIndex: (): void => { this.rebuildIndex(); },
-              onOpenHelp: (): void => { this.openHelp(); },
-              onOpenTrash: (): void => { this.pathStack.pushPathByName('trash', undefined); },
-              onShowInfo: (title: string, msg: string): void => { this.information(title, msg); }
-            })
-        }
+          }
       }.width('100%').constraintSize({ maxWidth: 1160 }).padding({ top: 32, bottom: 32 })
     }.width('100%').height('100%').align(Alignment.Top).backgroundColor($r('app.color.workspace_page'))
   }
@@ -1384,7 +1553,8 @@ struct Index {
   @Builder
   private desktopWorkspace() {
     LexiDesktopWorkspace({
-      viewportWidth: this.viewportWidth, notes: this.notes, maps: this.maps, canvases: this.canvases,
+      viewportWidth: this.viewportWidth,
+      notes: this.notes, maps: this.maps, canvases: this.canvases,
       projects: this.projects, activeProjectId: this.activeProjectId, activeProjectName: this.activeProjectName(),
       vaults: this.vaults, activeVaultId: this.activeVaultId, activeVaultName: this.activeVaultName(),
       activeSection: this.activeTab, lastEditedNoteId: this.lastEditedNoteId,
@@ -1412,7 +1582,45 @@ struct Index {
         const param = new NoteEditorRouteParam(); param.noteId = noteId;
         this.pathStack.pushPathByName('noteEditor', param);
       },
-      onOpenHelp: (): void => { this.openHelp(); }
+      onOpenHelp: (): void => { this.openHelp(); },
+      onOpenSettings: (): void => { this.openSettings('about'); },
+      onOpenTrash: (): void => { this.openTrash(); },
+      onManagePlugins: (): void => { this.openSettings('plugins'); }
+    })
+  }
+
+  @Builder
+  private settingsDialogContent() {
+    LexiSettingsWindow({
+      initialCategory: this.settingsCategory,
+      workspaceName: this.activeVaultName(),
+      storageLocation: this.storageLocation,
+      onChooseStorage: (): void => { this.chooseStorageFolder(); },
+      theme: this.theme,
+      defaultTier: this.defaultTier,
+      busy: this.busy,
+      dataStatus: this.dataStatus,
+      lastBackup: this.lastBackup,
+      onSelectTheme: (theme: string): void => { this.setTheme(theme); },
+      onSelectTier: (tier: string): void => { this.setDefaultTier(tier); },
+      onExportBackup: (): void => { this.exportBackup(); },
+      onExportMarkdown: (): void => { this.exportMarkdown(); },
+      onImportFiles: (): void => { this.importFiles(); },
+      onRebuildIndex: (): void => { this.rebuildIndex(); },
+      onOpenHelp: (): void => { this.closeSettings(); this.openHelp(); },
+      onOpenTrash: (): void => { this.closeSettings(); this.openTrash(); },
+      onShowInfo: (title: string, msg: string): void => { this.information(title, msg); },
+      onClose: (): void => {
+        this.closeSettings();
+      }
+    })
+  }
+
+  @Builder
+  private trashSheet() {
+    LexiTrashPanel({
+      showClose: true,
+      onClose: (): void => { this.showTrashWindow = false; }
     })
   }
 
@@ -1444,25 +1652,25 @@ struct Index {
             TabContent() {
               this.tabScrollPage(0)
             }
-            .tabBar(this.dockTabItem(0, '首页', 'dock-home'))
+            .tabBar(this.dockTabItem(0, this.tr('首页'), 'dock-home'))
             .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
 
             TabContent() {
               this.tabScrollPage(1)
             }
-            .tabBar(this.dockTabItem(1, '知识库', 'dock-vault'))
+            .tabBar(this.dockTabItem(1, this.tr('知识库'), 'dock-vault'))
             .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
 
             TabContent() {
               this.tabScrollPage(2)
             }
-            .tabBar(this.dockTabItem(2, '关联', 'dock-explore'))
+            .tabBar(this.dockTabItem(2, this.tr('关联'), 'dock-explore'))
             .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
 
             TabContent() {
               this.tabScrollPage(3)
             }
-            .tabBar(this.dockTabItem(3, '我的', 'dock-profile'))
+            .tabBar(this.dockTabItem(3, this.tr('我的'), 'dock-profile'))
             .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
           }
           .barHeight(this.wide() ? 0 : 62)
@@ -1494,16 +1702,40 @@ struct Index {
         .height('100%')
         .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
       }
+      if (this.mathBitmapNeeded) { LexiMathBitmapHost() }
       LexiContextActionHost({ onOpen: (id: string, mode: string): void => { this.openContextContent(id, mode); },
         onSearch: (target: LexiContextTarget): void => { this.searchContext(target); } })
-      if (this.showHarnessDialog) {
-        LexiHarnessModalDialog({
-          activeNoteIdProp: this.lastEditedNoteId,
-          onClose: (): void => {
-            this.showHarnessDialog = false;
-          }
+      Column().width(0).height(0)
+        .bindSheet($$this.showSettingsWindow, this.settingsDialogContent, {
+          height: this.wide() ? Math.max(320, Math.min(640, this.viewportHeight - 120)) : 1,
+          width: this.wide() ? Math.max(480, Math.min(920, this.viewportWidth - 64)) : 1,
+          preferType: SheetType.CENTER,
+          dragBar: false,
+          showClose: false,
+          radius: LengthMetrics.vp(12),
+          backgroundColor: $r('app.color.workspace_page'),
+          onDisappear: (): void => { LexiHotkeyRecorder.cancel(); this.storageAccessChanged(); }
         })
-      }
+      Column().width(0).height(0)
+        .bindSheet($$this.showTrashWindow, this.trashSheet, {
+          height: this.wide() ? Math.max(280, Math.min(560, this.viewportHeight - 140)) : 1,
+          width: this.wide() ? Math.max(420, Math.min(720, this.viewportWidth - 96)) : 1,
+          preferType: SheetType.CENTER,
+          dragBar: false,
+          showClose: false,
+          radius: LengthMetrics.vp(16),
+          backgroundColor: $r('app.color.workspace_page')
+        })
+      Column().width(0).height(0)
+        .bindSheet($$this.showPluginWindow, this.pluginSheet, {
+          height: SheetSize.LARGE, width: '100%',
+          preferType: SheetType.BOTTOM,
+          radius: LengthMetrics.vp(28), shadow: ShadowStyle.OUTER_DEFAULT_LG,
+          borderWidth: 0.5, borderColor: $r('app.color.workspace_line'),
+          dragBar: true, showClose: true, title: { title: this.tr('插件') },
+          keyboardAvoidMode: SheetKeyboardAvoidMode.RESIZE_ONLY,
+          backgroundColor: $r('app.color.surface')
+        })
       }.width('100%').height('100%')
         .bindSheet($$this.showTemplates, this.templateSheet, {
           height: this.wide() ? Math.min(720, Math.max(280, this.viewportHeight - this.titleTopInset - this.bottomInset - 96)) : SheetSize.LARGE,
@@ -1511,10 +1743,10 @@ struct Index {
           preferType: this.wide() ? SheetType.CENTER : SheetType.BOTTOM,
           radius: LengthMetrics.vp(28), shadow: ShadowStyle.OUTER_DEFAULT_LG,
           borderWidth: 0.5, borderColor: $r('app.color.workspace_line'),
-          dragBar: !this.wide(), showClose: true, title: { title: '模板库' },
+          dragBar: !this.wide(), showClose: true, title: { title: this.tr('模板库') },
           keyboardAvoidMode: SheetKeyboardAvoidMode.TRANSLATE_AND_RESIZE,
           onWillDismiss: (action: DismissSheetAction): void => { this.dismissTemplates(action); },
-          onDisappear: (): void => { this.presentTemplateEditor(); },
+          onDisappear: (): void => { this.presentTemplateEditor(); this.storageAccessChanged(); },
           backgroundColor: $r('app.color.background')
         })
     }
@@ -1522,16 +1754,35 @@ struct Index {
     .height(LayoutPolicy.matchParent)
     .background($r('app.color.background'))
     .bindSheet($$this.showNoteDestination, this.noteDestinationSheet, {
-      height: SheetSize.MEDIUM, dragBar: true, showClose: true, title: { title: '选择保存工作区' },
+      height: SheetSize.MEDIUM, dragBar: true, showClose: true, title: { title: this.tr('选择保存工作区') },
+      onDisappear: (): void => { this.storageAccessChanged(); },
       backgroundColor: $r('app.color.surface')
     })
     .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+    .onKeyPreIme((event: KeyEvent): boolean => {
+      LexiAppearanceSettings.trackModifierKey(event);
+      // Returning false here continues normal IME/Web delivery; a dispatch override
+      // diverts unconsumed keys away from focused descendants.
+      if (PluginKeyboardFocus.active()) { return false; }
+      // Shortcut recording listens here: the settings overlay itself never receives key events.
+      if (LexiHotkeyRecorder.active()) {
+        LexiHotkeyRecorder.handle(event).catch((): void => {});
+        return true;
+      }
+      if (this.showSettingsWindow) {
+        if (event.type === KeyType.Down && event.keyCode === 2070) { this.closeSettings(); return true; }
+        return false;
+      }
+      if (this.showWelcome || this.desktopRouteActive || event.type !== KeyType.Down) { return false; }
+      return LexiShortcutRouter.dispatch(LexiHotkeySettings.fromEvent(event));
+    })
     .onAreaChange((_old: Area, current: Area) => {
       const w = Number(current.width);
       const h = Number(current.height);
       if (h > 0) { AppStorage.setOrCreate('lexiViewportHeight', h); }
       if (w > 0) {
         if (w < 840 && this.activeTab > 3) { this.activeTab = 1; }
+        if (w >= 840 && this.activeTab === 3) { this.activeTab = 1; }
         this.viewportWidth = w;
         this.pathStack.disableAnimation(this.reduceMotion || w >= 840);
         AppStorage.setOrCreate('lexiViewportWidth', w);

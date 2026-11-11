@@ -75,6 +75,13 @@ export class LexiBackupValidation {
         typeof vault.name !== 'string') { throw new Error('备份知识库信息无效'); }
       vaultIds.add(vault.id);
     }
+    if (pkg.collections !== undefined) {
+      if (!Array.isArray(pkg.collections)) { throw new Error('备份收藏数据无效'); }
+      for (const collection of pkg.collections) {
+        if (!vaultIds.has(collection.vaultId) || typeof collection.bookmarks !== 'string' || typeof collection.databases !== 'string' ||
+          !Array.isArray(JSON.parse(collection.bookmarks)) || !Array.isArray(JSON.parse(collection.databases))) { throw new Error('备份收藏数据无效'); }
+      }
+    }
     const noteIds = new Set<string>();
     for (const note of pkg.notes) {
       if (!note || !LexiBackupValidation.validId(note.id) || noteIds.has(note.id) ||

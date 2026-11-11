@@ -39,7 +39,7 @@ const context = { filesDir: '/private/app', openLink: async (...args) => calls.p
   notePath = '/private/app/vaults/v/notes/n.md';
   await assert.rejects(() => actions.reveal(context, target), /无法定位/);
   projectUri = ''; vaultUri = '';
-  await assert.rejects(() => actions.reveal(context, target), /应用内部/);
+  await assert.rejects(() => actions.reveal(context, target), /本地文件夹/);
   assert.equal(calls.length, 3, 'unsupported locations must not open a default file handler');
   console.log('PASS file manager reveal, folder URI encoding, project precedence and internal fallback');
 })().catch(error => { console.error(error); process.exitCode = 1; });

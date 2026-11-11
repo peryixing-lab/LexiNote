@@ -1,7 +1,7 @@
 import { common } from '@kit.AbilityKit';
-import { BusinessError } from '@kit.BasicServicesKit';
+import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { util } from '@kit.ArkTS';
-import { fileIo as fs, fileShare, fileUri, picker } from '@kit.CoreFileKit';
+import { Environment, fileIo as fs, fileShare, fileUri, picker } from '@kit.CoreFileKit';
 import { CanvasBoard, MindMapDoc, NoteItem } from './LexiModels';
 import { LexiFolderPolicy } from './LexiFolderPolicy';
 import { LexiFrontmatter } from './LexiFrontmatter';
@@ -41,6 +41,24 @@ class LexiFolderRecovery {
 export class LexiFolderStore {
   private static activated: Set<string> = new Set<string>();
   private static grantedFileUris: Map<string, string[]> = new Map<string, string[]>();
+
+  static documentsUri(): string {
+    try { return fileUri.getUriFromPath(Environment.getUserDocumentDir()); }
+    catch { return ''; }
+  }
+
+  static async ensureChild(binding: LexiFolderBinding, name: string): Promise<LexiFolderBinding> {
+    const root = await LexiFolderStore.activate(binding);
+    if (!name.trim() || LexiFolderPolicy.fileName(name) !== name.trim()) { throw new Error('文件夹名称无效'); }
+    const path = `${root}/${name}`;
+    LexiFolderStore.guardPath(root, path);
+    if (!fs.accessSync(path)) { await fs.mkdir(path); }
+    if (!(await fs.stat(path)).isDirectory()) { throw new Error(`已有同名文件，请选择其他目录：${name}`); }
+    const child = new LexiFolderBinding();
+    child.folderUri = binding.folderUri.replace(/\/+$/, '') + '/' + encodeURIComponent(name);
+    child.permissionUri = binding.permissionUri || binding.folderUri;
+    return child;
+  }
 
   static supported(): boolean {
     return canIUse('SystemCapability.FileManagement.UserFileService') ||
@@ -122,6 +140,40 @@ export class LexiFolderStore {
     }
     LexiFolderStore.grantedFileUris.set(folderPath, uris.slice());
     return folderUri;
+  }
+
+  static canChooseStorageFolder(): boolean {
+    // Mobile pickers may advertise FolderSelection while still showing a file-only
+    // UI. Their DOWNLOAD flow grants the system app directory instead.
+    return deviceInfo.deviceType === '2in1' &&
+      canIUse('SystemCapability.FileManagement.UserFileService.FolderSelection');
+  }
+
+  /** Explicit storage-location authorization. Cancellation must never open another picker. */
+  static async chooseStorageRoot(context: common.UIAbilityContext): Promise<string> {
+    const viewPicker = new picker.DocumentViewPicker(context);
+    let uris: string[] = [];
+    if (LexiFolderStore.canChooseStorageFolder()) {
+      const options = new picker.DocumentSelectOptions();
+      options.selectMode = picker.DocumentSelectMode.FOLDER;
+      options.maxSelectNumber = 1;
+      const documentsUri = LexiFolderStore.documentsUri();
+      if (documentsUri) { options.defaultFilePathUri = documentsUri; }
+      uris = await viewPicker.select(options);
+    } else {
+      // Mobile devices can authorize their system-provided app
+      // document directory. DOWNLOAD returns a directory, without an empty file.
+      const options = new picker.DocumentSaveOptions();
+      options.pickerMode = picker.DocumentPickerMode.DOWNLOAD;
+      uris = await viewPicker.save(options);
+    }
+    if (!uris || uris.length === 0) { return ''; }
+    const uri = uris[0];
+    await LexiFolderStore.tryPersistAndActivate(uri);
+    if (!(await fs.stat(LexiFolderStore.path(uri))).isDirectory()) {
+      throw new Error('请选择用于保存笔记的文件夹');
+    }
+    return uri;
   }
 
   static async activate(binding: LexiFolderBinding): Promise<string> {
@@ -269,6 +321,38 @@ export class LexiFolderStore {
     if (fs.accessSync(path)) { fs.unlinkSync(path); }
   }
 
+  static mindMapRelativePath(id: string): string {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) { throw new Error('导图文件标识无效'); }
+    return `思维导图/${id}.mindmap.json`;
+  }
+
+  static async writeMarkdownArchive(binding: LexiFolderBinding, title: string, text: string): Promise<void> {
+    const root = await LexiFolderStore.activate(binding);
+    const directory = `${root}/.lexinote/历史副本`;
+    LexiFolderStore.guardPath(root, directory);
+    if (!fs.accessSync(directory)) { await fs.mkdir(directory, true); }
+    const stem = LexiFolderPolicy.fileName(title);
+    let path = `${directory}/${stem}.md`;
+    let suffix = 1;
+    while (fs.accessSync(path) && await LexiFolderStore.readFileText(path) !== text) {
+      path = `${directory}/${stem}-${suffix++}.md`;
+    }
+    LexiFolderStore.writeAtomic(root, path, text);
+  }
+
+  static async writeMindMap(binding: LexiFolderBinding, doc: MindMapDoc): Promise<string> {
+    const root = await LexiFolderStore.activate(binding);
+    const path = `${root}/${LexiFolderStore.mindMapRelativePath(doc.id)}`;
+    const directory = path.substring(0, path.lastIndexOf('/'));
+    LexiFolderStore.guardPath(root, path);
+    if (!fs.accessSync(directory)) { await fs.mkdir(directory); }
+    const text = JSON.stringify(doc, null, 2);
+    if (!fs.accessSync(path) || await LexiFolderStore.readFileText(path) !== text) {
+      LexiFolderStore.writeAtomic(root, path, text);
+    }
+    return path;
+  }
+
   static async writeCatalog(binding: LexiFolderBinding, notes: NoteItem[], maps: MindMapDoc[], canvases: CanvasBoard[]): Promise<void> {
     const root = await LexiFolderStore.activate(binding);
     const directory = `${root}/.lexinote`;
@@ -286,6 +370,8 @@ export class LexiFolderStore {
     });
     catalog.mindMaps = maps;
     catalog.canvases = canvases;
+    // Keep editable mind-map files beside the Markdown, outside the app sandbox.
+    for (const doc of maps) { await LexiFolderStore.writeMindMap(binding, doc); }
     LexiFolderStore.writeAtomic(root, `${directory}/catalog.json`, JSON.stringify(catalog, null, 2));
   }
 

@@ -6,6 +6,11 @@
       "buildFunction": "trashPageBuilder"
     },
     {
+      "name": "settings",
+      "pageSourceFile": "src/main/ets/pages/SettingsPage.ets",
+      "buildFunction": "settingsPageBuilder"
+    },
+    {
       "name": "noteEditor",
       "pageSourceFile": "src/main/ets/pages/NoteEditorPage.ets",
       "buildFunction": "noteEditorBuilder"

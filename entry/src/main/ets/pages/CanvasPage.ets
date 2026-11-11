@@ -1,3 +1,6 @@
+import { image } from '@kit.ImageKit';
+import { LexiExportService } from '../core/LexiExportService';
+import { LexiHotkeySettings } from '../core/LexiHotkeySettings';
 import { common } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
 import { LexiBackHeader } from '../components/LexiBackHeader';
@@ -98,6 +101,21 @@ export struct CanvasPage {
     fresh.title = '新建自由白板';
     this.board = await LexiStorageService.saveCanvas(this.context(), fresh);
     this.drawBoard();
+  }
+
+  private async exportImage(): Promise<void> {
+    if (!this.canvasReady) { throw new Error('画布尚未准备好'); }
+    const pixels = this.ctx2d.getPixelMap(0, 0, this.canvasWidth, this.canvasHeight);
+    const packer = image.createImagePacker();
+    try { const bytes = await packer.packToData(pixels, { format: 'image/png', quality: 100 }); await LexiExportService.saveBytes(this.context(), this.board.title + '.png', bytes); }
+    finally { await packer.release(); await pixels.release(); }
+  }
+
+  private async executeCanvasCommand(command: string): Promise<void> {
+    if (command === 'save') { this.board = await LexiStorageService.saveCanvas(this.context(), this.board); this.toast('白板已保存'); }
+    else if (command === 'canvas-export-image') { await this.exportImage(); }
+    else if (command === 'canvas-export-file') { await LexiStorageService.saveViaDocumentPicker(this.context(), this.board.title + '.json', JSON.stringify(this.board, null, 2)); }
+    else if (command === 'canvas') { await LexiStorageService.saveCanvas(this.context(), this.board); await this.loadFromRoute(new CanvasRouteParam()); }
   }
 
   private currentCard(): CanvasCard | undefined {
@@ -384,6 +402,8 @@ export struct CanvasPage {
               .onClick(() => {
                 this.addCard();
               })
+            Button('导出图片', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
+              .height(40).fontSize(12).onClick((): void => { this.exportImage().catch((error: Error): void => { this.toast(error.message); }); })
             Button('适应画布', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
               .id('canvas-fit').height(40).fontSize(12).fontColor($r('app.color.brand_ink'))
               .onClick((): void => { this.viewFitted = false; this.drawBoard(); })
@@ -593,6 +613,12 @@ export struct CanvasPage {
       .align(Alignment.Top)
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
     }
+    .onKeyEventDispatch((event: KeyEvent): boolean => {
+      if (event.type !== KeyType.Down) { return false; }
+      const command = LexiHotkeySettings.commandFor(AppStorage.get<string>('lexiHotkeyOverrides') || '[]', LexiHotkeySettings.fromEvent(event));
+      if (!['save', 'canvas', 'canvas-export-image', 'canvas-export-file'].includes(command)) { return false; }
+      this.executeCanvasCommand(command).catch((error: Error): void => { this.toast(error.message); }); return true;
+    })
     .hideBackButton(true)
     .title(
       {

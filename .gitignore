@@ -10,6 +10,9 @@
 **/.cxx/
 **/.test/
 .appanalyzer/
+/.cache/
+/.dsh-hdc/
+/.dsh-hvigor-tmp/
 local.properties
 
 # Local signing configuration and credentials
@@ -25,7 +28,9 @@ local.properties
 *.hsp
 *.app
 /exports/
+# docs/ 为内部工作账面,不入库。
 /docs/*
+!/docs/native-plugin-authoring.md
 !/docs/plugin-api-reference.md
 !/docs/plugin-manifest-v2.md
 !/docs/plugin-security.md
@@ -35,8 +40,11 @@ local.properties
 !/docs/obsidian-compatibility.md
 !/docs/plugin-inspector.md
 !/docs/lexinote_plugin_bridge_spec.md
+/plugins/harness/dist/
+*.textClipping
 /*.docx
 /design-qa.md
+/.fixtures-out/
 *.log
 
 # OS and editor temporary files

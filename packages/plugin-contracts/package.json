@@ -1,0 +1,12 @@
+{
+  "name": "@lexinote/plugin-contracts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Platform-neutral TypeScript contracts and the lexinote-plugin manifest schema. Documentation/tooling only; never imported by ArkTS.",
+  "main": "src/types.ts",
+  "files": [
+    "src",
+    "manifest.schema.json"
+  ],
+  "license": "Apache-2.0"
+}

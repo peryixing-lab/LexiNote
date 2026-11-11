@@ -28,6 +28,7 @@ export struct WorkspacesPage {
   @State private activeVaultId: string = '';
   @State private activeProjectId: string = '';
   @State private formKind: string = '';
+  @State private localScopeId: string = '';
   @State private draftName: string = '';
   @State private draftFolder: string = '';
   @State private draftPermission: string = '';
@@ -59,11 +60,21 @@ export struct WorkspacesPage {
   }
 
   private beginForm(kind: string): void {
-    this.formKind = kind; this.draftName = ''; this.message = '';
+    this.formKind = kind; this.localScopeId = ''; this.draftName = ''; this.message = '';
     const vault = this.currentVault();
     this.draftFolder = kind === 'project' && vault ? vault.folderUri || '' : '';
     this.draftPermission = kind === 'project' && vault ? vault.permissionUri || vault.folderUri || '' : '';
     this.createChild = kind === 'project' && !!this.draftFolder;
+    this.pageScroller.scrollEdge(Edge.Top);
+  }
+
+  private beginLocalSave(id: string, isProject: boolean): void {
+    const project = isProject ? this.projects.find((item: LexiProject): boolean => item.id === id) : undefined;
+    const vault = !isProject ? this.vaults.find((item: VaultItem): boolean => item.id === id) : undefined;
+    if (!project && !vault) { return; }
+    this.localScopeId = id; this.formKind = isProject ? 'local-project' : 'local-workspace';
+    this.draftName = project ? project.name : vault?.name || '';
+    this.draftFolder = ''; this.draftPermission = ''; this.createChild = true; this.message = '';
     this.pageScroller.scrollEdge(Edge.Top);
   }
 
@@ -73,7 +84,8 @@ export struct WorkspacesPage {
     try {
       const uri = await LexiFolderStore.choose(this.context(), this.draftFolder);
       if (uri) {
-        this.draftFolder = uri; this.draftPermission = uri; this.createChild = false;
+        this.draftFolder = uri; this.draftPermission = uri;
+        if (!this.localScopeId) { this.createChild = false; }
         if (!this.draftName.trim()) { this.draftName = LexiFolderStore.folderName(uri); }
       }
     } catch (error) { this.message = (error as Error).message || '选择文件夹失败'; }
@@ -84,8 +96,15 @@ export struct WorkspacesPage {
     if (this.working) { return; }
     if (!this.draftFolder) { this.message = '请先选择文件夹'; return; }
     if (!this.draftName.trim()) { this.message = '请输入名称'; return; }
-    this.working = true; this.message = '正在扫描文件夹中的 Markdown 文件…';
+    this.working = true; this.message = this.localScopeId ? '正在保存笔记和思维导图到本地文件夹…' : '正在扫描文件夹中的 Markdown 文件…';
     try {
+      if (this.localScopeId) {
+        const uri = await LexiStorageService.saveScopeToFolder(this.context(), this.localScopeId,
+          this.formKind === 'local-project', this.draftFolder, this.createChild);
+        await this.reload(); this.formKind = ''; this.localScopeId = '';
+        this.message = `笔记和思维导图已保存到 ${LexiFolderStore.path(uri)}，后续修改将同步到此文件夹。`;
+        this.notifySelection(); return;
+      }
       let scannedCount = 0;
       if (this.formKind === 'workspace') {
         const created = await LexiStorageService.createFolderWorkspace(this.draftName, this.draftFolder, this.createChild, this.draftPermission);
@@ -151,11 +170,12 @@ export struct WorkspacesPage {
   @Builder
   private editForm() {
     Column({ space: 14 }) {
-      Text(this.formKind === 'workspace' ? '添加工作区' : '添加项目').fontSize(20).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary'))
+      Text(this.localScopeId ? '保存到本地文件夹' : this.formKind === 'workspace' ? '添加工作区' : '添加项目')
+        .fontSize(20).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary'))
       TextInput({ text: this.draftName, placeholder: this.formKind === 'workspace' ? '工作区名称' : '项目名称' })
         .id('workspace-name-input').width('100%').height(44).fontSize(14).fontColor($r('app.color.text_primary'))
         .placeholderColor($r('app.color.text_secondary')).backgroundColor($r('app.color.soft_surface')).borderRadius(8)
-        .enabled(!this.working).onChange((text: string): void => { this.draftName = text; })
+        .enabled(!this.working && !this.localScopeId).onChange((text: string): void => { this.draftName = text; })
       Button(this.draftFolder ? LexiFolderStore.path(this.draftFolder) : '选择文件夹', { type: ButtonType.Normal })
         .id('workspace-folder-picker').width('100%').constraintSize({ minHeight: 44 }).fontSize(13).borderRadius(8)
         .padding(12).fontColor($r('app.color.brand_ink')).backgroundColor($r('app.color.workspace_selection'))
@@ -168,7 +188,9 @@ export struct WorkspacesPage {
         Text('在所选目录下新建同名文件夹').fontSize(13).fontColor($r('app.color.text_primary')).layoutWeight(1)
           .constraintSize({ minHeight: 44 }).onClick((): void => { if (!this.working) { this.createChild = !this.createChild; } })
       }.width('100%')
-      Text('选择已有文件夹会读取其中的 Markdown 笔记，编辑时保存回原文件。')
+      Text(this.localScopeId
+        ? '选择保存位置，笔记将写为 .md 文件，导图将写为可编辑的 .mindmap.json 文件，并保留工作区和项目归属。目标文件夹需要为空。'
+        : '选择已有文件夹会读取其中的 Markdown 笔记，编辑时保存回原文件。')
         .fontSize(12).lineHeight(21).fontColor($r('app.color.text_secondary')).width('100%')
       Row({ space: 12 }) {
         Button(this.working ? '正在处理…' : '保存', { type: ButtonType.Normal })
@@ -240,6 +262,10 @@ export struct WorkspacesPage {
                 }.layoutWeight(1)
                 if (vault.folderUri) {
                   this.folderActions(vault.id, false)
+                } else {
+                  Button('保存到本地', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
+                    .id(`workspace-local-save-${vault.id}`).height(40).fontSize(12).fontColor($r('app.color.brand_ink'))
+                    .enabled(!this.working).onClick((): void => { this.beginLocalSave(vault.id, false); })
                 }
               }.width('100%')
             }, (vault: VaultItem): string => `${vault.id}-${vault.folderUri}-${vault.name}-${vault.favorite}`)
@@ -272,6 +298,10 @@ export struct WorkspacesPage {
                 }.layoutWeight(1)
                 if (project.folderUri) {
                   this.folderActions(project.id, true)
+                } else {
+                  Button('保存到本地', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
+                    .id(`project-local-save-${project.id}`).height(40).fontSize(12).fontColor($r('app.color.brand_ink'))
+                    .enabled(!this.working).onClick((): void => { this.beginLocalSave(project.id, true); })
                 }
               }.width('100%')
             }, (project: LexiProject): string => `${project.id}-${project.folderUri}-${project.name}-${project.favorite}`)

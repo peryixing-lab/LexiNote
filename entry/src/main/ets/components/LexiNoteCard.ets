@@ -1,3 +1,4 @@
+import { LexiI18n } from '../core/LexiI18n';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { NoteItem } from '../core/LexiModels';
 import { MarkdownEngine, LexiMarkdownInlineSpan } from '../core/MarkdownEngine';
@@ -58,6 +59,12 @@ export struct LexiHeroHeading {
 
 @Component
 export struct LexiNoteCard {
+  @StorageProp('lexiLanguage') private interfaceLanguage: string = LexiI18n.language();
+
+  private tr(source: string, args: string[] = []): string {
+    return LexiI18n.text(source, this.interfaceLanguage, args);
+  }
+
   @Prop note: NoteItem = new NoteItem();
   @Prop query: string = '';
   @Prop outgoingCount: number = 0;
@@ -71,7 +78,7 @@ export struct LexiNoteCard {
   onDeleteForever: (note: NoteItem) => void = (_note: NoteItem): void => {};
 
   private typeLabel(type: string): string {
-    return type === 'study' ? '学习' : type === 'markdown' ? 'Markdown' : '速记';
+    return type === 'study' ? this.tr('学习') : type === 'markdown' ? 'Markdown' : this.tr('速记');
   }
 
   private typeIcon(type: string): string {
@@ -83,26 +90,26 @@ export struct LexiNoteCard {
     const now = new Date();
     const hm = `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
     if (date.toDateString() === now.toDateString()) {
-      return `今天 ${hm}`;
+      return this.tr('今天 {0}', [hm]);
     }
     const yesterday = new Date(now.getTime() - 86400000);
     if (date.toDateString() === yesterday.toDateString()) {
-      return `昨天 ${hm}`;
+      return this.tr('昨天 {0}', [hm]);
     }
-    return `${date.getMonth() + 1}月${date.getDate()}日`;
+    return this.tr('{0}月{1}日', [(date.getMonth() + 1).toString(), date.getDate().toString()]);
   }
 
   private buildMenu(): MenuElement[] {
     if (this.note.trashedAt > 0) {
       return [
         {
-          value: '恢复笔记',
+          value: this.tr('恢复笔记'),
           action: (): void => {
             this.onRestore(this.note);
           }
         },
         {
-          value: '永久删除',
+          value: this.tr('永久删除'),
           action: (): void => {
             this.onDeleteForever(this.note);
           }
@@ -202,7 +209,7 @@ export struct LexiNoteCard {
         Blank()
 
         if (this.outgoingCount > 0 || this.backlinkCount > 0) {
-          Text(`🔗 ${this.outgoingCount} 出 · ${this.backlinkCount} 反`)
+          Text(this.tr('🔗 {0} 出 · {1} 反', [this.outgoingCount.toString(), this.backlinkCount.toString()]))
             .fontSize(11)
             .fontColor($r('app.color.brand'))
         }
@@ -211,7 +218,7 @@ export struct LexiNoteCard {
 
       if (this.note.trashedAt > 0) {
         Row({ space: 8 }) {
-          Button('恢复笔记', { type: ButtonType.Normal })
+          Button(this.tr('恢复笔记'), { type: ButtonType.Normal })
             .layoutWeight(1)
             .height(34)
             .fontSize(12)
@@ -221,7 +228,7 @@ export struct LexiNoteCard {
             .onClick(() => {
               this.onRestore(this.note);
             })
-          Button('永久删除', { type: ButtonType.Normal })
+          Button(this.tr('永久删除'), { type: ButtonType.Normal })
             .layoutWeight(1)
             .height(34)
             .fontSize(12)

@@ -1,33 +1,56 @@
 import { describe, beforeAll, beforeEach, afterEach, afterAll, it, expect } from '@ohos/hypium';
+import { LexiMathSyntax } from '../main/ets/core/LexiMathSyntax';
+import { MarkdownEngine } from '../main/ets/core/MarkdownEngine';
 
 export default function localUnitTest() {
   describe('localUnitTest', () => {
-    // Defines a test suite. Two parameters are supported: test suite name and test suite function.
-    beforeAll(() => {
-      // Presets an action, which is performed only once before all test cases of the test suite start.
-      // This API supports only one parameter: preset action function.
+    beforeAll(() => {});
+    beforeEach(() => {});
+    afterEach(() => {});
+    afterAll(() => {});
+
+    it('parses_spaced_inline_math_and_skips_currency', 0, () => {
+      const spaced = LexiMathSyntax.inlineTokens('行内公式 $ \\frac{1}{2} + x_i $ 正常识别');
+      expect(spaced.length).assertEqual(1);
+      expect(spaced[0].text).assertEqual('\\frac{1}{2} + x_i');
+
+      const mixed = LexiMathSyntax.inlineTokens('价格是$5，而公式是$x = 1$');
+      expect(mixed.length).assertEqual(1);
+      expect(mixed[0].text).assertEqual('x = 1');
     });
-    beforeEach(() => {
-      // Presets an action, which is performed before each unit test case starts.
-      // The number of execution times is the same as the number of test cases defined by **it**.
-      // This API supports only one parameter: preset action function.
+
+    it('parses_nested_dollar_in_text_and_raw_environments', 0, () => {
+      const nested = LexiMathSyntax.inlineTokens('$\\text{当 $x > 0$ 时 } f(x) = x^2$');
+      expect(nested.length).assertEqual(1);
+      expect(nested[0].text).assertEqual('\\text{当 $x > 0$ 时 } f(x) = x^2');
+
+      const rawEnvLines: string[] = [
+        '\\begin{align*}',
+        'a &= b + c \\\\',
+        'd &= e + f',
+        '\\end{align*}'
+      ];
+      const display = LexiMathSyntax.displayBlock(rawEnvLines, 0);
+      expect(display !== undefined).assertTrue();
+      expect(display?.endLine).assertEqual(3);
     });
-    afterEach(() => {
-      // Presets a clear action, which is performed after each unit test case ends.
-      // The number of execution times is the same as the number of test cases defined by **it**.
-      // This API supports only one parameter: clear action function.
-    });
-    afterAll(() => {
-      // Presets a clear action, which is performed after all test cases of the test suite end.
-      // This API supports only one parameter: clear action function.
-    });
-    it('assertContain', 0, () => {
-      // Defines a test case. This API supports three parameters: test case name, filter parameter, and test case function.
-      let a = 'abc';
-      let b = 'b';
-      // Defines a variety of assertion methods, which are used to declare expected boolean conditions.
-      expect(a).assertContain(b);
-      expect(a).assertEqual(a);
+
+    it('parses_math_fences_and_multiline_quotes', 0, () => {
+      const md = [
+        '```math',
+        '\\int_0^\\infty e^{-x^2} \\dd{x} = \\frac{\\sqrt{\\pi}}{2}',
+        '```',
+        '',
+        '> 引用推导：',
+        '> $$',
+        '> E = mc^2',
+        '> $$'
+      ].join('\n');
+      const blocks = MarkdownEngine.parseBlocks(md);
+      expect(blocks.length).assertEqual(2);
+      expect(blocks[0].kind).assertEqual('formula');
+      expect(blocks[1].kind).assertEqual('quote');
+      expect(LexiMathSyntax.hasMath(blocks[1].text)).assertTrue();
     });
   });
 }

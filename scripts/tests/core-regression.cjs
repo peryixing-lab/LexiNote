@@ -9,6 +9,18 @@ const ts = require(process.env.LEXI_TYPESCRIPT || '/Applications/DevEco-Studio.a
 const core = path.resolve(__dirname, '../../entry/src/main/ets/core');
 let noteRows, contentRows, linkRows, sqlCalls, insertCalls, nativeLocks;
 let files, values, handles, failRename, failWrite, denyPublicRename, failUnlink, failInsert, dbSnapshot, directories, symlinks, persistentGrants, prefs;
+let appStorage, pickerCalls, pickerSelection, fixedUuids;
+let unsupportedCapabilities = new Set();
+let pickerDeviceType = '2in1';
+global.AppStorage={get:key=>appStorage.get(key),setOrCreate(key,value){
+ if(key==='lexiStorageAccessRevision')assert.equal(nativeLocks.size,0,'storage prompt event must be outside the OS lock');
+ appStorage.set(key,value);
+}};
+const fakePicker={DocumentSelectMode:{FOLDER:1},DocumentSelectOptions:class {},
+ DocumentPickerMode:{DOWNLOAD:1},DocumentSaveOptions:class {},DocumentViewPicker:class {
+ async select(options){pickerCalls.push(options);return pickerSelection(options);}
+ async save(options){pickerCalls.push(options);return pickerSelection(options);}
+}};
 function fileStat(p) {
  if (!files.has(p) && !directories.has(p) && !symlinks.has(p)) throw new Error('ENOENT '+p);
  return {size:Buffer.byteLength(files.get(p)||''),mtime:Date.now()/1000,
@@ -20,7 +32,7 @@ const fakeFileShare = {
  async activatePermission(policies){for(const p of policies)if(!persistentGrants.has(p.uri))throw new Error('authorization revoked');}
 };
 class FakeFileUri { constructor(uri){this.path=uri.startsWith('file:')?decodeURIComponent(new URL(uri).pathname):uri;} }
-global.canIUse=()=>true;
+global.canIUse=capability=>!unsupportedCapabilities.has(capability);
 const fakeFs = {
  accessSync: p => files.has(p)||directories.has(p)||symlinks.has(p),
  mkdirSync(p){const parts=p.split('/');for(let i=1;i<=parts.length;i++)directories.add(parts.slice(0,i).join('/')||'/');},
@@ -71,11 +83,12 @@ function load(name, memo=cache) {
  const module = {exports:{}}; memo.set(name,module.exports);
  const req = spec => {
   if (spec.startsWith('./')) return load(spec.slice(2), memo);
-  if (spec === '@kit.CoreFileKit') return {fileIo:fakeFs,picker:{},fileShare:fakeFileShare,fileUri:{FileUri:FakeFileUri}};
+  if (spec === '@kit.CoreFileKit') return {fileIo:fakeFs,picker:fakePicker,fileShare:fakeFileShare,
+   Environment:{getUserDocumentDir:()=>'/user/Documents'},fileUri:{FileUri:FakeFileUri,getUriFromPath:p=>'file://docs'+p}};
   if (spec === '@kit.ArkData') return {relationalStore:{ConflictResolution:{ON_CONFLICT_REPLACE:1},SecurityLevel:{S2:2},getRdbStore:async()=>db},preferences:{removePreferencesFromCacheSync(){},getPreferences:async()=>S.settings}};
-  if (spec === '@kit.ArkTS') return {util:{generateRandomUUID:()=>crypto.randomUUID()}};
+  if (spec === '@kit.ArkTS') return {util:{generateRandomUUID:()=>fixedUuids.length?fixedUuids.shift():crypto.randomUUID()}};
   if (spec === '@kit.AbilityKit') return {};
-  if (spec === '@kit.BasicServicesKit') return {pasteboard:{}};
+  if (spec === '@kit.BasicServicesKit') return {pasteboard:{},deviceInfo:{get deviceType(){return pickerDeviceType;}}};
   if (spec === '@kit.FormKit') return {formBindingData:{createFormBindingData: data=>data},formProvider:{getPublishedRunningFormInfos:async()=>[]}};
   if (spec === '@kit.PerformanceAnalysisKit') return {hilog:{warn(){},info(){},error(){}}};
   throw new Error('Unexpected import: '+spec);
@@ -95,9 +108,12 @@ const {LexiSpatialEditor:Spatial}=load('LexiSpatialEditor');
 const {LexiSeedData:Seed}=load('LexiSeedData');
 const context = {filesDir:'/sandbox/files',getApplicationContext(){return this;}};
 function reset() {
- for(const instance of storageInstances){if(instance.nativeSnapshotTimer>=0)clearTimeout(instance.nativeSnapshotTimer);instance.nativeSnapshotTimer=-1;}
+ for(const instance of storageInstances){if(instance.nativeSnapshotTimer>=0)clearTimeout(instance.nativeSnapshotTimer);instance.nativeSnapshotTimer=-1;instance.storagePromptNoteId='';instance.windowVaultId='';}
  nativeLocks=new Map();db.version=0;S.initPromise=undefined;noteRows=new Map();contentRows=new Map();linkRows=[];sqlCalls=[];insertCalls=[];dbSnapshot=undefined;S.notesIndexReady=false;
  files = new Map(); values = new Map(); handles = new Map(); directories=new Set();symlinks=new Map();persistentGrants=new Set();prefs=new Map();F.activated=new Set(); failRename = undefined; failWrite=undefined;denyPublicRename=false;failUnlink = undefined; failInsert = undefined;
+ appStorage=new Map();pickerCalls=[];pickerSelection=async()=>[];fixedUuids=[];
+ unsupportedCapabilities=new Set();
+ pickerDeviceType='2in1';
  S.actionTransaction=false; S.store = db; S.writeQueue = Promise.resolve(); S.mutationQueue = Promise.resolve(); S.templateQueue = Promise.resolve();
  S.appContext=context; S.settings = {get:async(k,fallback)=>prefs.has(k)?prefs.get(k):fallback,put:async(k,v)=>prefs.set(k,v),flush:async()=>{}};
 }
@@ -124,6 +140,80 @@ const {LexiTemplates:Templates}=load('LexiTemplates');
 const {LexiTemplateItem,LexiTemplateLibrary}=load('LexiTemplateLibrary');
 const {LexiContextBridge}=load('LexiContextModels');
 const tests = [
+ ['queued editor preferences keep the initiating workspace without publishing into the new workspace',async()=>{
+ await S.init(context);const original=await S.getActiveVaultId();const second=await S.createVault(context,'第二工作区','');
+ await S.setActiveVaultId(original);const {LexiEditorSettings:editor}=load('LexiEditorSettings');
+ let release;editor.pending=new Promise(resolve=>{release=resolve;});
+ appStorage.set('lexiEditorDefaultMode','live');
+ const writing=editor.setString('editorDefaultMode','lexiEditorDefaultMode','source');
+ S.bindWindowWorkspace(second.id);release();await writing;
+ assert.equal(await S.getSetting('editorDefaultMode','live',original),'source');
+ assert.equal(await S.getSetting('editorDefaultMode','live',second.id),'live');
+ assert.equal(appStorage.get('lexiEditorDefaultMode'),'live');
+ }],
+ ['independent windows merge installed plugin changes while preserving workspace switches',async()=>{
+ await S.init(context);const first=await S.getActiveVaultId();const second=await S.createVault(context,'第二工作区','');
+ await S.setActiveVaultId(first);const other=isolatedStorage();other.bindWindowWorkspace(second.id);
+ await Promise.all([
+ S.updateInstalledPlugin('plugin.first',JSON.stringify({id:'plugin.first',name:'First'})),
+ other.updateInstalledPlugin('plugin.second',JSON.stringify({id:'plugin.second',name:'Second'}))
+ ]);
+ assert.deepEqual(JSON.parse(await S.getRawValue('plugin.records','[]')).map(plugin=>plugin.id).sort(),['plugin.first','plugin.second']);
+ await S.setPluginEnabled('plugin.first',true,first);await other.setPluginEnabled('plugin.second',true,second.id);
+ await other.updateInstalledPlugin('plugin.second',JSON.stringify({id:'plugin.second',name:'Updated'}));
+ assert.deepEqual(await S.getEnabledPlugins(first),['plugin.first']);assert.deepEqual(await other.getEnabledPlugins(second.id),['plugin.second']);
+ await S.updateInstalledPlugin('plugin.first','');
+ assert.deepEqual(JSON.parse(await S.getRawValue('plugin.records','[]')).map(plugin=>plugin.id),['plugin.second']);
+ }],
+ ['workspace preferences migrate once to the original workspace without leaking to others',async()=>{
+ prefs.set('theme','dark');prefs.set('editorShowTitle','false');
+ await S.init(context);const original=await S.getActiveVaultId();
+ assert.equal(await S.getSetting('theme','system'),'dark');
+ assert.equal(await S.getSetting('editorShowTitle','true'),'false');
+ const second=await S.createVault(context,'第二工作区','');
+ assert.notEqual(second.id,original);assert.equal(await S.getSetting('theme','system'),'system');
+ await S.setSetting('theme','light');await S.setActiveVaultId(original);
+ assert.equal(await S.getSetting('theme','system'),'dark');
+ prefs.set('theme','overwritten legacy value');await S.migrateWorkspacePreferences();
+ assert.equal(await S.getSetting('theme','system'),'dark');
+ await S.setActiveVaultId(second.id);assert.equal(await S.getSetting('theme','system'),'light');
+ }],
+ ['workspace preferences stay with each window while the opening preference is global',async()=>{
+ await S.init(context);const original=await S.getActiveVaultId();
+ const second=await S.createVault(context,'第二工作区','');await S.setActiveVaultId(original);
+ const other=isolatedStorage();other.bindWindowWorkspace(second.id);
+ await S.setSetting('appearanceFontSize','22');await other.setSetting('appearanceFontSize','14');
+ await other.setActiveVaultId(second.id);
+ assert.equal(await S.getActiveVaultId(),original);assert.equal(await other.getActiveVaultId(),second.id);
+ assert.equal(await S.getSetting('appearanceFontSize','16'),'22');assert.equal(await other.getSetting('appearanceFontSize','16'),'14');
+ await S.setSetting('workspaceOpenMode','new');assert.equal(await other.getSetting('workspaceOpenMode','ask'),'new');
+ await other.setSetting('workspaceOpenMode','ask');assert.equal(await S.getSetting('workspaceOpenMode','new'),'ask');
+ assert.equal(prefs.get('workspaceOpenMode'),'ask');
+ assert.equal([...prefs.keys()].filter(key=>key.endsWith(':setting:workspaceOpenMode')).length,0);
+ }],
+ ['queued preference writes retain their workspace even when selection changes before commit',async()=>{
+ await S.init(context);const original=await S.getActiveVaultId();
+ const second=await S.createVault(context,'第二工作区','');await S.setActiveVaultId(original);
+ const writing=S.setSetting('editorDefaultMode','source');S.bindWindowWorkspace(second.id);await writing;
+ assert.equal(await S.getSetting('editorDefaultMode','live'),'live');
+ assert.equal(await S.getSetting('editorDefaultMode','live',original),'source');
+ await assert.rejects(S.setActiveVaultId('missing-workspace'));
+ assert.equal(await S.getActiveVaultId(),second.id);
+ }],
+ ['colored highlights render as text spans with the requested color',async()=>{
+ const spans=M.inlineSpans('before <mark data-color="blue">colored</mark> after');
+ assert.equal(spans.map(span=>span.text).join(''),'before colored after');
+ const highlighted=spans.find(span=>span.kind==='highlight');assert.equal(highlighted.target,'blue');
+ assert.equal(M.inlineSpans('==plain==')[0].text,'plain');
+ }],
+ ['complete backups capture bookmarks and databases for each workspace',async()=>{
+ await S.ensureCleanStart(context);const vault=(await S.getVaults())[0];
+ await S.setRawValue('bookmarks:'+vault.id,'[{"id":"saved-bookmark"}]');
+ await S.setRawValue('databases:'+vault.id,'[{"id":"saved-database"}]');
+ const pkg=await S.captureBackupUnlocked();const collection=pkg.collections.find(item=>item.vaultId===vault.id);
+ assert.equal(JSON.parse(collection.bookmarks)[0].id,'saved-bookmark');assert.equal(JSON.parse(collection.databases)[0].id,'saved-database');
+ V.validate(pkg);
+ }],
  ['YAML frontmatter reads quoted values and lists and retains unsupported nested data',async()=>{
  const raw='---\ntags:\n  - 学习\n  - "project/a"\nauthor: "Ada: Lovelace"\nreviewed: true\ncustom:\n  nested: preserved\n---\n# 正文';
  const parsed=Frontmatter.parse(raw);assert.equal(parsed.body,'# 正文');assert.equal(parsed.bodyLineOffset,9);assert.deepEqual(parsed.tags,['学习','project/a']);
@@ -310,6 +400,26 @@ const tests = [
  const notes=await S.getNotes(copy.id);assert.equal(notes.length,2);assert.ok(notes.every(n=>n.projectId===projects[0].id));
  const copiedB=notes.find(n=>n.title==='b');assert.equal(notes.find(n=>n.title==='a').content,`[[${copiedB.id}]]`);
  assert.equal((await S.getMindMaps(copy.id))[0].nodes[0].noteRefId,copiedB.id);assert.equal((await S.getNotes(original.id)).length,2);
+ assert.equal((await S.getNoteById(a.id)).content,'[[b]]');
+ }],
+ ['copied wiki links remap original exact targets once without corrupting generated ids or suffixes',async()=>{
+ const copiedA='671371d2-d0fa-4fce-ae25-a1a8c648d342',copiedB='aec92b60-de1e-4116-81d2-61d8dbdd2e5e';
+ const mapping=new Map([['b',copiedB],['a',copiedA]]);
+ const original='[[b]] [[a]] [[bigger]] ![[b#标题|别名 a]] [[ a#段落|显示 ]] [[b|a#b]] [[unknown]]';
+ const expected=`[[${copiedB}]] [[${copiedA}]] [[bigger]] ![[${copiedB}#标题|别名 a]] [[ ${copiedA}#段落|显示 ]] [[${copiedB}|a#b]] [[unknown]]`;
+ assert.equal(FileActions.remapCopiedWikiLinks(original,mapping),expected);
+ assert.equal(FileActions.remapCopiedWikiLinks(original,new Map([...mapping].reverse())),expected);
+ assert.equal(FileActions.remapCopiedWikiLinks(`[[${copiedB}]]`,mapping),`[[${copiedB}]]`);
+ assert.equal(original,'[[b]] [[a]] [[bigger]] ![[b#标题|别名 a]] [[ a#段落|显示 ]] [[b|a#b]] [[unknown]]');
+ await S.ensureCleanStart(context);const vault=(await S.getVaults())[0];
+ await S.saveNote(context,note('a',original));await S.saveNote(context,note('b','正文'));
+ const sourceNotes=await S.getNotes(vault.id);assert.deepEqual(sourceNotes.map(n=>n.id),['b','a']);
+ fixedUuids=['fixed-copy',...sourceNotes.map(n=>mapping.get(n.id))];
+ try { await FileActions.duplicateScope(context,ContextTarget.scope('workspace',vault.id,vault.id,'',vault.name)); }
+ finally { fixedUuids=[]; }
+ const copied=await S.getNotes('vault-fixed-copy');assert.equal(copied.find(n=>n.title==='a').content,expected);
+ assert.equal(copied.find(n=>n.title==='a').id,copiedA);assert.equal(copied.find(n=>n.title==='b').id,copiedB);
+ assert.equal((await S.getNoteById('a')).content,original);
  }],
  ['context duplicate has an independent id and physical file',async()=>{
  await S.ensureCleanStart(context);const saved=await S.saveNote(context,note('original','保留正文'));
@@ -484,6 +594,174 @@ const tests = [
  ['one folder cannot be registered twice',async()=>{
  const v=await folderWorkspace();const before=values.get('vaults');await assert.rejects(S.createFolderWorkspace('重复',v.folderUri,false));assert.equal(values.get('vaults'),before);
  }],
+ ['saving an existing workspace locally preserves notes, projects and linked mind maps',async()=>{
+ await S.ensureCleanStart(context);await S.migrateNotesIndex(context);const v=(await S.getVaults())[0];
+ const project=await S.createInternalProject(context,v.id,'课程');const rootNote=await S.saveNote(context,note('root-local','根笔记'));
+ const child=note('project-local','项目笔记');child.projectId=project.id;await S.saveNote(context,child);
+ const map=new MindMapDoc();map.id='local-map';map.projectId=project.id;map.title='项目导图';const node=new MindMapNode();node.id='root';node.text='核心';node.noteRefId=child.id;map.nodes=[node];await S.saveMindMap(context,map);
+ fakeFs.mkdirSync('/user/local');persistentGrants.add('file://docs/user/local');
+ await S.saveScopeToFolder(context,v.id,false,'file://docs/user/local',false);
+ const savedVault=(await S.getVaults())[0];const savedProject=(await S.getProjects(v.id))[0];
+ assert.equal(savedVault.id,v.id);assert.equal(savedVault.folderUri,'file://docs/user/local');assert.ok(savedProject.folderUri.startsWith(savedVault.folderUri+'/'));
+ const savedRoot=await S.getNoteById(rootNote.id);const savedChild=await S.getNoteById(child.id);
+ assert.ok(savedRoot.path.startsWith('/user/local/'));assert.ok(savedChild.path.startsWith(F.path(savedProject.folderUri)+'/'));
+ assert.equal(files.get(savedRoot.path),'根笔记');assert.equal(files.get(savedChild.path),'项目笔记');assert.equal(savedChild.projectId,project.id);
+ const mapPath=F.path(savedProject.folderUri)+'/'+F.mindMapRelativePath(map.id);assert.equal(JSON.parse(files.get(mapPath)).nodes[0].noteRefId,child.id);
+ rootNote.content='保留标签页继续修改';await S.saveNote(context,rootNote);assert.equal((await S.getNoteById(rootNote.id)).path,savedRoot.path);
+ assert.equal(files.get(savedRoot.path),'保留标签页继续修改');assert.equal(files.has(rootNote.path),false,'verified sandbox Markdown is removed after migration');
+ F.activated=new Set();await S.refreshFolders(v.id);assert.equal((await S.getNotes(v.id)).length,2);assert.equal((await S.getMindMaps(v.id))[0].projectId,project.id);
+ }],
+ ['saving one project locally does not move its workspace siblings',async()=>{
+ await S.ensureCleanStart(context);const v=(await S.getVaults())[0];const project=await S.createInternalProject(context,v.id,'课程');
+ const sibling=await S.saveNote(context,note('sibling','保留'));const child=note('only-project','项目');child.projectId=project.id;await S.saveNote(context,child);
+ fakeFs.mkdirSync('/user/project');persistentGrants.add('file://docs/user/project');await S.saveScopeToFolder(context,project.id,true,'file://docs/user/project',false);
+ assert.equal((await S.getVaults())[0].folderUri,'');assert.equal((await S.getNoteById(sibling.id)).path,sibling.path);assert.ok((await S.getNoteById(child.id)).path.startsWith('/user/project/'));
+ }],
+ ['local workspace migration publishes no paths when copying or indexing fails',async()=>{
+ await S.ensureCleanStart(context);const v=(await S.getVaults())[0];const original=await S.saveNote(context,note('keep-local','不可丢失'));
+ fakeFs.mkdirSync('/user/failure');persistentGrants.add('file://docs/user/failure');failRename=p=>p.startsWith('/user/failure/')&&p.endsWith('.md');
+ await assert.rejects(S.saveScopeToFolder(context,v.id,false,'file://docs/user/failure',false));assert.equal((await S.getVaults())[0].folderUri,'');assert.equal((await S.getNoteById(original.id)).path,original.path);assert.equal(files.get(original.path),'不可丢失');
+ failRename=undefined;fakeFs.mkdirSync('/user/db-failure');persistentGrants.add('file://docs/user/db-failure');failInsert='projects';
+ await assert.rejects(S.saveScopeToFolder(context,v.id,false,'file://docs/user/db-failure',false));assert.equal((await S.getVaults())[0].folderUri,'');assert.equal((await S.getNoteById(original.id)).path,original.path);
+ }],
+ ['local migration cannot overwrite an existing folder or bind another workspace folder',async()=>{
+ await S.ensureCleanStart(context);const v=(await S.getVaults())[0];await S.saveNote(context,note('existing-local','正文'));
+ fakeFs.mkdirSync('/user/existing');persistentGrants.add('file://docs/user/existing');files.set('/user/existing/Original.md','原文件');
+ await assert.rejects(S.saveScopeToFolder(context,v.id,false,'file://docs/user/existing',false),/空文件夹/);assert.equal(files.get('/user/existing/Original.md'),'原文件');assert.equal((await S.getVaults())[0].folderUri,'');
+ const other=await folderWorkspace('/user/registered');await assert.rejects(S.saveScopeToFolder(context,v.id,false,other.folderUri,false),/已经是工作区/);
+ }],
+ ['mind maps persist as editable local files and failed writes leave the indexed map unchanged',async()=>{
+ const v=await folderWorkspace('/user/local-maps');const map=new MindMapDoc();map.id='editable-local';map.vaultId=v.id;map.title='原导图';const node=new MindMapNode();node.id='root';node.text='原节点';map.nodes=[node];await S.saveMindMap(context,map);
+ const mapPath='/user/local-maps/'+F.mindMapRelativePath(map.id);assert.equal(JSON.parse(files.get(mapPath)).title,'原导图');assert.equal(files.has(context.filesDir+'/vaults/'+v.id+'/maps/'+map.id+'.json'),false);
+ const target=ContextTarget.scope('mindmap',map.id,v.id,'',map.title);assert.equal(await FileActions.path(context,target),mapPath);
+ map.title='修改导图';map.nodes[0].text='修改节点';await S.saveMindMap(context,map);assert.equal(JSON.parse(files.get(mapPath)).nodes[0].text,'修改节点');
+ failRename=p=>p===mapPath;map.title='失败的修改';await assert.rejects(S.saveMindMap(context,map));assert.equal((await S.getMindMapById(map.id)).title,'修改导图');assert.equal(JSON.parse(files.get(mapPath)).title,'修改导图');
+ failRename=undefined;F.activated=new Set();await S.refreshFolders(v.id);assert.equal((await S.getMindMapById(map.id)).title,'修改导图');
+ }],
+ ['unbound notes and mind maps remain writable in application storage without authorization',async()=>{
+ await S.ensureCleanStart(context);
+ const local=await S.saveNote(context,note('internal-only','内部保存内容'));
+ const doc=new MindMapDoc();doc.id='internal-map';await S.saveMindMap(context,doc);
+ assert.equal((await S.getNoteById(local.id)).content,'内部保存内容');
+ assert.ok(local.path.startsWith(context.filesDir+'/vaults/'));assert.equal(files.get(local.path),'内部保存内容');
+ assert.ok(files.has(context.filesDir+'/vaults/default-vault/maps/internal-map.json'));assert.equal(pickerCalls.length,0);
+ const v=await folderWorkspace('/user/ai-output');const n=note('ai-persisted','AI 生成内容');n.vaultId=v.id;await S.saveNote(context,n);
+ assert.equal((await S.getNoteById(n.id)).content,'AI 生成内容');assert.ok((await S.getNoteById(n.id)).path.startsWith('/user/ai-output/'));
+ assert.equal(files.get(local.path),'内部保存内容');
+ }],
+ ['initialization never opens a storage picker and the first committed note queues one deferred offer',async()=>{
+ await S.init(context);assert.equal(pickerCalls.length,0);assert.equal(await S.takeStorageAccessPrompt(),false);
+ const saved=await S.saveNote(context,note('first-internal','先保存，再授权'));
+ assert.equal(files.get(saved.path),'先保存，再授权');assert.equal(prefs.get('storageAccessPrompt:v1'),'pending');
+ assert.equal(appStorage.get('lexiStorageAccessRevision'),1);assert.equal(pickerCalls.length,0);
+ assert.equal(await S.takeStorageAccessPrompt(),true);assert.equal(prefs.get('storageAccessPrompt:v1'),'internal');
+ assert.equal(await S.takeStorageAccessPrompt(),false);await S.saveNote(context,note('second-internal','继续保存'));
+ assert.equal(appStorage.get('lexiStorageAccessRevision'),1);assert.equal(pickerCalls.length,0);
+ }],
+ ['a failed first note write cannot schedule the storage permission offer',async()=>{
+ await S.ensureCleanStart(context);failInsert='notes';await assert.rejects(S.saveNote(context,note('failed-first','未提交')));
+ assert.equal(prefs.has('storageAccessPrompt:v1'),false);assert.equal(appStorage.has('lexiStorageAccessRevision'),false);
+ failInsert=undefined;assert.equal(await S.takeStorageAccessPrompt(),false);await S.saveNote(context,note('retry-first','已提交'));
+ assert.equal(await S.takeStorageAccessPrompt(),true);
+ }],
+ ['storage directory cancellation and denial open only one picker and retain the internal note',async()=>{
+ await S.ensureCleanStart(context);const saved=await S.saveNote(context,note('declined-root','不授权也保存'));
+ assert.equal(await S.takeStorageAccessPrompt(),true);assert.equal(await F.chooseStorageRoot(context),'');
+ assert.equal(pickerCalls.length,1);assert.equal(pickerCalls[0].selectMode,fakePicker.DocumentSelectMode.FOLDER);
+ assert.equal(pickerCalls[0].maxSelectNumber,1);assert.equal(await S.takeStorageAccessPrompt(),false);
+ pickerSelection=async()=>{throw new Error('denied');};await assert.rejects(F.chooseStorageRoot(context),/denied/);
+ assert.equal(pickerCalls.length,2);assert.equal((await S.getNoteById(saved.id)).content,'不授权也保存');
+ assert.equal(await S.storageLocationStatus(),'internal');
+ }],
+ ['phones advertising folder selection still authorize the system app directory and preserve saved notes',async()=>{
+ pickerDeviceType='phone';unsupportedCapabilities.add('SystemCapability.FileManagement.AppFileService.FolderAuthorization');
+ await S.ensureCleanStart(context);const saved=await S.saveNote(context,note('phone-root','手机上的第一篇笔记'));
+ const root='file://docs/user/Download/com.example.lexinote';fakeFs.mkdirSync(F.path(root));
+ pickerSelection=async()=>[root];assert.equal(F.canChooseStorageFolder(),false);
+ const uri=await F.chooseStorageRoot(context);assert.equal(uri,root);assert.equal(pickerCalls.length,1);
+ assert.equal(pickerCalls[0].pickerMode,fakePicker.DocumentPickerMode.DOWNLOAD);
+ assert.equal(pickerCalls[0].selectMode,undefined);assert.equal(pickerCalls[0].newFileNames,undefined);
+ assert.equal(pickerCalls[0].defaultFilePathUri,undefined);assert.equal(files.size,1,'picker must not create a placeholder file');
+ await S.configureLocalRoot(context,uri);const moved=await S.getNoteById(saved.id);
+ assert.ok(moved.path.startsWith(F.path(root)+'/LexiNote/'));assert.equal(files.get(moved.path),'手机上的第一篇笔记');
+ assert.equal(files.has(saved.path),false);assert.equal(await S.storageLocationStatus(),'external');
+ F.activated=new Set();assert.equal(await S.localRootReady(),true);
+ moved.content='重新启动后继续编辑';await S.saveNote(context,moved);assert.equal(files.get(moved.path),moved.content);
+ }],
+ ['phone authorization cancellation and denial do not open another picker or migrate notes',async()=>{
+ pickerDeviceType='phone';
+ unsupportedCapabilities.add('SystemCapability.FileManagement.UserFileService.FolderSelection');
+ await S.ensureCleanStart(context);const saved=await S.saveNote(context,note('phone-cancelled','保留内部笔记'));
+ assert.equal(await F.chooseStorageRoot(context),'');assert.equal(pickerCalls.length,1);
+ assert.equal(pickerCalls[0].pickerMode,fakePicker.DocumentPickerMode.DOWNLOAD);
+ assert.equal(persistentGrants.size,0);assert.equal(prefs.has('localRootUri'),false);
+ pickerSelection=async()=>{throw new Error('phone picker denied');};
+ await assert.rejects(F.chooseStorageRoot(context),/phone picker denied/);assert.equal(pickerCalls.length,2);
+ assert.equal((await S.getNoteById(saved.id)).path,saved.path);assert.equal(files.get(saved.path),'保留内部笔记');
+ assert.equal(await S.storageLocationStatus(),'internal');
+ }],
+ ['storage authorization accepts only directories on either picker path',async()=>{
+ await S.ensureCleanStart(context);const saved=await S.saveNote(context,note('folder-only','原笔记'));
+ fakeFs.mkdirSync('/user/Documents');pickerSelection=async()=>['file://docs/user/Documents'];
+ assert.equal(await F.chooseStorageRoot(context),'file://docs/user/Documents');assert.equal(pickerCalls.length,1);
+ assert.equal(pickerCalls[0].selectMode,fakePicker.DocumentSelectMode.FOLDER);
+ assert.equal(pickerCalls[0].defaultFilePathUri,'file://docs/user/Documents');
+ files.set('/user/Documents/file.md','不能当作文件夹');pickerSelection=async()=>['file://docs/user/Documents/file.md'];
+ await assert.rejects(F.chooseStorageRoot(context),/请选择用于保存笔记的文件夹/);
+ unsupportedCapabilities.add('SystemCapability.FileManagement.UserFileService.FolderSelection');
+ await assert.rejects(F.chooseStorageRoot(context),/请选择用于保存笔记的文件夹/);
+ assert.equal(pickerCalls.length,3);assert.equal((await S.getNoteById(saved.id)).path,saved.path);
+ assert.equal(prefs.has('localRootUri'),false);
+ }],
+ ['new notes in an already authorized workspace do not ask for storage permission again',async()=>{
+ await S.ensureCleanStart(context);const v=await folderWorkspace('/user/authorized');const n=note('authorized-first','已授权');n.vaultId=v.id;
+ await S.saveNote(context,n);assert.equal(await S.takeStorageAccessPrompt(),false);
+ assert.equal(prefs.has('storageAccessPrompt:v1'),false);assert.equal(appStorage.has('lexiStorageAccessRevision'),false);
+ }],
+ ['storage location remains external when an existing directory grant is revoked',async()=>{
+ await S.ensureCleanStart(context);const v=await folderWorkspace('/user/keep-location');await S.setActiveVaultId(v.id);
+ assert.equal(await S.storageLocationStatus(),'external');persistentGrants.clear();F.activated=new Set();
+ assert.equal(await S.storageLocationStatus(),'external');
+ const n=note('revoked-new','不静默换位置');n.vaultId=v.id;await assert.rejects(S.saveNote(context,n),/授权已失效/);
+ assert.equal([...files.keys()].some(p=>p.startsWith(context.filesDir+'/vaults/'+v.id+'/notes/')),false);
+ prefs.set('localRootUri','file://docs/user/old-root');assert.equal(await S.localRootReady(),false);
+ assert.equal(await S.storageLocationStatus(),'external');
+ }],
+ ['first note created in another process leaves a persistent offer for the main UI',async()=>{
+ await S.ensureCleanStart(context);await S.migrateNotesIndex(context);const other=isolatedStorage();
+ await other.saveNote(context,note('extension-first','分享扩展保存'));
+ assert.equal(prefs.get('storageAccessPrompt:v1'),'pending');assert.equal(await S.takeStorageAccessPrompt(),true);
+ assert.equal(await other.takeStorageAccessPrompt(),false);assert.equal(pickerCalls.length,0);
+ }],
+ ['strict backup restore writes Markdown into newly authorized local folders',async()=>{
+ prefs.delete('legacySandboxFiles');fakeFs.mkdirSync('/user/restored');persistentGrants.add('file://docs/user/restored');
+ await S.restoreFromBackupPackage(context,backup(),'file://docs/user/restored');const n=await S.getNoteById('restored');
+ assert.ok(n.path.startsWith('/user/restored/'));assert.equal(files.get(n.path),'恢复内容');assert.ok((await S.getVaults())[0].folderUri);
+ assert.equal([...files.keys()].some(p=>p.startsWith(context.filesDir+'/')&&/\.(md|markdown)$/i.test(p)),false);
+ }],
+ ['first authorization creates Documents LexiNote and provisions every workspace and project',async()=>{
+ await S.ensureCleanStart(context);const project=await S.createInternalProject(context,'default-vault','课程');
+ const first=await S.saveNote(context,note('first-root','原笔记'));const child=note('root-child','项目笔记');child.projectId=project.id;await S.saveNote(context,child);
+ const second=await S.createVault(context,'第二工作区','');const other=note('other-root','其他工作区');other.vaultId=second.id;await S.saveNote(context,other);
+ fakeFs.mkdirSync('/user/Documents');persistentGrants.add('file://docs/user/Documents');prefs.delete('legacySandboxFiles');
+ await S.configureLocalRoot(context,'file://docs/user/Documents');assert.equal(prefs.get('localRootUri'),'file://docs/user/Documents/LexiNote');assert.equal(await S.localRootReady(),true);
+ for(const n of await S.getNotes()){assert.ok(n.path.startsWith('/user/Documents/LexiNote/'));assert.equal(files.get(n.path),n.content);}
+ assert.equal(files.has(first.path),false);assert.ok((await S.getProjects())[0].folderUri.includes('/LexiNote/'));
+ const pathBefore=(await S.getNoteById(first.id)).path;await S.configureLocalRoot(context,'file://docs/user/Documents');assert.equal((await S.getNoteById(first.id)).path,pathBefore);
+ const created=await S.createVault(context,'AI 新工作区','');assert.ok(created.folderUri.includes('/LexiNote/'));const generated=note('ai-new-vault','即时落盘');generated.vaultId=created.id;await S.saveNote(context,generated);assert.ok(files.has((await S.getNoteById(generated.id)).path));
+ assert.equal([...files.keys()].some(p=>p.startsWith(context.filesDir+'/')&&/\.(md|markdown)$/i.test(p)),false);
+ }],
+ ['interrupted first authorization leaves old paths intact and can be retried',async()=>{
+ await S.ensureCleanStart(context);const first=await S.saveNote(context,note('retry-root','原内容'));fakeFs.mkdirSync('/user/Documents');persistentGrants.add('file://docs/user/Documents');
+ failInsert='projects';await assert.rejects(S.configureLocalRoot(context,'file://docs/user/Documents'));assert.equal((await S.getNoteById(first.id)).path,first.path);assert.equal(prefs.has('localRootUri'),false);assert.equal(files.get(first.path),'原内容');
+ failInsert=undefined;await S.configureLocalRoot(context,'file://docs/user/Documents');assert.ok((await S.getNoteById(first.id)).path.startsWith('/user/Documents/LexiNote/'));assert.equal(files.has(first.path),false);
+ }],
+ ['reconnecting an existing LexiNote folder preserves Markdown metadata and mind maps',async()=>{
+ await S.ensureCleanStart(context);const first=await S.saveNote(context,note('reconnect-root','持久内容'));const map=new MindMapDoc();map.id='reconnect-map';map.title='持久导图';const node=new MindMapNode();node.id='root';node.text='根';node.noteRefId=first.id;map.nodes=[node];await S.saveMindMap(context,map);
+ fakeFs.mkdirSync('/user/Documents');persistentGrants.add('file://docs/user/Documents');await S.configureLocalRoot(context,'file://docs/user/Documents');
+ values.set('notes','[]');values.set('mindmaps','[]');await S.configureLocalRoot(context,'file://docs/user/Documents');await S.refreshFolders('default-vault');
+ assert.equal((await S.getNoteById(first.id)).content,'持久内容');assert.equal((await S.getMindMapById(map.id)).nodes[0].noteRefId,first.id);
+ }],
  ['failed external file replacement retains prior content and index',async()=>{
  const v=await folderWorkspace();const n=note('external','原始正文');n.vaultId=v.id;const saved=await S.saveNote(context,n);
  failRename=p=>p===saved.path;saved.content='失败的新正文';await assert.rejects(S.saveNote(context,saved));assert.equal(files.get(saved.path),'原始正文');assert.equal((await S.getNoteById(n.id)).content,'原始正文');
@@ -570,6 +848,24 @@ const tests = [
  const next=structuredClone(saved);next.content='主应用新内容';const stale=structuredClone(saved);stale.content='卡片旧快照修改';
  await Promise.all([S.saveNoteIfCurrent(context,next,saved.title,saved.content),assert.rejects(other.saveNoteIfCurrent(context,stale,saved.title,saved.content),/DOCUMENT_CHANGED_ELSEWHERE/)]);
  assert.equal((await S.getNoteById(saved.id)).content,'主应用新内容');assert.equal(nativeLocks.size,0);
+ }]
+
+ ,['selected-text moves use exact source coordinates and preserve repeated text',async()=>{
+ const source=await S.saveNote(context,note('selection-source','same and same'));
+ const target=await S.saveNote(context,note('selection-target','target'));
+ await S.moveNoteSelection(context,source.id,target.id,9,13,'same');
+ assert.equal((await S.getNoteById(source.id)).content,'same and ');
+ assert.equal((await S.getNoteById(target.id)).content,'target\n\nsame');
+ await assert.rejects(S.moveNoteSelection(context,source.id,target.id,9,13,'same'),/选区/);
+ }]
+ ,['failed selected-text moves roll back both notes and file contents',async()=>{
+ const source=await S.saveNote(context,note('selection-failure-source','selected text'));
+ const target=await S.saveNote(context,note('selection-failure-target','target'));
+ failRename=p=>p===source.path;
+ await assert.rejects(S.moveNoteSelection(context,source.id,target.id,0,8,'selected'));
+ assert.equal((await S.getNoteById(source.id)).content,'selected text');
+ assert.equal((await S.getNoteById(target.id)).content,'target');
+ assert.equal(files.get(target.path),'target');
  }]
 
 ];

@@ -1,3 +1,4 @@
+import { LexiI18n } from '../core/LexiI18n';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { LexiContextSurface } from './LexiContextSurface';
 import { LexiSearch } from '../core/LexiSearch';
@@ -15,6 +16,12 @@ import { LexiFilterChip, LexiHeroHeading, LexiNoteCard } from './LexiNoteCard';
 
 @Component
 export struct LexiVaultTab {
+  @StorageProp('lexiLanguage') private interfaceLanguage: string = LexiI18n.language();
+
+  private tr(source: string, args: string[] = []): string {
+    return LexiI18n.text(source, this.interfaceLanguage, args);
+  }
+
   @Prop requestedFolder: string = '';
   @Prop @Watch('contextSearchChanged') searchRevision: number = 0;
   private contextSearchChanged(): void {
@@ -173,19 +180,19 @@ export struct LexiVaultTab {
     const now = new Date();
     const hm = `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
     if (date.toDateString() === now.toDateString()) {
-      return `今天 ${hm}`;
+      return this.tr('今天 {0}', [hm]);
     }
     const yesterday = new Date(now.getTime() - 86400000);
     if (date.toDateString() === yesterday.toDateString()) {
-      return `昨天 ${hm}`;
+      return this.tr('昨天 {0}', [hm]);
     }
-    return `${date.getMonth() + 1}月${date.getDate()}日`;
+    return this.tr('{0}月{1}日', [(date.getMonth() + 1).toString(), date.getDate().toString()]);
   }
 
   private notebookMenu(): MenuElement[] {
     const items: MenuElement[] = [
       {
-        value: '全部笔记本',
+        value: this.tr('全部笔记本'),
         action: (): void => {
           this.notebookFilter = '';
         }
@@ -205,19 +212,19 @@ export struct LexiVaultTab {
   private sortMenu(): MenuElement[] {
     return [
       {
-        value: '最近编辑',
+        value: this.tr('最近编辑'),
         action: (): void => {
           this.sortMode = 'updated';
         }
       },
       {
-        value: '创建时间',
+        value: this.tr('创建时间'),
         action: (): void => {
           this.sortMode = 'created';
         }
       },
       {
-        value: '标题',
+        value: this.tr('标题'),
         action: (): void => {
           this.sortMode = 'title';
         }
@@ -268,13 +275,13 @@ export struct LexiVaultTab {
       })
 
       if (!this.isWide) {
-        Button('工作区与项目', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
+        Button(this.tr('工作区与项目'), { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
           .id('phone-workspace-manager').width('100%').height(40).fontSize(13).borderRadius(9)
           .fontColor($r('app.color.brand_ink')).backgroundColor($r('app.color.brand_soft'))
           .onClick((): void => { this.onManageWorkspaces(); })
       }
 
-      Search({ value: this.query, placeholder: '搜索 · tag:#标签 type:study notebook:分类' }).id('vault-search-input')
+      Search({ value: this.query, placeholder: this.tr('搜索 · tag:#标签 type:study notebook:分类') }).id('vault-search-input')
         .width('100%')
         .height(42)
         .fontColor($r('app.color.text_primary'))
@@ -287,10 +294,10 @@ export struct LexiVaultTab {
       Row({ space: 6 }) {
         ForEach(
           [
-            ['notes', `笔记 (${this.activeNotes().length})`],
-            ['maps', `导图 (${this.visibleMaps().length})`],
-            ['canvases', `白板 (${this.visibleCanvases().length})`],
-            ['tags', `标签 (${this.tagCounts().length})`]
+            ['notes', this.tr('笔记 ({0})', [this.activeNotes().length.toString()])],
+            ['maps', this.tr('导图 ({0})', [this.visibleMaps().length.toString()])],
+            ['canvases', this.tr('白板 ({0})', [this.visibleCanvases().length.toString()])],
+            ['tags', this.tr('标签 ({0})', [this.tagCounts().length.toString()])]
           ],
           (sec: string[]) => {
             Button(sec[1], { type: ButtonType.Normal })
@@ -315,21 +322,21 @@ export struct LexiVaultTab {
           Row({ space: 8 }) {
             LexiFilterChip({
               selected: this.noteFilter === 'all',
-              label: '全部笔记',
+              label: this.tr('全部笔记'),
               action: (): void => {
                 this.noteFilter = 'all';
               }
             })
             LexiFilterChip({
               selected: this.noteFilter === 'pinned',
-              label: '置顶',
+              label: this.tr('置顶'),
               action: (): void => {
                 this.noteFilter = 'pinned';
               }
             })
             LexiFilterChip({
               selected: this.noteFilter === 'favorite',
-              label: '收藏',
+              label: this.tr('收藏'),
               action: (): void => {
                 this.noteFilter = 'favorite';
               }
@@ -341,7 +348,7 @@ export struct LexiVaultTab {
         .width('100%')
 
         Row({ space: 8 }) {
-          Button(this.notebookFilter ? `📁 ${this.notebookFilter}` : '📁 全部笔记本', { type: ButtonType.Normal })
+          Button(this.notebookFilter ? `📁 ${this.notebookFilter}` : this.tr('📁 全部笔记本'), { type: ButtonType.Normal })
             .height(34)
             .padding({ left: 12, right: 12 })
             .fontSize(12)
@@ -351,7 +358,7 @@ export struct LexiVaultTab {
             .bindMenu(this.notebookMenu())
 
           Button(
-            this.sortMode === 'title' ? '排序：标题' : this.sortMode === 'created' ? '排序：创建时间' : '排序：最近编辑',
+            this.sortMode === 'title' ? this.tr('排序：标题') : this.sortMode === 'created' ? this.tr('排序：创建时间') : this.tr('排序：最近编辑'),
             { type: ButtonType.Normal }
           )
             .height(34)
@@ -364,7 +371,7 @@ export struct LexiVaultTab {
 
           Blank()
 
-          Button(this.viewMode === 'card' ? '视图：双栏卡片' : '视图：列表', { type: ButtonType.Normal })
+          Button(this.viewMode === 'card' ? this.tr('视图：双栏卡片') : this.tr('视图：列表'), { type: ButtonType.Normal })
             .height(34)
             .padding({ left: 12, right: 12 })
             .fontSize(12)
@@ -379,12 +386,12 @@ export struct LexiVaultTab {
 
         if (this.tagFilter.length > 0) {
           Row() {
-            Text(`当前筛选标签：#${this.tagFilter}`)
+            Text(this.tr('当前筛选标签：#{0}', [this.tagFilter]))
               .fontSize(12)
               .fontWeight(FontWeight.Medium)
               .fontColor($r('app.color.brand'))
             Blank()
-            Button('清除筛选', { buttonStyle: ButtonStyleMode.TEXTUAL })
+            Button(this.tr('清除筛选'), { buttonStyle: ButtonStyleMode.TEXTUAL })
               .fontSize(12)
               .fontColor($r('app.color.text_secondary'))
               .onClick(() => {
@@ -399,11 +406,11 @@ export struct LexiVaultTab {
 
         if (this.noteFilter === 'trash' && this.trashedNotes().length > 0) {
           Row() {
-            Text(`${this.trashedNotes().length} 篇已删除笔记`)
+            Text(this.tr('{0} 篇已删除笔记', [this.trashedNotes().length.toString()]))
               .fontSize(12)
               .fontColor($r('app.color.text_secondary'))
             Blank()
-            Button('清空回收站', { buttonStyle: ButtonStyleMode.TEXTUAL })
+            Button(this.tr('清空回收站'), { buttonStyle: ButtonStyleMode.TEXTUAL })
               .fontSize(12)
               .fontColor($r('app.color.error'))
               .onClick(() => {
@@ -418,8 +425,8 @@ export struct LexiVaultTab {
 
         if (this.visibleNotes().length === 0) {
           Column({ space: 8 }) {
-            Text('暂无笔记').fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
-            Text('点击右上角“新建”添加').fontSize(12).fontColor($r('app.color.text_secondary'))
+            Text(this.tr('暂无笔记')).fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+            Text(this.tr('点击右上角“新建”添加')).fontSize(12).fontColor($r('app.color.text_secondary'))
           }
           .width('100%')
           .padding(32)
@@ -466,8 +473,8 @@ export struct LexiVaultTab {
       } else if (this.vaultSection === 'maps') {
         if (this.visibleMaps().length === 0) {
           Column({ space: 8 }) {
-            Text('暂无思维导图').fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
-            Text('点击右上角“新建”创建思维导图').fontSize(12).fontColor($r('app.color.text_secondary'))
+            Text(this.tr('暂无思维导图')).fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+            Text(this.tr('点击右上角“新建”创建思维导图')).fontSize(12).fontColor($r('app.color.text_secondary'))
           }
           .width('100%')
           .padding(32)
@@ -487,7 +494,7 @@ export struct LexiVaultTab {
                   .fontWeight(FontWeight.Bold)
                   .fontColor($r('app.color.text_primary'))
                 Text(
-                  `${map.nodes.length} 个节点 · ${map.layoutKind === 'balanced' ? '双向平衡' : map.layoutKind === 'org' ? '组织结构' : '右侧逻辑'} · ${this.dateLabel(map.updatedAt)}`
+                  this.tr('{0} 个节点 · {1} · {2}', [map.nodes.length.toString(), map.layoutKind === 'balanced' ? this.tr('双向平衡') : map.layoutKind === 'org' ? this.tr('组织结构') : this.tr('右侧逻辑'), this.dateLabel(map.updatedAt)])
                 )
                   .fontSize(12)
                   .fontColor($r('app.color.text_secondary'))
@@ -509,8 +516,8 @@ export struct LexiVaultTab {
       } else if (this.vaultSection === 'canvases') {
         if (this.visibleCanvases().length === 0) {
           Column({ space: 8 }) {
-            Text('暂无自由白板').fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
-            Text('点击右上角“新建”创建自由白板').fontSize(12).fontColor($r('app.color.text_secondary'))
+            Text(this.tr('暂无自由白板')).fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+            Text(this.tr('点击右上角“新建”创建自由白板')).fontSize(12).fontColor($r('app.color.text_secondary'))
           }
           .width('100%')
           .padding(32)
@@ -529,7 +536,7 @@ export struct LexiVaultTab {
                   .fontSize(16)
                   .fontWeight(FontWeight.Bold)
                   .fontColor($r('app.color.text_primary'))
-                Text(`${board.cards.length} 张卡片 · ${board.edges.length} 条连线 · ${this.dateLabel(board.updatedAt)}`)
+                Text(this.tr('{0} 张卡片 · {1} 条连线 · {2}', [board.cards.length.toString(), board.edges.length.toString(), this.dateLabel(board.updatedAt)]))
                   .fontSize(12)
                   .fontColor($r('app.color.text_secondary'))
               }
@@ -550,8 +557,8 @@ export struct LexiVaultTab {
       } else {
         if (this.tagCounts().length === 0) {
           Column({ space: 8 }) {
-            Text('暂无标签').fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
-            Text('在笔记中添加 #标签 后自动归类').fontSize(12).fontColor($r('app.color.text_secondary'))
+            Text(this.tr('暂无标签')).fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+            Text(this.tr('在笔记中添加 #标签 后自动归类')).fontSize(12).fontColor($r('app.color.text_secondary'))
           }
           .width('100%')
           .padding(32)

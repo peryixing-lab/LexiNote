@@ -1,5 +1,5 @@
 import { MarkdownBlock, NoteItem } from '../core/LexiModels';
-import { LexiLiveEditorController, LexiLiveMarkdown, LexiLiveRange } from '../core/LexiLiveMarkdown';
+import { LexiLiveEditorController, LexiLiveMarkdown, LexiLiveRange, LexiLiveSelection } from '../core/LexiLiveMarkdown';
 import { LexiMarkdownPreview } from './LexiEditorPanels';
 import { FrameCallback } from '@kit.ArkUI';
 import { LexiCodeFence, LexiCodeFenceInfo } from '../core/LexiCodeFence';
@@ -14,6 +14,8 @@ class LexiLiveFocusFrame extends FrameCallback {
 /** Render by default. Only the paragraph selected by the user becomes a source field. */
 @Component
 export struct LexiLiveMarkdownEditor {
+  @StorageProp('lexiFontSize') private noteFontSize: number = 16;
+  @StorageProp('lexiAccent') private noteAccent: string = '#6E44D9';
   @Prop @Watch('documentChanged') content: string = '';
   @Prop availableNotes: NoteItem[] = [];
   @Prop notePath: string = '';
@@ -55,6 +57,16 @@ export struct LexiLiveMarkdownEditor {
     this.editorController.setTextSelection = (start: number, end: number): void => { this.selectSource(start, end); };
     this.editorController.insert = (snippet: string): void => { this.insertSnippet(snippet); };
     this.editorController.finishEditing = (): void => { this.finishEditing(); };
+    this.editorController.getText = (): string => this.documentText;
+    this.editorController.getSelection = (): LexiLiveSelection => {
+      const selection = new LexiLiveSelection();
+      selection.start = this.globalStart;
+      selection.end = this.globalEnd;
+      return selection;
+    };
+    this.editorController.replaceRange = (start: number, end: number, text: string): void => {
+      this.replaceRangeInDocument(start, end, text);
+    };
   }
 
   aboutToDisappear(): void {
@@ -64,6 +76,9 @@ export struct LexiLiveMarkdownEditor {
     this.editorController.setTextSelection = (_start: number, _end: number): void => {};
     this.editorController.insert = (_snippet: string): void => {};
     this.editorController.finishEditing = (): void => {};
+    this.editorController.getText = (): string => '';
+    this.editorController.getSelection = (): LexiLiveSelection => new LexiLiveSelection();
+    this.editorController.replaceRange = (_start: number, _end: number, _text: string): void => {};
   }
 
   private documentChanged(): void {
@@ -174,6 +189,24 @@ export struct LexiLiveMarkdownEditor {
     this.selectSource(cursor, cursor);
   }
 
+  /** Plugin-facing explicit range replacement; mirrors insertSnippet's code-block offset remapping. */
+  private replaceRangeInDocument(start: number, end: number, text: string): void {
+    if (!this.editorEnabled) { return; }
+    let from = Math.max(0, Math.min(this.documentText.length, start));
+    let to = Math.max(from, Math.min(this.documentText.length, end));
+    if (this.activeEditing && this.editingCode && (from < this.activeRange.start || from > this.activeRange.end)) {
+      const before = this.documentText;
+      this.formatActiveCode();
+      from = LexiLiveMarkdown.mapOffset(before, this.documentText, from);
+      to = LexiLiveMarkdown.mapOffset(before, this.documentText, to);
+    }
+    const edit = LexiLiveMarkdown.replace(this.documentText, from, to, text);
+    this.documentText = edit.content;
+    this.globalStart = edit.cursor; this.globalEnd = edit.cursor;
+    this.onChange(edit.content);
+    this.selectSource(edit.cursor, edit.cursor);
+  }
+
   private inputStart(): number {
     return this.activeRange.start + (this.editingCode && !this.showCodeSource ? this.codeFence.bodyOffset : 0);
   }
@@ -231,7 +264,7 @@ export struct LexiLiveMarkdownEditor {
   }
 
   private sourceHeight(): number {
-    const columns = Math.max(16, Math.floor((this.contentWidth - 24) / 8.5));
+    const columns = Math.max(8, Math.floor((this.contentWidth - 24) / (8.5 * this.noteFontSize / 16)));
     let count = 0;
     const text = this.editingCode && !this.showCodeSource ? this.codeBody : this.sourceText;
     for (const line of text.split('\n')) {
@@ -239,7 +272,7 @@ export struct LexiLiveMarkdownEditor {
       for (let index = 0; index < line.length; index++) { units += line.charCodeAt(index) > 255 ? 2 : 1; }
       count += Math.max(1, Math.ceil(units / columns));
     }
-    return Math.max(56, Math.min(this.contentWidth > 700 ? 600 : 360, count * 28 + 24));
+    return Math.max(56, Math.min(this.contentWidth > 700 ? 600 : 360, count * this.noteFontSize * 1.75 + 24));
   }
 
   build() {
@@ -266,8 +299,8 @@ export struct LexiLiveMarkdownEditor {
         TextArea({ text: this.editingCode && !this.showCodeSource ? this.codeBody : this.sourceText,
           controller: this.inputController, placeholder: this.editingCode ? '在这里输入代码' : this.placeholder })
           .id(`${this.anchorPrefix}-source`).enabled(this.editorEnabled).width('100%').height(this.sourceHeight())
-          .fontSize(16).lineHeight(28).fontColor($r('app.color.text_primary'))
-          .placeholderColor($r('app.color.text_secondary')).caretColor($r('app.color.brand'))
+          .fontSize(this.noteFontSize).lineHeight(this.noteFontSize * 1.75).fontColor($r('app.color.text_primary'))
+          .placeholderColor($r('app.color.text_secondary')).caretColor(this.noteAccent)
           .backgroundColor($r('app.color.soft_surface')).borderRadius(10).padding(12)
           .onChange((text: string): void => {
             if (this.editingCode && !this.showCodeSource) { this.codeChanged(text); } else { this.sourceChanged(text); }
@@ -293,8 +326,9 @@ export struct LexiLiveMarkdownEditor {
       }
       Text(LexiLiveMarkdown.hasBody(this.documentText) ? ' ' : this.placeholder)
         .id(`${this.anchorPrefix}-append`).width('100%').constraintSize({ minHeight: 64 })
-        .fontSize(16).fontColor($r('app.color.text_secondary')).padding({ top: 8, bottom: 20 })
+        .fontSize(this.noteFontSize).fontColor($r('app.color.text_secondary')).padding({ top: 8, bottom: 20 })
         .onClick((): void => {
+          if (!this.editorEnabled) { return; }
           if (!this.documentText.endsWith('\n') && this.documentText.length) {
             this.documentText += '\n\n'; this.onChange(this.documentText);
           }

@@ -1,15 +1,20 @@
+import { LexiEditingActions } from '../core/LexiEditingActions';
+import { LexiHotkeySettings } from '../core/LexiHotkeySettings';
+import { LexiAppearanceSettings } from '../core/LexiAppearanceSettings';
 import { common } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
 import { KeyCode } from '@kit.InputKit';
 import { LexiCompletionPanel } from '../components/LexiCompletionPanel';
 import { LexiCompletion, LexiCompletionCandidate, LexiCompletionContext } from '../core/LexiCompletion';
 import { LexiAnchorNavigation } from '../core/LexiAnchorNavigation';
-import { FrameCallback, KeyboardAvoidMode as UIKeyboardAvoidMode } from '@kit.ArkUI';
+import { FrameCallback, KeyboardAvoidMode as UIKeyboardAvoidMode, LengthMetrics } from '@kit.ArkUI';
 import { LexiBackHeader } from '../components/LexiBackHeader';
 import { LexiMarkdownPreview } from '../components/LexiEditorPanels';
 import { LexiIcon } from '../components/LexiIcon';
 import { LexiLiveMarkdownEditor } from '../components/LexiLiveMarkdownEditor';
 import { LexiLiveEditorController } from '../core/LexiLiveMarkdown';
+import { LexiEditorBridge, PluginEditorHandle } from '../plugin/adapters/LexiEditorBridge';
+import { PluginSelectionRange } from '../plugin/model/PluginModels';
 import {
   MarkdownBlock,
   MindMapRouteParam,
@@ -26,8 +31,6 @@ import { LexiSharableNoteSnapshot, LexiShareService } from '../core/LexiShareSer
 import { LexiStorageService } from '../core/LexiStorageService';
 import { LexiTemplateItem, LexiTemplateLibrary } from '../core/LexiTemplateLibrary';
 import { LexiCaptureAssistantPanel } from '../components/LexiCaptureAssistantPanel';
-import { LexiHarnessModalDialog } from '../components/LexiHarnessPanel';
-import { LexiHarnessService } from '../harness/LexiHarnessService';
 import { LexiContinuationData, LexiContinuationDraft } from '../core/LexiContinuationData';
 import { LexiContinuationSession } from '../core/LexiContinuationSession';
 
@@ -58,6 +61,9 @@ class EditorSnapshot {
 
 @Component
 export struct NoteEditorPage {
+  @StorageProp('lexiFontSize') private noteFontSize: number = 16;
+  @StorageProp('lexiWheelZoomLock') private wheelZoomLock: boolean = false;
+  @StorageProp('lexiAccent') private noteAccent: string = '#6E44D9';
   @StorageProp('lexiTopInset') titleTopInset: number = 0;
   @StorageProp('lexiBottomInset') bottomInset: number = 0;
   @StorageProp('lexiViewportWidth') windowViewportWidth: number = 390;
@@ -72,12 +78,17 @@ export struct NoteEditorPage {
   private selectionStart: number = 0;
   private selectionEnd: number = 0;
   private previewScroller: Scroller = new Scroller();
-  @State private note: NoteItem = new NoteItem();
+  @State @Watch('syncPluginIdentity') private note: NoteItem = new NoteItem();
   @State private templateMode: boolean = false;
   @State private externalFileMode: boolean = false;
   @State private deferredCreation: boolean = false;
   private externalFileUri: string = '';
   private templateRecord: LexiTemplateItem = new LexiTemplateItem();
+  @StorageProp('lexiEditorDefaultView') private editorDefaultView: string = 'edit';
+  @StorageProp('lexiEditorDefaultMode') private editorDefaultMode: string = 'live';
+  @StorageProp('lexiEditorShowTitle') private editorShowTitle: boolean = true;
+  @StorageProp('lexiEditorLimitWidth') private editorLimitWidth: boolean = true;
+  @StorageProp('lexiEditorViewStatus') private editorViewStatus: boolean = true;
   @State private titleText: string = '';
   @State private contentText: string = '';
   @State private notebookText: string = '速记收件箱';
@@ -88,6 +99,8 @@ export struct NoteEditorPage {
   @State private showRelationsPanel: boolean = false;
   @State private showPropertiesPanel: boolean = false;
   @State private showOutlinePanel: boolean = false;
+  @State private showOutlineSheet: boolean = false;
+  private pendingOutlineJump: string = '';
   @State private linkSearchText: string = '';
   @State private newTagInput: string = '';
   @State private newPropKey: string = '';
@@ -113,13 +126,13 @@ export struct NoteEditorPage {
   private baseTitle: string = '';
   private baseContent: string = '';
   private pendingSave: Promise<void> | undefined = undefined;
+  private pluginHandleId: string = '';
   private externalReadRevision: number = 0;
   private conflictVisible: boolean = false;
   private conflictResolving: boolean = false;
   private leavingEditor: boolean = false;
   private pendingToolSnippet: string = '';
   @State private showAssistantPanel: boolean = false;
-  @State private showHarnessDialog: boolean = false;
   private pendingAssistantOpen: boolean = false;
   private pendingAssistantSnippet: string = '';
   private assistantSelectionStart: number = 0;
@@ -129,13 +142,14 @@ export struct NoteEditorPage {
   private continuationOwner: string = LexiContinuationSession.newOwner();
   private pageAttached: boolean = false;
   private pageVisible: boolean = false;
-  private pageLoaded: boolean = false;
+  @State private pageLoaded: boolean = false;
   private pendingRouteRestore: boolean = false;
   private focusRevision: number = 0;
   private pathStack: NavPathStack = new NavPathStack();
 
   aboutToAppear(): void {
     this.pageAttached = true; this.pageVisible = true;
+    this.registerPluginHandle();
     LexiShareService.activateKnockSource(this.continuationOwner, (): LexiSharableNoteSnapshot | undefined => {
       if (!this.pageAttached || !this.pageVisible || !this.pageLoaded || this.templateMode || this.deferredCreation) {
         return undefined;
@@ -154,8 +168,56 @@ export struct NoteEditorPage {
     } catch {}
   }
 
+  /** Read-only surface for plugins: the page owns every mutation through its own save path. */
+  private registerPluginHandle(): void {
+    const handle = new PluginEditorHandle();
+    handle.editorId = `page-${this.continuationOwner}`;
+    handle.noteId = this.note.id;
+    handle.vaultId = this.note.vaultId;
+    handle.windowId = 'main';
+    handle.isDirty = (): boolean => this.hasUnsavedChanges();
+    handle.isReadOnly = (): boolean => this.externalFileMode || this.templateMode;
+    handle.isVisible = (): boolean => this.pageAttached && this.pageVisible;
+    handle.isFocused = (): boolean => this.pageAttached && this.pageVisible && this.abilityForeground;
+    handle.getContent = (): string => this.contentText;
+    handle.getBaseContent = (): string => this.baseContent;
+    handle.getRevision = (): number => this.editRevision;
+    handle.getSelection = (): PluginSelectionRange => {
+      const range = new PluginSelectionRange();
+      range.from = this.selectionStart; range.to = this.selectionEnd; return range;
+    };
+    handle.replaceRange = (start: number, end: number, text: string): boolean => this.pluginReplaceRange(start, end, text);
+    handle.flush = async (): Promise<void> => { await this.persistNow(); };
+    handle.focus = (): void => { this.liveController.finishEditing(); };
+    this.pluginHandleId = LexiEditorBridge.register(handle);
+  }
+
+  private pluginReplaceRange(start: number, end: number, text: string): boolean {
+    if (!this.pageLoaded || this.externalFileMode || this.templateMode) { return false; }
+    const content = this.contentText;
+    const from = Math.max(0, Math.min(content.length, Math.min(start, end)));
+    const to = Math.max(from, Math.min(content.length, Math.max(start, end)));
+    const next = content.substring(0, from) + text + content.substring(to);
+    if (next === content) { return true; }
+    this.liveController.finishEditing();
+    this.pushHistory();
+    this.contentText = next;
+    this.selectionStart = from + text.length;
+    this.selectionEnd = this.selectionStart;
+    this.scheduleSave();
+    return true;
+  }
+
+  private syncPluginIdentity(): void {
+    const handle = LexiEditorBridge.byId(this.pluginHandleId);
+    if (!handle) { return; }
+    handle.noteId = this.note.id;
+    handle.vaultId = this.note.vaultId;
+  }
+
   aboutToDisappear(): void {
     this.pageAttached = false; this.pageVisible = false; this.focusRevision++; this.externalReadRevision++;
+    if (this.pluginHandleId.length > 0) { LexiEditorBridge.unregister(this.pluginHandleId); this.pluginHandleId = ''; }
     LexiShareService.deactivateKnockSource(this.continuationOwner);
     this.releaseContinuation();
     this.pendingAssistantOpen = false; this.pendingAssistantSnippet = ''; this.showAssistantPanel = false;
@@ -179,8 +241,8 @@ export struct NoteEditorPage {
   }
 
   private async loadFromRoute(param: NoteEditorRouteParam | undefined): Promise<void> {
-    await LexiStorageService.init(this.context());
     this.pageLoaded = false;
+    await LexiStorageService.init(this.context());
     this.deferredCreation = false;
     this.templateMode = !!(param && param.templateId);
     this.externalFileMode = !!(param && param.externalFileMode);
@@ -339,6 +401,27 @@ export struct NoteEditorPage {
     this.redoCount = this.redoStack.length;
     this.refreshDerived();
     this.scheduleSave();
+  }
+
+  private handleShortcut(event: KeyEvent): boolean {
+    LexiAppearanceSettings.trackModifierKey(event);
+    if (event.type !== KeyType.Down || !this.pageLoaded || this.conflictResolving) { return false; }
+    const command = LexiHotkeySettings.commandFor(AppStorage.get<string>('lexiHotkeyOverrides') || '[]', LexiHotkeySettings.fromEvent(event));
+    if (command.startsWith('editor-')) {
+      try {
+        const edit = LexiEditingActions.apply(this.contentText, this.selectionStart, this.selectionEnd, command.substring(7));
+        this.pushHistory(true); this.contentText = edit.content; this.selectionStart = edit.start; this.selectionEnd = edit.end;
+        this.scheduleSave(); this.refreshDerived(); this.restoreEditorSelection(edit.start, edit.end, edit.content, true);
+      } catch (error) { this.toast((error as Error).message); }
+      return true;
+    }
+    if (command === 'save') { (this.externalFileMode ? this.saveExternalFileOnly(false) : this.persistNow()).catch((error: Error): void => { this.toast(error.message); }); return true; }
+    if (command === 'reading') { this.selectViewMode(this.viewMode === 'preview' ? 'live' : 'preview'); return true; }
+    if (command === 'source-toggle') { this.selectViewMode(this.viewMode === 'edit' ? 'live' : 'edit'); return true; }
+    if (command === 'outline') { this.openOutlineSheet(); return true; }
+    if (command === 'properties') { this.showPropertiesPanel = true; return true; }
+    if (command === 'backlinks' || command === 'outgoing') { this.showRelationsPanel = true; return true; }
+    return false;
   }
 
   private scheduleSave(): void {
@@ -506,7 +589,10 @@ export struct NoteEditorPage {
     const notes = latest ? await LexiStorageService.getNotes(latest.vaultId) : [];
     if (sequence !== this.externalReadRevision || revision !== this.editRevision || this.note.id !== noteId || this.pendingSave ||
       !this.pageAttached || !this.pageVisible || !this.abilityForeground || this.hasUnsavedChanges()) { return; }
-    if (!latest || latest.trashedAt > 0 || latest.sourceMissing) { this.saveStatus = '笔记已在其他位置移除，当前内容保留'; return; }
+    if (!latest || latest.trashedAt > 0 || latest.sourceMissing) {
+      this.note.sourceMissing = true;
+      this.saveStatus = '笔记已在其他位置移除，当前内容保留'; return;
+    }
     this.allVaultNotes = notes.filter((item: NoteItem): boolean => item.trashedAt === 0);
     if (latest.title === this.baseTitle && latest.content === this.baseContent && latest.updatedAt === this.note.updatedAt) { return; }
     const start = this.mapSavedCursor(this.contentText, latest.content, this.selectionStart);
@@ -653,6 +739,30 @@ export struct NoteEditorPage {
     if (!this.note.id) { return; }
     const anchor = LexiAnchorNavigation.take(this.note.id);
     if (anchor) { this.jumpToAnchor(anchor); }
+  }
+
+  /**
+   * The writing bar owns the outline entry on phones. The sheet is dismissed before the
+   * page scrolls, so the jump happens from `onDisappear` once the content is interactive.
+   */
+  private openOutlineSheet(): void {
+    if (this.showOutlineSheet) { return; }
+    this.refreshDerived();
+    this.showToolsPanel = false;
+    this.showOutlinePanel = true;
+    this.showOutlineSheet = true;
+  }
+
+  private selectOutlineHeading(heading: OutlineHeading): void {
+    this.pendingOutlineJump = heading.title;
+    this.showOutlineSheet = false;
+  }
+
+  private outlineSheetClosed(): void {
+    const target = this.pendingOutlineJump;
+    this.pendingOutlineJump = '';
+    this.showOutlinePanel = false;
+    if (target.length > 0) { this.jumpToAnchor(target); }
   }
 
   private jumpToAnchor(anchor: string): void {
@@ -976,7 +1086,6 @@ export struct NoteEditorPage {
   private toolPageTitle(): string {
     if (this.toolPage === 'links') { return '插入笔记链接'; }
     if (this.toolPage === 'properties') { return '属性与标签'; }
-    if (this.toolPage === 'outline') { return '文档大纲'; }
     if (this.toolPage === 'relations') { return '双向链接'; }
     return '笔记工具';
   }
@@ -1036,9 +1145,6 @@ export struct NoteEditorPage {
   private popupPanels() {
     Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
       this.popupAction('笔记链接', (): void => { this.selectToolPage('links'); })
-      if (this.editorTier !== 'simple') {
-        this.popupAction('文档大纲', (): void => { this.selectToolPage('outline'); })
-      }
       if (this.editorTier === 'pro') {
         this.popupAction('属性标签', (): void => { this.selectToolPage('properties'); })
         if (!this.templateMode) { this.popupAction('双向链接', (): void => { this.selectToolPage('relations'); }); }
@@ -1127,20 +1233,41 @@ export struct NoteEditorPage {
     }.width('100%')
   }
 
+  /** Half-modal outline: the phone twin of the desktop sidebar's outline section. */
   @Builder
-  private popupOutline() {
-    Column({ space: 6 }) {
-      if (!this.outlineHeadings.length) {
-        Text('用 # 标题整理内容，大纲会出现在这里。').fontSize(12).fontColor($r('app.color.text_secondary'))
+  private outlineSheetContent() {
+    Column() {
+      if (this.outlineHeadings.length === 0) {
+        Column({ space: 8 }) {
+          Text('还没有标题').fontSize(15).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+          Text('用 # 一级标题、## 二级标题整理内容，大纲会出现在这里。').fontSize(12).lineHeight(20)
+            .fontColor($r('app.color.text_secondary')).textAlign(TextAlign.Center)
+        }.width('100%').padding({ top: 28, bottom: 28 }).justifyContent(FlexAlign.Center)
+      } else {
+        Scroll() {
+          Column({ space: 2 }) {
+            ForEach(this.outlineHeadings, (heading: OutlineHeading) => {
+              Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+                Row({ space: 8 }) {
+                  Text(`${heading.level}`).fontSize(10).fontColor($r('app.color.text_secondary'))
+                    .width(16).textAlign(TextAlign.Center)
+                  Text(heading.title).fontSize(14).fontColor($r('app.color.text_primary')).maxLines(2)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+                }.width('100%')
+              }
+              .id(`note-outline-heading-${heading.id}`).width('100%').constraintSize({ minHeight: 44 })
+              .padding({ left: 6 + (heading.level - 1) * 16, right: 10 }).borderRadius(10)
+              .backgroundColor(Color.Transparent)
+              .onClick((): void => { this.selectOutlineHeading(heading); })
+            }, (heading: OutlineHeading): string => `${this.note.id}-${heading.id}-${heading.title}`)
+          }.width('100%')
+        }.width('100%').layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Auto)
       }
-      ForEach(this.outlineHeadings, (heading: OutlineHeading) => {
-        Button(heading.title, { buttonStyle: ButtonStyleMode.TEXTUAL }).width('100%').height(34).fontSize(12)
-          .fontColor($r('app.color.brand_ink')).padding({ left: (heading.level - 1) * 10, right: 4 })
-          .onClick((): void => { this.showToolsPanel = false; this.jumpToAnchor(heading.title); })
-      }, (heading: OutlineHeading): string => heading.id)
-      Button('转为思维导图', { buttonStyle: ButtonStyleMode.TEXTUAL }).height(34).fontSize(12)
-        .onClick((): void => { this.showToolsPanel = false; this.convertToMindMap(); })
-    }.width('100%')
+      Button('转为思维导图', { type: ButtonType.Normal })
+        .id('note-outline-mindmap').width('100%').height(42).fontSize(14).borderRadius(12).margin({ top: 10 })
+        .backgroundColor($r('app.color.brand_soft')).fontColor($r('app.color.brand_ink'))
+        .onClick((): void => { this.showOutlineSheet = false; this.convertToMindMap(); })
+    }.width('100%').height('100%').padding({ left: 16, right: 16, top: 4, bottom: 20 })
   }
 
   @Builder
@@ -1198,7 +1325,6 @@ export struct NoteEditorPage {
           else if (this.toolPage === 'panels') { this.popupPanels(); }
           else if (this.toolPage === 'properties') { this.popupProperties(); }
           else if (this.toolPage === 'links') { this.popupLinks(); }
-          else if (this.toolPage === 'outline') { this.popupOutline(); }
           else if (this.toolPage === 'relations') { this.popupRelations(); }
         }.width('100%').alignItems(HorizontalAlign.Start)
       }.width('100%').layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Auto)
@@ -1234,6 +1360,8 @@ export struct NoteEditorPage {
 
   private finishLoadingRoute(param: NoteEditorRouteParam | undefined): void {
     this.pageLoaded = true;
+    this.viewMode = this.editorDefaultView === 'preview' ? 'preview' : this.editorDefaultMode === 'source' ? 'edit' : 'live';
+    this.refreshDerived();
     this.baseTitle = this.note.title; this.baseContent = this.note.content; this.savedEditRevision = this.editRevision;
     this.conflictVisible = false; this.conflictResolving = false;
     const restore = !!param && Number.isInteger(param.restoreSelectionStart) && param.restoreSelectionStart >= 0;
@@ -1271,9 +1399,6 @@ export struct NoteEditorPage {
 
   private editorShown(): void {
     this.pageVisible = true;
-    if (this.note.id) {
-      LexiHarnessService.setActiveEditorNoteId(this.note.id);
-    }
     this.activateContinuation(); this.restoreRouteSelection();
     if (this.pendingAssistantOpen && !this.showToolsPanel) { this.presentAssistant(); }
     this.workspaceRefreshed();
@@ -1283,7 +1408,7 @@ export struct NoteEditorPage {
     this.pageVisible = false; this.focusRevision++;
     this.releaseContinuation();
     this.pendingToolSnippet = ''; this.pendingAssistantOpen = false; this.pendingAssistantSnippet = '';
-    this.showToolsPanel = false; this.showAssistantPanel = false; this.showHarnessDialog = false;
+    this.showToolsPanel = false; this.showAssistantPanel = false;
   }
 
   private requestAssistant(): void {
@@ -1339,8 +1464,8 @@ export struct NoteEditorPage {
   private sourceBody() {
     TextArea({ text: this.contentText, controller: this.bodyController, placeholder: '全文 Markdown 源码' })
       .id(this.sourceInputId()).width('100%').constraintSize({ minHeight: this.viewMode === 'split' ? 260 : 400 })
-      .fontSize(16).lineHeight(28).fontColor($r('app.color.text_primary'))
-      .placeholderColor($r('app.color.text_secondary')).caretColor($r('app.color.brand'))
+      .fontSize(this.noteFontSize).lineHeight(this.noteFontSize * 1.75).fontColor($r('app.color.text_primary'))
+      .placeholderColor($r('app.color.text_secondary')).caretColor(this.noteAccent)
       .backgroundColor(Color.Transparent).borderRadius(0).padding(0)
       .onChange((text: string): void => {
         if (text !== this.contentText) { this.pushHistory(); this.contentText = text; this.scheduleSave(); }
@@ -1360,21 +1485,24 @@ export struct NoteEditorPage {
   @Builder
   private compactWritingSurface() {
     Column() {
+      if (this.editorShowTitle || this.templateMode) {
       TextArea({ text: this.titleText, placeholder: this.templateMode ? '模板名称' : '标题（选填）' })
         .id('note-title-input').width('100%').constraintSize({ minHeight: 42 }).fontSize(25).lineHeight(34).fontWeight(FontWeight.Bold)
         .fontColor($r('app.color.text_primary')).placeholderColor($r('app.color.text_secondary'))
-        .caretColor($r('app.color.brand')).borderRadius(0)
+        .caretColor(this.noteAccent).borderRadius(0)
         .backgroundColor(Color.Transparent).padding({ left: 24, right: 24, top: 8, bottom: 4 })
         .onChange((text: string): void => {
           const clean = text.replace(/\r?\n/g, ' ');
           if (clean !== this.titleText) { this.pushHistory(); this.titleText = clean; this.scheduleSave(); }
         })
+      }
       Scroll(this.previewScroller) {
         Column({ space: 12 }) {
           if (this.viewMode === 'live') {
             LexiLiveMarkdownEditor({ content: this.contentText, availableNotes: this.allVaultNotes,
               notePath: this.note.path, anchorPrefix: `note-block-${this.note.id}`,
               placeholder: '点击段落即可编辑，写下此刻的想法…', editorController: this.liveController,
+              editorEnabled: true,
               onChange: (text: string): void => {
                 if (text !== this.contentText) { this.pushHistory(); this.contentText = text; this.scheduleSave(); }
               },
@@ -1387,10 +1515,12 @@ export struct NoteEditorPage {
             this.sourceBody()
             if (this.viewMode === 'split') { Divider().color($r('app.color.divider')); this.renderedBody(); }
           }
-        }.width('100%').padding({ left: 24, right: 24, top: 8, bottom: 80 }).alignItems(HorizontalAlign.Start)
+        }.width('100%').constraintSize({ maxWidth: this.editorLimitWidth ? 800 : 10000 })
+          .padding({ left: 24, right: 24, top: 8, bottom: 80 }).alignItems(HorizontalAlign.Start)
       }.id(`note-preview-scroll-${this.note.id}`).width('100%').layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Auto)
+        .enableScrollInteraction(!this.wheelZoomLock)
       this.inlineCompletion()
-      Row({ space: 8 }) {
+      Row({ space: 6 }) {
         Button('工具', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
           .id('note-tools-open').height(44).fontSize(14).fontColor($r('app.color.brand_ink'))
           .padding({ left: 8, right: 8 })
@@ -1404,21 +1534,6 @@ export struct NoteEditorPage {
         if (!this.templateMode) {
           Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
             Row({ space: 4 }) {
-              LexiIcon({ name: 'spark', iconSize: 16 })
-              Text('AI 助手').fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('app.color.brand_ink')).maxLines(1)
-            }
-          }.id('note-ai-harness').height(44).padding({ left: 8, right: 8 }).borderRadius(10)
-            .accessibilityText('打开知萤 AI 助手对话框')
-            .onClick((): void => {
-              this.liveController.finishEditing();
-              if (this.note.id) {
-                LexiHarnessService.setActiveEditorNoteId(this.note.id);
-              }
-              this.showHarnessDialog = true;
-            })
-
-          Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-            Row({ space: 4 }) {
               SymbolGlyph($r('sys.symbol.mic')).fontSize(16).fontColor([$r('app.color.brand_ink')])
                 .accessibilityLevel('no')
               Text('语音记录').fontSize(14).fontColor($r('app.color.brand_ink')).maxLines(1)
@@ -1427,6 +1542,17 @@ export struct NoteEditorPage {
             .accessibilityText('语音记录，打开离线语音记录面板')
             .enabled(this.pageLoaded && !this.showAssistantPanel)
             .onClick((): void => { this.requestAssistant(); })
+          // The outline moved out of the tools popup and onto the writing bar next to voice.
+          Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+            Row({ space: 4 }) {
+              SymbolGlyph($r('sys.symbol.list_bullet')).fontSize(16).fontColor([$r('app.color.brand_ink')])
+                .accessibilityLevel('no')
+              Text('大纲').fontSize(14).fontColor($r('app.color.brand_ink')).maxLines(1)
+            }
+          }.id('note-outline').height(44).padding({ left: 6, right: 6 }).borderRadius(10)
+            .accessibilityText('大纲，查看并跳转到文档标题')
+            .enabled(this.pageLoaded)
+            .onClick((): void => { this.openOutlineSheet(); })
         }
         if (!this.externalFileMode || this.viewportWidth >= 440) {
           Text(`${this.contentText.length} 字`).fontSize(11).fontColor($r('app.color.text_secondary'))
@@ -1434,9 +1560,14 @@ export struct NoteEditorPage {
         } else {
           Blank().layoutWeight(1)
         }
-        if (this.viewportWidth >= 480) {
-          Text(this.viewMode === 'live' ? '实时预览' : this.viewMode === 'preview' ? '只读' : '源码')
-            .fontSize(11).fontColor($r('app.color.text_secondary'))
+        if (this.editorViewStatus && this.viewportWidth >= 480) {
+          Button(this.viewMode === 'live' ? '实时预览' : this.viewMode === 'preview' ? '阅读视图' : '源码',
+            { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
+            .id('note-view-status').fontSize(11).fontColor($r('app.color.text_secondary'))
+            .onClick((): void => {
+              this.liveController.finishEditing();
+              this.selectViewMode(this.viewMode === 'preview' ? (this.editorDefaultMode === 'source' ? 'edit' : 'live') : 'preview');
+            })
         }
         Button(this.viewMode === 'preview' ? '继续编辑' : '阅读', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
           .id('note-preview-toggle').height(44).fontSize(14).fontColor($r('app.color.brand_ink'))
@@ -1450,8 +1581,9 @@ export struct NoteEditorPage {
         }
       }.width('100%').height(48).padding({ left: 12, right: 12 })
         .border({ width: { top: 0.5 }, color: $r('app.color.divider') })
-    }.id(`note-writing-surface-${this.note.id}-${this.continuationOwner}`).width('100%').constraintSize({ maxWidth: 1040 }).height('100%')
-      .padding({ top: 56 + (this.windowViewportWidth < 840 ? this.titleTopInset : 0), bottom: this.windowViewportWidth < 840 ? this.bottomInset : 4 })
+    }.id(`note-writing-surface-${this.note.id}-${this.continuationOwner}`)
+      .onAxisEvent((event: AxisEvent): void => { LexiAppearanceSettings.handleAxis(event); }).width('100%').constraintSize({ maxWidth: this.editorLimitWidth ? 1040 : 10000 }).height('100%')
+      .padding({ bottom: this.windowViewportWidth < 840 ? this.bottomInset : 4 })
       .backgroundColor($r('app.color.surface'))
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
   }
@@ -1460,20 +1592,16 @@ export struct NoteEditorPage {
     NavDestination() {
       Stack({ alignContent: Alignment.Top }) {
         this.compactWritingSurface()
-        if (this.showHarnessDialog) {
-          LexiHarnessModalDialog({
-            activeNoteIdProp: this.note.id,
-            onClose: (): void => {
-              this.showHarnessDialog = false;
-            },
-            onInsertToEditor: (markdownText: string): void => {
-              this.pushHistory(true);
-              this.contentText = `${this.contentText.trimEnd()}\n\n${markdownText}`;
-              this.scheduleSave();
-              this.showHarnessDialog = false;
-            }
+        // Native half-modal sheet: the system supplies the motion, scrim and drag bar.
+        Column() {}.width(0).height(0)
+          .bindSheet($$this.showOutlineSheet, this.outlineSheetContent, {
+            height: SheetSize.MEDIUM, width: '100%',
+            preferType: SheetType.BOTTOM,
+            radius: LengthMetrics.vp(24), dragBar: true, showClose: true,
+            title: { title: '大纲' },
+            backgroundColor: $r('app.color.surface'),
+            onDisappear: (): void => { this.outlineSheetClosed(); }
           })
-        }
       }.width('100%').height('100%')
     }
     .hideBackButton(true)
@@ -1483,11 +1611,8 @@ export struct NoteEditorPage {
       height: SheetSize.LARGE, dragBar: true, showClose: true, title: { title: '语音与本地整理' },
       backgroundColor: $r('app.color.surface'), onDisappear: (): void => { this.assistantDisappeared(); }
     })
+    .onKeyEventDispatch((event: KeyEvent): boolean => this.handleShortcut(event))
     .onBackPressed((): boolean => {
-      if (this.showHarnessDialog) {
-        this.showHarnessDialog = false;
-        return true;
-      }
       this.leaveEditor();
       return true;
     })
@@ -1499,8 +1624,7 @@ export struct NoteEditorPage {
         height: 56 + (this.windowViewportWidth < 840 ? this.titleTopInset : 0)
       },
       {
-        barStyle: BarStyle.STACK,
-        scrollEffectOptions: { scrollEffectType: ScrollEffectType.GRADUAL_BLUR }
+        barStyle: BarStyle.STANDARD
       }
     )
     .backgroundColor($r('app.color.background'))

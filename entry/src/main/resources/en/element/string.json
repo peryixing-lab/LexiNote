@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "LexiNote: local-first knowledge management and mind mapping"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "LexiNote"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "LexiNote"
+    }
+  ]
+}

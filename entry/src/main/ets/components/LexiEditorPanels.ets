@@ -7,6 +7,7 @@ import { pasteboard } from '@kit.BasicServicesKit';
 import { common } from '@kit.AbilityKit';
 import { LexiCodeHighlight, LexiCodeToken } from '../core/LexiCodeHighlight';
 import { LexiCodeTools } from '../core/LexiCodeTools';
+import { LexiMathView } from './LexiMathView';
 
 @Component
 export struct LexiOutlinePanel {
@@ -183,6 +184,8 @@ class LexiPreviewTableRow {
 
 @Component
 struct LexiPreviewInlineText {
+  @StorageProp('lexiFontSize') private noteFontSize: number = 16;
+  @StorageProp('lexiAccent') private noteAccent: string = '#6E44D9';
   @Prop sourceText: string = '';
   @Prop textSize: number = 16;
   @Prop textLeading: number = 27;
@@ -232,29 +235,54 @@ struct LexiPreviewInlineText {
     }
   }
 
+  private highlightColor(segment: LexiMarkdownInlineSpan): ResourceColor {
+    if (segment.target === 'red') { return '#40F87171'; }
+    if (segment.target === 'orange') { return '#40FB923C'; }
+    if (segment.target === 'yellow') { return '#60FACC15'; }
+    if (segment.target === 'green') { return '#404ADE80'; }
+    if (segment.target === 'blue') { return '#4060A5FA'; }
+    if (segment.target === 'purple') { return '#40C084FC'; }
+    return $r('app.color.brand_soft');
+  }
+
+  private containsMath(): boolean {
+    return !this.raw && this.segments().some((segment: LexiMarkdownInlineSpan): boolean =>
+      segment.kind === 'math' || segment.kind === 'math-display');
+  }
+
   build() {
-    Text() {
-      ForEach(this.segments(), (segment: LexiMarkdownInlineSpan) => {
-        Span(segment.text)
-          .fontWeight(this.strong || segment.kind === 'bold' ? FontWeight.Bold : FontWeight.Regular)
-          .fontStyle(segment.kind === 'italic' ? FontStyle.Italic : FontStyle.Normal)
-          .fontFamily(this.raw || segment.kind === 'code' ? 'monospace' : 'HarmonyOS Sans')
-          .fontColor(segment.kind === 'link' || segment.kind === 'url' ? $r('app.color.brand_ink') : this.muted || this.checked ? $r('app.color.text_secondary') : $r('app.color.text_primary'))
-          .textBackgroundStyle({ color: segment.kind === 'highlight' ? $r('app.color.brand_soft') : segment.kind === 'code' ? $r('app.color.soft_surface') : Color.Transparent, radius: 3 })
-          .decoration({ type: segment.kind === 'strike' || this.checked ? TextDecorationType.LineThrough : segment.kind === 'link' || segment.kind === 'url' ? TextDecorationType.Underline : TextDecorationType.None })
-          .onClick((): void => { this.activate(segment); })
-      }, (segment: LexiMarkdownInlineSpan): string => segment.id)
-    }
-    .fontSize(this.textSize)
-    .lineHeight(this.textLeading)
-    .copyOption(CopyOptions.LocalDevice)
-    .textAlign(this.cellAlignment === 'center' ? TextAlign.Center : this.cellAlignment === 'right' ? TextAlign.End : TextAlign.Start)
-    .width('100%')
+    Column() {
+      if (this.containsMath()) {
+        LexiMathView({ sourceText: this.sourceText, textSize: this.textSize * this.noteFontSize / 16, textLeading: this.textLeading * this.noteFontSize / 16,
+          strong: this.strong, muted: this.muted, checked: this.checked, cellAlignment: this.cellAlignment,
+          onActivate: (segment: LexiMarkdownInlineSpan): void => { this.activate(segment); },
+          onEditText: this.onEditText, onInteractiveAction: this.onInteractiveAction })
+      } else {
+        Text() {
+          ForEach(this.segments(), (segment: LexiMarkdownInlineSpan) => {
+            Span(segment.text)
+              .fontWeight(this.strong || segment.kind === 'bold' ? FontWeight.Bold : FontWeight.Regular)
+              .fontStyle(segment.kind === 'italic' ? FontStyle.Italic : FontStyle.Normal)
+              .fontFamily(this.raw || segment.kind === 'code' ? 'monospace' : 'HarmonyOS Sans')
+              .fontColor(segment.kind === 'link' || segment.kind === 'url' ? this.noteAccent : this.muted || this.checked ? $r('app.color.text_secondary') : $r('app.color.text_primary'))
+              .textBackgroundStyle({ color: segment.kind === 'highlight' ? this.highlightColor(segment) : segment.kind === 'code' ? $r('app.color.soft_surface') : Color.Transparent, radius: 3 })
+              .decoration({ type: segment.kind === 'strike' || this.checked ? TextDecorationType.LineThrough : segment.kind === 'link' || segment.kind === 'url' ? TextDecorationType.Underline : TextDecorationType.None })
+              .onClick((): void => { this.activate(segment); })
+          }, (segment: LexiMarkdownInlineSpan): string => segment.id)
+        }
+        .fontSize(this.textSize * this.noteFontSize / 16)
+        .lineHeight(this.textLeading * this.noteFontSize / 16)
+        .copyOption(CopyOptions.LocalDevice)
+        .textAlign(this.cellAlignment === 'center' ? TextAlign.Center : this.cellAlignment === 'right' ? TextAlign.End : TextAlign.Start)
+        .width('100%')
+      }
+    }.width('100%').alignItems(HorizontalAlign.Start)
   }
 }
 
 @Component
 struct LexiPreviewCodeBlock {
+  @StorageProp('lexiFontSize') private noteFontSize: number = 16;
   @Prop @Watch('refreshTokens') codeSource: string = '';
   @Prop @Watch('refreshTokens') fencedLanguage: string = '';
   @StorageProp('lexiColorMode') codeColorMode: number = 0;
@@ -287,7 +315,7 @@ struct LexiPreviewCodeBlock {
             .fontWeight(token.kind === 'keyword' ? FontWeight.Medium : FontWeight.Regular)
         }, (token: LexiCodeToken): string => `${token.id}-${token.kind}-${token.text}`)
       }
-      .fontFamily('monospace').fontSize(13).lineHeight(21).width('100%')
+      .fontFamily('monospace').fontSize(13 * this.noteFontSize / 16).lineHeight(21 * this.noteFontSize / 16).width('100%')
       .copyOption(CopyOptions.LocalDevice).onClick(this.onEditCode)
     }.width('100%').alignItems(HorizontalAlign.Start)
   }
@@ -295,6 +323,8 @@ struct LexiPreviewCodeBlock {
 
 @Component
 export struct LexiMarkdownPreview {
+  @StorageProp('lexiFontSize') private noteFontSize: number = 16;
+  @StorageProp('lexiAccent') private noteAccent: string = '#6E44D9';
   @Prop frameless: boolean = false;
   @Prop anchorPrefix: string = 'markdown-block';
   @Prop blocks: MarkdownBlock[] = [];
@@ -319,6 +349,18 @@ export struct LexiMarkdownPreview {
       });
       return row;
     });
+  }
+
+  private blockContainsMath(block: MarkdownBlock): boolean {
+    if (block.kind === 'formula') { return true; }
+    if (block.kind === 'code') { return false; }
+    const hasMath = (text: string): boolean => MarkdownEngine.inlineSpans(text)
+      .some((segment: LexiMarkdownInlineSpan): boolean => segment.kind === 'math' || segment.kind === 'math-display');
+    if (block.kind === 'table') {
+      return MarkdownEngine.tableData(block).rows.some((cells: string[]): boolean =>
+        cells.some((text: string): boolean => hasMath(text)));
+    }
+    return hasMath(block.text);
   }
 
   private embeddedNote(block: MarkdownBlock): NoteItem | undefined {
@@ -419,7 +461,7 @@ export struct LexiMarkdownPreview {
                 onInteractiveAction: (): void => { this.lastInteractiveAt = Date.now(); } })
           } else if (block.kind === 'todo') {
             Row({ space: 10 }) {
-              Checkbox({ name: block.id }).select(block.checked).selectedColor($r('app.color.brand'))
+              Checkbox({ name: block.id }).select(block.checked).selectedColor(this.noteAccent)
                 .onChange((): void => { this.onToggleTodo(block.lineIndex); })
                 .onClick((): void => { this.lastInteractiveAt = Date.now(); })
               Column() {
@@ -460,13 +502,9 @@ export struct LexiMarkdownPreview {
                     if (this.editable) { this.lastInteractiveAt = Date.now(); this.onEditBlock(block.lineIndex); }
                   } })
               } else {
-              Row() {
-                Text('LaTeX')
-                  .fontSize(10).fontWeight(FontWeight.Bold).fontColor($r('app.color.brand'))
-                Blank()
-              }.width('100%')
-              LexiPreviewInlineText({ sourceText: block.text, textSize: 13, textLeading: 21, raw: true,
-                onEditText: (): void => { if (this.editable) { this.onEditBlock(block.lineIndex); } } })
+                LexiMathView({ sourceText: block.text, displayMode: true, textSize: (this.frameless ? 16 : 14) * this.noteFontSize / 16,
+                  onEditText: (): void => { if (this.editable) { this.onEditBlock(block.lineIndex); } },
+                  onInteractiveAction: (): void => { this.lastInteractiveAt = Date.now(); } })
               }
             }.width('100%').padding(14).backgroundColor($r('app.color.soft_surface')).borderRadius(12)
           } else {
@@ -476,7 +514,11 @@ export struct LexiMarkdownPreview {
                 onInteractiveAction: (): void => { this.lastInteractiveAt = Date.now(); } })
           }
         }.width('100%').alignItems(HorizontalAlign.Start).id(`${this.anchorPrefix}-${block.lineIndex}`)
-          .onClick((): void => { if (this.editable && Date.now() - this.lastInteractiveAt > 150) { this.onEditBlock(block.lineIndex); } })
+          .onClick((): void => {
+            if (this.editable && !this.blockContainsMath(block) && Date.now() - this.lastInteractiveAt > 150) {
+              this.onEditBlock(block.lineIndex);
+            }
+          })
       }, (block: MarkdownBlock): string => `${block.id}-${block.kind}-${block.text}-${block.meta}-${block.checked}`)
     }
     .width('100%').padding(this.frameless ? 0 : 18)

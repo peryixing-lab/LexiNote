@@ -48,6 +48,10 @@ export class LexiContextBridge {
         actions.push(new LexiContextAction('open-window', '在新窗口中打开', '打开'));
       }
       actions.push(new LexiContextAction('duplicate', '创建副本', '整理'));
+      if (target.kind === 'mindmap') {
+        actions.push(new LexiContextAction('copy-path', '复制完整路径', '文件'));
+        actions.push(new LexiContextAction('reveal', '在文件管理中显示', '文件'));
+      }
       actions.push(new LexiContextAction('rename', '重命名', '管理'));
       actions.push(new LexiContextAction('delete', '删除…', '管理'));
       return actions;

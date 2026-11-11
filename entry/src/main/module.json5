@@ -4,6 +4,7 @@
     "type": "entry",
     "description": "$string:module_desc",
     "mainElement": "EntryAbility",
+    "srcEntry": "./ets/entryability/LexiAbilityStage.ets",
     "deviceTypes": [
       "phone",
       "tablet",
@@ -25,6 +26,7 @@
         "usedScene": {
           "abilities": [
             "EntryAbility",
+            "WorkspaceAbility",
             "DocumentAbility"
           ],
           "when": "inuse"
@@ -43,7 +45,20 @@
     ],
     "abilities": [
       {
+        "name": "WorkspaceAbility",
+        "srcEntry": "./ets/entryability/WorkspaceAbility.ets",
+        "label": "$string:EntryAbility_label",
+        "icon": "$media:layered_image",
+        "startWindowIcon": "$media:startIcon",
+        "startWindowBackground": "$color:start_window_background",
+        "launchType": "multiton",
+        "isolationProcess": true,
+        "continuable": true,
+        "exported": false
+      },
+      {
         "name": "DocumentAbility",
+        "isolationProcess": true,
         "srcEntry": "./ets/entryability/DocumentAbility.ets",
         "label": "$string:EntryAbility_label",
         "icon": "$media:layered_image",

@@ -1,3 +1,4 @@
+import { LexiI18n } from '../core/LexiI18n';
 import {
   NoteItem,
   NoteLink
@@ -8,6 +9,12 @@ import { LexiHeroHeading, LexiNoteCard } from './LexiNoteCard';
 
 @Component
 struct LexiHomeMetric {
+  @StorageProp('lexiLanguage') private interfaceLanguage: string = LexiI18n.language();
+
+  private tr(source: string, args: string[] = []): string {
+    return LexiI18n.text(source, this.interfaceLanguage, args);
+  }
+
   @Prop labelText: string = '';
   @Prop metricValue: number = 0;
 
@@ -22,6 +29,12 @@ struct LexiHomeMetric {
 
 @Component
 export struct LexiHomeTab {
+  @StorageProp('lexiLanguage') private interfaceLanguage: string = LexiI18n.language();
+
+  private tr(source: string, args: string[] = []): string {
+    return LexiI18n.text(source, this.interfaceLanguage, args);
+  }
+
   @Prop isWide: boolean = false;
   @Prop pagePadding: number = 24;
   @Prop bottomInset: number = 0;
@@ -52,7 +65,7 @@ export struct LexiHomeTab {
   onViewAllNotes: () => void = () => {};
   onOpenDaily: () => void = (): void => {};
   onOpenTemplates: () => void = (): void => {};
-  onOpenAi: () => void = (): void => {};
+  onOpenPlugins: () => void = (): void => {};
 
   aboutToAppear(): void {
     this.recompute();
@@ -95,18 +108,18 @@ export struct LexiHomeTab {
   private greeting(): string {
     const hour = new Date().getHours();
     if (hour < 5) {
-      return '夜深了';
+      return this.tr('夜深了');
     }
     if (hour < 11) {
-      return '早上好';
+      return this.tr('早上好');
     }
     if (hour < 14) {
-      return '中午好';
+      return this.tr('中午好');
     }
     if (hour < 18) {
-      return '下午好';
+      return this.tr('下午好');
     }
-    return '晚上好';
+    return this.tr('晚上好');
   }
 
   @Builder
@@ -154,39 +167,35 @@ export struct LexiHomeTab {
 
       // Keep quick capture compact so recent notes are visible on the home screen.
       Row({ space: 8 }) {
-        Button('今日笔记', { type: ButtonType.Normal }).id('home-daily-note').layoutWeight(1).height(44)
+        Button(this.tr('今日笔记'), { type: ButtonType.Normal }).id('home-daily-note').layoutWeight(1.2).height(44)
           .fontSize(13).borderRadius(16).backgroundColor($r('app.color.brand')).fontColor($r('app.color.inverse_text'))
+          .padding({ left: 4, right: 4 })
           .onClick(this.onOpenDaily)
-        Button('从模板新建', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-          .id('home-templates').layoutWeight(1).height(44).fontSize(13).borderRadius(16)
+        Button(this.tr('从模板新建'), { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
+          .id('home-templates').layoutWeight(1.2).height(44).fontSize(13).borderRadius(16)
           .backgroundColor($r('app.color.surface')).fontColor($r('app.color.brand_ink')).onClick(this.onOpenTemplates)
+        // Phones have no workspace rail: the plugin surface opens from here, in a sheet.
         Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-          Row({ space: 5 }) {
-            LexiIcon({ name: 'spark', iconSize: 16 })
-            Text('AI 助手')
-              .fontSize(13)
-              .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.brand_ink'))
+          Row({ space: 4 }) {
+            Image($r('app.media.ic_sidebar_plugin')).width(15).height(15).draggable(false)
+            Text(this.tr('插件')).fontSize(13).fontColor($r('app.color.brand_ink')).maxLines(1)
           }
         }
-        .id('home-ai-harness')
-        .layoutWeight(1)
-        .height(44)
-        .borderRadius(16)
-        .backgroundColor($r('app.color.soft_surface'))
-        .onClick(this.onOpenAi)
+        .id('home-plugins').layoutWeight(0.8).height(44).borderRadius(16)
+        .backgroundColor($r('app.color.surface')).accessibilityText(this.tr('插件'))
+        .onClick(this.onOpenPlugins)
       }.width('100%')
       Column({ space: 10 }) {
         Row() {
           Row({ space: 6 }) {
             LexiIcon({ name: 'note', iconSize: 18 })
-            Text('随手记')
+            Text(this.tr('随手记'))
               .fontSize(14)
               .fontWeight(FontWeight.Bold)
               .fontColor($r('app.color.text_primary'))
           }
           Blank()
-          Button('完整编辑 →', { buttonStyle: ButtonStyleMode.TEXTUAL })
+          Button(this.tr('完整编辑 →'), { buttonStyle: ButtonStyleMode.TEXTUAL })
             .height(28)
             .fontSize(12)
             .fontColor($r('app.color.brand'))
@@ -198,7 +207,7 @@ export struct LexiHomeTab {
 
         TextArea({
           text: this.quickText,
-          placeholder: '记录想法或待办…'
+          placeholder: this.tr('记录想法或待办…')
         })
           .id('home-quick-input')
           .width('100%')
@@ -215,7 +224,7 @@ export struct LexiHomeTab {
 
         Row() {
           Blank()
-          Button(this.quickSaving ? '保存中…' : '随手记下', { type: ButtonType.Normal })
+          Button(this.quickSaving ? this.tr('保存中…') : this.tr('随手记下'), { type: ButtonType.Normal })
             .id('home-quick-save')
             .height(36)
             .padding({ left: 16, right: 16 })
@@ -237,16 +246,16 @@ export struct LexiHomeTab {
 
       if (this.activeList.length > 0 || this.mapCount > 0 || this.canvasCount > 0) {
         Row({ space: 8 }) {
-          LexiHomeMetric({ labelText: '笔记', metricValue: this.activeList.length })
-          LexiHomeMetric({ labelText: '链接', metricValue: this.resolvedLinks })
-          LexiHomeMetric({ labelText: '导图', metricValue: this.mapCount })
-          LexiHomeMetric({ labelText: '白板', metricValue: this.canvasCount })
+          LexiHomeMetric({ labelText: this.tr('笔记'), metricValue: this.activeList.length })
+          LexiHomeMetric({ labelText: this.tr('链接'), metricValue: this.resolvedLinks })
+          LexiHomeMetric({ labelText: this.tr('导图'), metricValue: this.mapCount })
+          LexiHomeMetric({ labelText: this.tr('白板'), metricValue: this.canvasCount })
         }.width('100%')
       }
 
       if (this.pinnedList.length > 0) {
         Column({ space: 10 }) {
-          Text('置顶')
+          Text(this.tr('置顶'))
             .fontSize(15)
             .fontWeight(FontWeight.Bold)
             .fontColor($r('app.color.text_primary'))
@@ -265,9 +274,9 @@ export struct LexiHomeTab {
       if (this.activeList.length > 0) {
         Column({ space: 10 }) {
           Row() {
-            Text('最近笔记').fontSize(15).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary'))
+            Text(this.tr('最近笔记')).fontSize(15).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary'))
             Blank()
-            Button('全部笔记 →', { buttonStyle: ButtonStyleMode.TEXTUAL })
+            Button(this.tr('全部笔记 →'), { buttonStyle: ButtonStyleMode.TEXTUAL })
               .fontSize(12).fontColor($r('app.color.brand')).onClick((): void => { this.onViewAllNotes(); })
           }.width('100%')
           ForEach(this.recentList, (note: NoteItem) => { this.renderNoteCard(note); },

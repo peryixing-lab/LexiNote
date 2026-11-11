@@ -1,3 +1,7 @@
+import { LexiMultiCaret, LexiMultiCaretEdit } from '../core/LexiMultiCaret';
+import { LexiSpellcheck, LexiSpellingIssue } from '../core/LexiSpellcheck';
+import { LexiEditingActions } from '../core/LexiEditingActions';
+import { LexiAppearanceSettings } from '../core/LexiAppearanceSettings';
 import { common } from '@kit.AbilityKit';
 import { KeyCode } from '@kit.InputKit';
 import { FrameCallback, LengthMetrics } from '@kit.ArkUI';
@@ -7,11 +11,17 @@ import { LexiCompletion, LexiCompletionCandidate, LexiCompletionContext } from '
 import { LexiAnchorNavigation } from '../core/LexiAnchorNavigation';
 import { LexiIcon } from './LexiIcon';
 import { LexiLiveMarkdownEditor } from './LexiLiveMarkdownEditor';
+import { LexiMarkdownPreview } from './LexiEditorPanels';
 import { LexiLiveEditorController } from '../core/LexiLiveMarkdown';
-import { NoteItem, NoteLink, OutlineHeading } from '../core/LexiModels';
-import { LexiWorkspaceEditorController } from '../core/LexiWorkspaceModels';
+import { NoteItem, NoteLink, NoteProperty, OutlineHeading } from '../core/LexiModels';
+import { LexiWorkspaceEditorController, LexiWorkspaceInspectorSnapshot, LexiWorkspaceSelection } from '../core/LexiWorkspaceModels';
 import { LexiStorageService } from '../core/LexiStorageService';
+import { PluginEditorHandle } from '../plugin/adapters/LexiEditorBridge';
+import { LexiEditorBridge } from '../plugin/adapters/LexiEditorBridge';
+import { PluginSelectionRange } from '../plugin/model/PluginModels';
 import { LexiShareService } from '../core/LexiShareService';
+import { LexiFileActions } from '../core/LexiFileActions';
+import { LexiContextTarget } from '../core/LexiContextModels';
 import { MarkdownEngine } from '../core/MarkdownEngine';
 import { LexiContinuationData, LexiContinuationDraft } from '../core/LexiContinuationData';
 import { LexiContinuationSession } from '../core/LexiContinuationSession';
@@ -36,6 +46,16 @@ interface LexiWorkspaceEditorToolParams {
 
 @Component
 export struct LexiWorkspaceEditor {
+  @StorageProp('lexiEditorDefaultView') private editorDefaultView: string = 'edit';
+  @StorageProp('lexiEditorDefaultMode') private editorDefaultMode: string = 'live';
+  @StorageProp('lexiEditorShowTitle') private editorShowTitle: boolean = true;
+  @StorageProp('lexiEditorLimitWidth') private editorLimitWidth: boolean = true;
+  @StorageProp('lexiEditorViewStatus') private editorViewStatus: boolean = true;
+  @State private reading: boolean = false;
+  @StorageProp('lexiTabHeaders') private showTabHeaders: boolean = true;
+  @StorageProp('lexiFontSize') private noteFontSize: number = 16;
+  @StorageProp('lexiWheelZoomLock') private wheelZoomLock: boolean = false;
+  @StorageProp('lexiAccent') private noteAccent: string = '#6E44D9';
   noteId: string = '';
   @StorageProp('lexiAnchorRequest') @Watch('anchorRequested') anchorRequest: number = 0;
   @State private completionItems: LexiCompletionCandidate[] = [];
@@ -48,10 +68,15 @@ export struct LexiWorkspaceEditor {
   editorController: LexiWorkspaceEditorController = new LexiWorkspaceEditorController();
   @Prop @Watch('vaultNotesChanged') vaultNotes: NoteItem[] = [];
   @Prop paneWidth: number = 900;
+  @Prop externalInspector: boolean = false;
+  // True only for the tab that is currently selected and visible; the plugin editor bridge
+  // uses it to decide which editor is "active" instead of guessing from load order.
+  @Prop pluginActive: boolean = false;
   @Prop @Watch('continuationActivityChanged') continuationActive: boolean = true;
   @StorageProp('lexiViewportWidth') windowViewportWidth: number = 900;
   @StorageProp('lexiViewportHeight') windowViewportHeight: number = 800;
-  @State private note: NoteItem = new NoteItem();
+  @StorageProp('lexiAbilityForeground') private abilityForeground: boolean = true;
+  @State @Watch('syncPluginIdentity') private note: NoteItem = new NoteItem();
   @State private titleText: string = '';
   @State private bodyText: string = '';
   @State private loaded: boolean = false;
@@ -65,6 +90,15 @@ export struct LexiWorkspaceEditor {
   @State private historyCount: number = 0;
   @State private conflictResolving: boolean = false;
   @State private showToolsPopup: boolean = false;
+  @State private findOpen: boolean = false;
+  @State private findText: string = '';
+  @State private replaceText: string = '';
+  @State private locked: boolean = false;
+  @State private inspectorMode: string = 'outline';
+  @State private folded: boolean = false;
+  @State private spellingOpen: boolean = false;
+  @State private spellingIssues: LexiSpellingIssue[] = [];
+  @State private extraCarets: number[] = [];
   @State private toolPage: string = 'format';
   @State private toolLinkQuery: string = '';
   @State private showCaptureAssistant: boolean = false;
@@ -87,6 +121,7 @@ export struct LexiWorkspaceEditor {
   private revision: number = 0;
   private savedRevision: number = 0;
   private pendingSave: Promise<void> | undefined = undefined;
+  private pluginHandleId: string = '';
   private loading: Promise<void> | undefined = undefined;
   private documentScroller: Scroller = new Scroller();
   onRequestReadingSpace: () => void = (): void => {};
@@ -94,10 +129,12 @@ export struct LexiWorkspaceEditor {
   onSaved: (note: NoteItem) => void = (_note: NoteItem): void => {};
   onOpenNote: (noteId: string) => void = (_id: string): void => {};
   onConvertMap: (noteId: string) => void = (_id: string): void => {};
+  onInspectorChanged: (snapshot: LexiWorkspaceInspectorSnapshot) => void = (_snapshot: LexiWorkspaceInspectorSnapshot): void => {};
+  onRequestInspector: (mode: string) => void = (_mode: string): void => {};
 
   aboutToAppear(): void {
-    this.editorAttached = true;
-    this.inspectorOpen = this.paneWidth >= 900;
+    this.editorAttached = true; this.editorController.ownerId = this.continuationOwner;
+    this.inspectorOpen = !this.externalInspector && this.paneWidth >= 900;
     this.editorController.flush = async (): Promise<void> => {
       if (this.loading) {
         try { await this.loading; } catch {
@@ -107,19 +144,80 @@ export struct LexiWorkspaceEditor {
       }
       await this.flush();
     };
-    this.editorController.toggleReading = (): void => { this.toggleSourceMode(); };
+    this.editorController.toggleReading = (): void => { this.liveController.finishEditing(); this.reading = !this.reading; };
+    this.editorController.format = (action: string): void => { this.runEditingAction(action); };
+    this.editorController.selection = (): string => this.bodyText.substring(this.selectionStart, this.selectionEnd);
+    this.editorController.selectionRange = (): LexiWorkspaceSelection => {
+      const selection = new LexiWorkspaceSelection(); selection.start = this.selectionStart; selection.end = this.selectionEnd; return selection;
+    };
+    this.editorController.focus = (): void => { this.restoreEditorSelection(this.selectionStart, this.selectionEnd, this.bodyText, true); };
+    this.editorController.inspectorSnapshot = (): LexiWorkspaceInspectorSnapshot => this.inspectorSnapshot();
+    this.editorController.revealHeading = (heading: OutlineHeading): void => { this.jumpToHeading(heading); };
+    this.editorController.openTarget = (target: string): Promise<void> => this.openTarget(target);
+    this.registerPluginHandle();
     this.loading = this.load();
     this.loading.catch((): void => { this.loadFailed = true; this.statusText = '文档读取失败'; });
   }
 
+  /**
+   * Publishes this editor to the plugin host. Closures read live state; nothing here lets a
+   * plugin write a page @State directly.
+   */
+  private registerPluginHandle(): void {
+    const handle = new PluginEditorHandle();
+    handle.editorId = `ws-${this.continuationOwner}`;
+    handle.noteId = this.noteId;
+    handle.vaultId = this.note.vaultId;
+    handle.windowId = 'main';
+    handle.isDirty = (): boolean => this.revision !== this.savedRevision || this.pendingSave !== undefined;
+    handle.isReadOnly = (): boolean => this.locked;
+    handle.isVisible = (): boolean => this.editorAttached;
+    handle.isFocused = (): boolean => this.pluginActive && this.editorAttached;
+    handle.getContent = (): string => this.bodyText;
+    handle.getBaseContent = (): string => this.baseContent;
+    handle.getRevision = (): number => this.revision;
+    handle.getSelection = (): PluginSelectionRange => {
+      const range = new PluginSelectionRange();
+      range.from = this.selectionStart; range.to = this.selectionEnd; return range;
+    };
+    handle.replaceRange = (start: number, end: number, text: string): boolean => this.pluginReplaceRange(start, end, text);
+    handle.flush = async (): Promise<void> => { await this.flush(); };
+    handle.focus = (): void => { this.editorController.focus(); };
+    this.pluginHandleId = LexiEditorBridge.register(handle);
+  }
+
+  /** Applies a plugin range edit through the same path as user typing (undo + autosave). */
+  private pluginReplaceRange(start: number, end: number, text: string): boolean {
+    if (this.locked || !this.loaded) { return false; }
+    const content = this.bodyText;
+    const from = Math.max(0, Math.min(content.length, Math.min(start, end)));
+    const to = Math.max(from, Math.min(content.length, Math.max(start, end)));
+    const next = content.substring(0, from) + text + content.substring(to);
+    if (next === content) { return true; }
+    this.liveController.finishEditing();
+    this.updateBody(next);
+    return true;
+  }
+
+  private syncPluginIdentity(): void {
+    const handle = LexiEditorBridge.byId(this.pluginHandleId);
+    if (!handle) { return; }
+    handle.noteId = this.note.id.length > 0 ? this.note.id : this.noteId;
+    handle.vaultId = this.note.vaultId;
+  }
+
   aboutToDisappear(): void {
     this.editorAttached = false; this.focusRevision++;
+    if (this.pluginHandleId.length > 0) { LexiEditorBridge.unregister(this.pluginHandleId); this.pluginHandleId = ''; }
     this.pendingToolSnippet = ''; this.showToolsPopup = false;
     this.pendingCaptureOpen = false; this.showCaptureAssistant = false;
     this.continuationFocused = false;
     LexiContinuationSession.deactivate(this.context(), this.continuationOwner);
     if (this.saveTimer >= 0) { clearTimeout(this.saveTimer); }
     this.editorController.toggleReading = (): void => {};
+    this.editorController.format = (_action: string): void => {};
+    this.editorController.selection = (): string => '';
+    this.editorController.focus = (): void => {};
     this.flush().catch((): void => {});
   }
 
@@ -143,6 +241,7 @@ export struct LexiWorkspaceEditor {
         if (!root || !root.isAttached() || !root.isVisible()) { return; }
       } catch { return; }
       this.continuationFocused = true;
+      AppStorage.setOrCreate('lexiFocusedEditorOwner', this.continuationOwner);
     }
     LexiContinuationSession.activate(this.context(), this.continuationOwner, (): LexiContinuationDraft => {
       if (!this.editorAttached || !this.loaded || (!this.continuationActive && !this.continuationFocused)) {
@@ -156,6 +255,7 @@ export struct LexiWorkspaceEditor {
   }
 
   private toggleSourceMode(): void {
+    this.reading = false;
     this.focusRevision++;
     this.pendingToolSnippet = ''; this.showToolsPopup = false;
     this.pendingCaptureOpen = false; this.showCaptureAssistant = false;
@@ -174,7 +274,8 @@ export struct LexiWorkspaceEditor {
     this.bodyText = found.content;
     this.selectionStart = found.content.length; this.selectionEnd = found.content.length;
     this.allNotes = (await LexiStorageService.getNotes(found.vaultId)).filter((n: NoteItem): boolean => n.trashedAt === 0);
-    this.editing = false;
+    this.editing = this.editorDefaultMode === 'source';
+    this.reading = this.editorDefaultView === 'preview';
     this.refreshDocument();
     this.loaded = true;
     this.statusText = '已保存到本机';
@@ -197,9 +298,21 @@ export struct LexiWorkspaceEditor {
     }
   }
 
+  private inspectorSnapshot(): LexiWorkspaceInspectorSnapshot {
+    const snapshot = new LexiWorkspaceInspectorSnapshot();
+    snapshot.noteId = this.noteId;
+    snapshot.title = this.titleText;
+    snapshot.headings = this.headings.slice();
+    snapshot.outgoing = this.outgoing.slice();
+    snapshot.backlinks = this.backlinks.slice();
+    snapshot.properties = this.note.properties.slice();
+    return snapshot;
+  }
+
   private refreshDocument(includeLinks: boolean = true): void {
     this.headings = MarkdownEngine.extractOutline(this.bodyText);
     if (!includeLinks) {
+      this.onInspectorChanged(this.inspectorSnapshot());
       return;
     }
     const snapshot = new NoteItem();
@@ -212,17 +325,18 @@ export struct LexiWorkspaceEditor {
     const links = MarkdownEngine.buildNoteLinks(working);
     this.outgoing = links.filter((link: NoteLink): boolean => link.sourceId === this.noteId);
     this.backlinks = links.filter((link: NoteLink): boolean => link.targetId === this.noteId);
+    this.onInspectorChanged(this.inspectorSnapshot());
   }
 
   private changed(): void {
     this.revision++;
     this.statusText = '正在自动保存…';
-    if (!this.editing || this.inspectorOpen) {
+    if (!this.editing || this.inspectorOpen || this.externalInspector) {
       this.refreshDocument(false);
     }
     if (this.saveTimer >= 0) { clearTimeout(this.saveTimer); }
     this.saveTimer = setTimeout((): void => {
-      this.flush().catch((): void => { this.statusText = '保存失败 · 点击重试'; });
+      this.flush().then((): void => { if (this.spellingOpen) { this.checkSpelling(); } }).catch((): void => { this.statusText = '保存失败 · 点击重试'; });
     }, 400);
   }
 
@@ -302,6 +416,7 @@ export struct LexiWorkspaceEditor {
   }
 
   private undo(): void {
+    if (this.locked) { return; }
     this.liveController.finishEditing();
     const previous = this.undoHistory.pop();
     if (previous === undefined) { return; }
@@ -312,6 +427,7 @@ export struct LexiWorkspaceEditor {
   }
 
   private toggleTodo(lineIndex: number): void {
+    if (this.locked) { return; }
     const lines = this.bodyText.split('\n');
     if (lineIndex < 0 || lineIndex >= lines.length) { return; }
     lines[lineIndex] = /^\s*[-*+]\s+\[ \]/.test(lines[lineIndex]) ?
@@ -406,6 +522,7 @@ export struct LexiWorkspaceEditor {
   private jumpToHeading(heading: OutlineHeading): void {
     this.liveController.finishEditing();
     if (this.editing) { this.editing = false; }
+    this.folded = false;
     this.completionItems = [];
     if (heading.level === 1 && heading.title.trim() === this.titleText.trim()) {
       this.documentScroller.scrollTo({ xOffset: 0, yOffset: 0 }); return;
@@ -413,7 +530,8 @@ export struct LexiWorkspaceEditor {
     setTimeout((): void => {
       try {
         const utils = this.getUIContext().getComponentUtils();
-        const target = utils.getRectangleById(`workspace-block-${this.noteId}-${this.continuationOwner}-${heading.lineIndex}`);
+        const prefix = this.reading ? 'workspace-reading' : 'workspace-block';
+        const target = utils.getRectangleById(`${prefix}-${this.noteId}-${this.continuationOwner}-${heading.lineIndex}`);
         const viewport = utils.getRectangleById(`workspace-document-${this.noteId}-${this.continuationOwner}`);
         const delta = this.getUIContext().px2vp(target.windowOffset.y - viewport.windowOffset.y);
         this.documentScroller.scrollTo({ xOffset: 0,
@@ -447,6 +565,15 @@ export struct LexiWorkspaceEditor {
     }
   }
 
+  private async revealDocument(): Promise<void> {
+    try {
+      await this.flush();
+      await LexiFileActions.reveal(this.context(), LexiContextTarget.note(this.note));
+    } catch (error) {
+      this.getUIContext().getPromptAction().showToast({ message: (error as Error).message || '无法打开笔记所在文件夹' });
+    }
+  }
+
   private restoreEditorSelection(start: number, end: number, expectedBody: string, requestFocus: boolean): void {
     const revision = ++this.focusRevision;
     const sourceMode = this.editing;
@@ -470,8 +597,122 @@ export struct LexiWorkspaceEditor {
     }));
   }
 
-  private openTools(): void {
+  private runEditingAction(action: string): void {
     if (!this.loaded || this.conflictResolving) { return; }
+    if (action === 'heading-rename') {
+      const first = this.bodyText.lastIndexOf('\n', Math.max(0, this.selectionStart - 1)) + 1;
+      const next = this.bodyText.indexOf('\n', this.selectionStart); const last = next < 0 ? this.bodyText.length : next;
+      const line = this.bodyText.substring(first, last);
+      if (!/^#{1,6} /.test(line)) { throw new Error('请将光标放在需要重命名的标题行'); }
+      this.findOpen = true; this.findText = line; this.replaceText = line; this.selectionStart = first; this.selectionEnd = last; return;
+    }
+    if (action === 'spellcheck') {
+      this.spellingOpen = !this.spellingOpen;
+      if (this.spellingOpen) { this.checkSpelling(); } return;
+    }
+    if (action === 'cursor-above' || action === 'cursor-below') { this.addCursor(action === 'cursor-above' ? -1 : 1); return; }
+    this.extraCarets = [];
+    if (action === 'source-toggle') { this.toggleSourceMode(); return; }
+    if (action === 'find' || action === 'replace') { this.findOpen = true; return; }
+    if (action === 'lock') { this.locked = !this.locked; return; }
+    if (action === 'fold' || action === 'unfold' || action === 'fold-toggle') {
+      this.folded = action === 'fold' || (action === 'fold-toggle' && !this.folded); return;
+    }
+    if (action === 'outline' || action === 'backlinks' || action === 'outgoing' || action === 'properties') {
+      if (this.externalInspector) { this.onRequestInspector(action); return; }
+      this.inspectorMode = action; this.inspectorOpen = true; return;
+    }
+    if (action === 'inspector-toggle') {
+      if (this.externalInspector) { this.onRequestInspector('toggle'); }
+      else { this.inspectorOpen = !this.inspectorOpen; }
+      return;
+    }
+    if (this.locked) { throw new Error('当前笔记已锁定，请先解锁'); }
+    if (action === 'date' || action === 'time') {
+      const now = new Date();
+      const snippet = action === 'date' ? `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}` :
+        `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      const edit = LexiEditingActions.replace(this.bodyText, this.selectionStart, this.selectionEnd, snippet);
+      this.lastUndoAt = 0; this.updateBody(edit.content); this.selectionStart = edit.end; this.selectionEnd = edit.end;
+    } else {
+      const edit = LexiEditingActions.apply(this.bodyText, this.selectionStart, this.selectionEnd, action);
+      this.lastUndoAt = 0; this.updateBody(edit.content); this.selectionStart = edit.start; this.selectionEnd = edit.end;
+    }
+    this.reading = false; this.folded = false;
+    this.restoreEditorSelection(this.selectionStart, this.selectionEnd, this.bodyText, true);
+  }
+
+  private checkSpelling(): void {
+    const expected = this.bodyText;
+    LexiSpellcheck.check(this.context(), expected).then((issues: LexiSpellingIssue[]): void => {
+      if (expected === this.bodyText) { this.spellingIssues = issues; }
+    }).catch((error: Error): void => { this.statusText = error.message; });
+  }
+  private fixSpelling(word: string, suggestion: string): void {
+    if (this.locked) { return; }
+    this.lastUndoAt = 0; this.updateBody(this.bodyText.replace(new RegExp('\\b' + word + '\\b', 'g'), suggestion)); this.checkSpelling();
+  }
+  private addCursor(direction: number): void {
+    this.liveController.finishEditing(); this.reading = false; this.editing = true;
+    const lines = this.bodyText.split('\n'); const primaryLine = this.bodyText.substring(0, this.selectionStart).split('\n').length - 1;
+    const starts: number[] = []; let offset = 0;
+    for (const line of lines) { starts.push(offset); offset += line.length + 1; }
+    const column = this.selectionStart - starts[primaryLine];
+    let nextLine = primaryLine + direction;
+    while (nextLine >= 0 && nextLine < lines.length) {
+      const caret = starts[nextLine] + Math.min(column, lines[nextLine].length);
+      if (!this.extraCarets.includes(caret)) { this.extraCarets = this.extraCarets.concat([caret]); break; }
+      nextLine += direction;
+    }
+    this.selectionEnd = this.selectionStart;
+    this.restoreEditorSelection(this.selectionStart, this.selectionEnd, this.bodyText, true);
+  }
+  private applyMultiCaret(edit: LexiMultiCaretEdit): void {
+    this.lastUndoAt = 0; this.updateBody(edit.content);
+    this.selectionStart = edit.carets[0]; this.selectionEnd = this.selectionStart;
+    this.extraCarets = edit.carets.slice(1).filter((caret: number): boolean => caret !== this.selectionStart);
+    this.restoreEditorSelection(this.selectionStart, this.selectionEnd, this.bodyText, true);
+  }
+  private multiInsert(event: InsertValue): boolean {
+    if (!this.extraCarets.length || this.locked) { return true; }
+    if (this.selectionStart !== this.selectionEnd) { this.extraCarets = []; return true; }
+    this.applyMultiCaret(LexiMultiCaret.insert(this.bodyText, [event.insertOffset].concat(this.extraCarets), event.insertValue));
+    return false;
+  }
+  private multiDelete(event: DeleteValue): boolean {
+    if (!this.extraCarets.length || this.locked) { return true; }
+    if (this.selectionStart !== this.selectionEnd) { this.extraCarets = []; return true; }
+    this.applyMultiCaret(LexiMultiCaret.remove(this.bodyText, [this.selectionStart].concat(this.extraCarets), event.direction === TextDeleteDirection.BACKWARD, event.deleteValue.length));
+    return false;
+  }
+
+  private findNext(): void {
+    if (!this.findText) { return; }
+    let index = this.bodyText.indexOf(this.findText, this.selectionEnd);
+    if (index < 0) { index = this.bodyText.indexOf(this.findText); }
+    if (index < 0) { this.statusText = '没有匹配内容'; return; }
+    this.reading = false; this.folded = false;
+    this.selectionStart = index; this.selectionEnd = index + this.findText.length;
+    this.restoreEditorSelection(this.selectionStart, this.selectionEnd, this.bodyText, true);
+  }
+
+  private replaceCurrent(): void {
+    if (!this.findText || this.locked || this.conflictResolving) { return; }
+    if (this.bodyText.substring(this.selectionStart, this.selectionEnd) !== this.findText) { this.findNext(); return; }
+    const edit = LexiEditingActions.replace(this.bodyText, this.selectionStart, this.selectionEnd, this.replaceText);
+    this.lastUndoAt = 0; this.updateBody(edit.content); this.selectionStart = edit.end; this.selectionEnd = edit.end;
+    this.findNext();
+  }
+  private replaceMatches(): void {
+    if (!this.findText || this.locked || this.conflictResolving) { return; }
+    const count = this.bodyText.split(this.findText).length - 1;
+    this.lastUndoAt = 0;
+    this.updateBody(this.bodyText.split(this.findText).join(this.replaceText));
+    this.statusText = `已替换 ${count} 处`;
+  }
+
+  private openTools(): void {
+    if (!this.loaded || this.conflictResolving || this.locked) { return; }
     this.pendingToolSnippet = ''; this.pendingCaptureOpen = false;
     this.toolPage = 'format'; this.toolLinkQuery = '';
     this.toolSelectionStart = this.selectionStart; this.toolSelectionEnd = this.selectionEnd;
@@ -486,7 +727,7 @@ export struct LexiWorkspaceEditor {
   }
 
   private queueToolAction(action: string): void {
-    if (!this.loaded || this.conflictResolving) { return; }
+    if (!this.loaded || this.conflictResolving || this.locked) { return; }
     const selected = this.selectedToolText();
     let snippet = '';
     if (action === 'bold') { snippet = `**${selected || '粗体内容'}**`; }
@@ -676,7 +917,8 @@ export struct LexiWorkspaceEditor {
         });
       })
       MenuItem({ content: '导出 Markdown' }).onClick((): void => { this.exportDocument(); })
-      MenuItem({ content: '系统分享文件' }).onClick((): void => { this.shareDocument(); })
+      MenuItem({ content: '系统分享文件' }).id('workspace-share-file').onClick((): void => { this.shareDocument(); })
+      MenuItem({ content: '在文件管理中显示' }).id('workspace-reveal-file').onClick((): void => { this.revealDocument(); })
       MenuItem({ content: '生成思维导图' }).onClick((): void => {
         this.flush().then((): void => { this.onConvertMap(this.noteId); }).catch((): void => {
           this.statusText = '保存失败 · 点击重试';
@@ -689,12 +931,18 @@ export struct LexiWorkspaceEditor {
   private inspector() {
     Column({ space: 18 }) {
       Row() {
-        Text('文档大纲').fontSize(13).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+        Text(this.inspectorMode === 'properties' ? '笔记属性' : this.inspectorMode === 'backlinks' ? '反向链接' : this.inspectorMode === 'outgoing' ? '出链' : '文档大纲').fontSize(13).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
         Blank()
         Text(`${this.headings.length}`).fontSize(11).fontColor($r('app.color.text_secondary'))
       }.width('100%')
       Scroll() {
         Column({ space: 4 }) {
+          if (this.inspectorMode === 'properties') {
+            ForEach(this.note.properties, (prop: NoteProperty) => {
+              Text(prop.key + ': ' + prop.propValue).fontSize(12).width('100%')
+            }, (prop: NoteProperty): string => prop.key)
+          }
+          if (this.inspectorMode === 'outline') {
           if (this.headings.length === 0) {
             Text('用 Markdown 标题梳理思路，大纲会出现在这里。')
               .fontSize(12).lineHeight(21).fontColor($r('app.color.text_secondary')).width('100%')
@@ -707,22 +955,27 @@ export struct LexiWorkspaceEditor {
             .width('100%').constraintSize({ minHeight: 36 }).padding({ left: (heading.level - 1) * 10, right: 2, top: 7, bottom: 7 })
             .backgroundColor(Color.Transparent).borderRadius(6).onClick((): void => { this.jumpToHeading(heading); })
           }, (heading: OutlineHeading): string => heading.id)
+          }
           Divider().color($r('app.color.workspace_line')).margin({ top: 22, bottom: 16 })
           Text('双向链接').fontSize(13).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')).width('100%')
           Text(`${this.outgoing.length} 个出链 · ${this.backlinks.length} 个反向链接`)
             .fontSize(11).fontColor($r('app.color.text_secondary')).width('100%').margin({ top: 6, bottom: 10 })
+          if (this.inspectorMode === 'outline' || this.inspectorMode === 'outgoing') {
           ForEach(this.outgoing, (link: NoteLink) => {
             Button(link.targetTitle, { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
               .fontSize(12).fontColor($r('app.color.brand_ink')).width('100%').height(34)
               .backgroundColor(Color.Transparent).padding(0)
               .onClick((): void => { this.openTarget(`${link.targetId || link.targetTitle}${link.anchor ? '#' + link.anchor : ''}`).catch((): void => {}); })
           }, (link: NoteLink): string => `${link.sourceId}-${link.targetTitle}`)
+          }
+          if (this.inspectorMode === 'outline' || this.inspectorMode === 'backlinks') {
           ForEach(this.backlinks, (link: NoteLink) => {
             Button(link.sourceTitle, { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
               .fontSize(12).fontColor($r('app.color.brand_ink')).width('100%').height(34)
               .backgroundColor(Color.Transparent).padding(0)
               .onClick((): void => { this.openTarget(link.sourceId).catch((): void => {}); })
           }, (link: NoteLink): string => `back-${link.sourceId}-${link.targetTitle}`)
+          }
         }.width('100%').alignItems(HorizontalAlign.Start)
       }.width('100%').layoutWeight(1).scrollBar(BarState.Off).align(Alignment.Top)
     }
@@ -734,12 +987,16 @@ export struct LexiWorkspaceEditor {
   build() {
     Column() {
       Row({ space: 6 }) {
+        if (this.showTabHeaders) {
         LexiIcon({ name: 'folder', iconSize: 15 })
         Text(this.note.notebook || '知识库').fontSize(12).fontColor($r('app.color.text_secondary'))
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         Text('/').fontSize(12).fontColor($r('app.color.text_secondary'))
         Text(this.titleText || '无标题笔记').fontSize(12).fontColor($r('app.color.text_primary'))
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+        } else {
+          Blank().layoutWeight(1)
+        }
         Button(this.editing ? '实时预览' : '源码', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
           .id('workspace-edit-toggle').fontSize(12).height(34).padding({ left: 14, right: 14 }).borderRadius(7)
           .backgroundColor(this.editing ? $r('app.color.workspace_selection') : Color.Transparent)
@@ -760,6 +1017,7 @@ export struct LexiWorkspaceEditor {
           .id('workspace-document-more').height(34).fontSize(12).padding({ left: 10, right: 10 }).borderRadius(7)
           .fontColor($r('app.color.text_secondary')).backgroundColor(Color.Transparent).bindMenu(this.documentMenu())
         this.tool({ iconName: 'undo', label: '撤销正文编辑', action: (): void => { this.undo(); }, isEnabled: this.historyCount > 0 })
+        if (!this.externalInspector) {
         Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
           SymbolGlyph($r('sys.symbol.list_bullet')).fontSize(17).fontColor([$r('app.color.text_secondary')])
         }.id('workspace-outline-toggle').width(36).height(36).padding(0).borderRadius(7)
@@ -771,9 +1029,40 @@ export struct LexiWorkspaceEditor {
               if (this.paneWidth < 900) { this.onRequestReadingSpace(); }
             }
           })
+        }
       }
       .height(48).width('100%').padding({ left: 28, right: 16 })
       .border({ width: { bottom: 0.5 }, color: $r('app.color.workspace_line') })
+      if (this.spellingOpen) {
+        Scroll() {
+          Column({ space: 6 }) {
+            Row({ space: 8 }) { Text('英文拼写检查').fontSize(12); Button('重新检查').fontSize(12).onClick((): void => { this.checkSpelling(); }) }
+            ForEach(this.spellingIssues, (issue: LexiSpellingIssue) => {
+              Row({ space: 6 }) {
+                Text(issue.word).fontSize(12)
+                ForEach(issue.suggestions, (suggestion: string) => {
+                  Button(suggestion).fontSize(11).onClick((): void => { this.fixSpelling(issue.word, suggestion); })
+                }, (suggestion: string): string => suggestion)
+              }
+            }, (issue: LexiSpellingIssue): string => issue.word)
+          }.width('100%').alignItems(HorizontalAlign.Start)
+        }.width('100%').height(140).padding(8)
+      }
+      if (this.extraCarets.length > 0) {
+        Row({ space: 8 }) { Text(`${this.extraCarets.length + 1} 个输入光标`).fontSize(12); Button('取消多光标').fontSize(12).onClick((): void => { this.extraCarets = []; }) }
+      }
+      if (this.findOpen) {
+        Row({ space: 8 }) {
+          TextInput({ text: this.findText, placeholder: '查找内容' }).layoutWeight(1).height(36)
+            .onChange((text: string): void => { this.findText = text; }).onSubmit((): void => { this.findNext(); })
+          TextInput({ text: this.replaceText, placeholder: '替换为' }).layoutWeight(1).height(36)
+            .onChange((text: string): void => { this.replaceText = text; })
+          Button('下一个').fontSize(12).onClick((): void => { this.findNext(); })
+          Button('替换').fontSize(12).onClick((): void => { this.replaceCurrent(); })
+          Button('全部替换').fontSize(12).onClick((): void => { this.replaceMatches(); })
+          Button('关闭').fontSize(12).onClick((): void => { this.findOpen = false; })
+        }.width('100%').padding(8)
+      }
       Row() {
         Scroll(this.documentScroller) {
           Column({ space: 18 }) {
@@ -783,17 +1072,19 @@ export struct LexiWorkspaceEditor {
                 this.loading = this.load(); this.loading.catch((): void => { this.loadFailed = true; });
               })
             } else if (this.loaded) {
+              if (this.editorShowTitle) {
               TextArea({ text: this.titleText, placeholder: '无标题笔记' })
-                .id(`workspace-title-input-${this.noteId}-${this.continuationOwner}`).enabled(!this.conflictResolving)
+                .id(`workspace-title-input-${this.noteId}-${this.continuationOwner}`).enabled(!this.conflictResolving && !this.locked)
                 .width('100%').constraintSize({ minHeight: 44 }).padding(0)
                 .fontSize(30).lineHeight(40).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary'))
-                .placeholderColor($r('app.color.text_secondary')).caretColor($r('app.color.brand'))
+                .placeholderColor($r('app.color.text_secondary')).caretColor(this.noteAccent)
                 .backgroundColor(Color.Transparent).borderRadius(0)
                 .onFocus((): void => { this.activateContinuation(true); })
                 .onChange((text: string): void => {
                   const clean = text.replace(/\r?\n/g, ' ');
                   if (clean !== this.titleText) { this.titleText = clean; this.changed(); }
                 })
+              }
               Row({ space: 8 }) {
                 Text(this.note.noteType === 'study' ? '学习笔记' : this.note.noteType === 'quick' ? '快速笔记' : 'Markdown')
                   .fontSize(11).fontColor($r('app.color.brand_ink'))
@@ -803,19 +1094,32 @@ export struct LexiWorkspaceEditor {
                   Text(`#${tag}`).fontSize(11).fontColor($r('app.color.brand_ink'))
                 }, (tag: string): string => tag)
               }.width('100%').margin({ bottom: 14 })
-              if (this.editing) {
+              if (this.folded) {
+                ForEach(this.headings, (heading: OutlineHeading) => {
+                  Button(heading.title).width('100%').onClick((): void => { this.folded = false; this.jumpToHeading(heading); })
+                }, (heading: OutlineHeading): string => heading.id)
+                Button('展开当前笔记').onClick((): void => { this.folded = false; })
+              } else if (this.reading) {
+                LexiMarkdownPreview({ frameless: true, blocks: MarkdownEngine.parseBlocks(this.bodyText),
+                  outgoingLinks: this.outgoing, availableNotes: this.allNotes, notePath: this.note.path,
+                  anchorPrefix: `workspace-reading-${this.noteId}-${this.continuationOwner}`,
+                  onOpenTarget: (target: string): void => { this.openTarget(target).catch((): void => {}); },
+                  onToggleTodo: (line: number): void => { this.toggleTodo(line); } })
+              } else if (this.editing) {
                 TextArea({ text: this.bodyText, controller: this.bodyController, placeholder: '从一个想法开始。支持 Markdown、#标签与 [[双向链接]]。' })
-                  .id(`workspace-body-input-${this.noteId}-${this.continuationOwner}`).enabled(!this.conflictResolving).width('100%').constraintSize({ minHeight: 460 })
-                  .fontSize(16).lineHeight(28).fontColor($r('app.color.text_primary'))
-                  .placeholderColor($r('app.color.text_secondary')).caretColor($r('app.color.brand'))
+                  .id(`workspace-body-input-${this.noteId}-${this.continuationOwner}`).enabled(!this.conflictResolving && !this.locked).width('100%').constraintSize({ minHeight: 460 })
+                  .fontSize(this.noteFontSize).lineHeight(this.noteFontSize * 1.75).fontColor($r('app.color.text_primary'))
+                  .placeholderColor($r('app.color.text_secondary')).caretColor(this.noteAccent)
                   .backgroundColor(Color.Transparent).borderRadius(0).padding(0)
                   .onFocus((): void => { this.activateContinuation(true); })
                   .onChange((text: string): void => { this.updateBody(text); })
+                  .onWillInsert((event: InsertValue): boolean => this.multiInsert(event))
+                  .onWillDelete((event: DeleteValue): boolean => this.multiDelete(event))
                   .onTextSelectionChange((start: number, end: number): void => { this.refreshCompletion(start, end); })
                   .onKeyPreIme((event: KeyEvent): boolean => { return this.completionKey(event); })
               } else {
                 LexiLiveMarkdownEditor({
-                  content: this.bodyText, editorController: this.liveController, editorEnabled: !this.conflictResolving,
+                  content: this.bodyText, editorController: this.liveController, editorEnabled: !this.conflictResolving && !this.locked,
                   availableNotes: this.allNotes, notePath: this.note.path,
                   anchorPrefix: `workspace-block-${this.noteId}-${this.continuationOwner}`,
                   placeholder: '点按这里开始记录。支持 Markdown、#标签与 [[双向链接]]。',
@@ -832,13 +1136,15 @@ export struct LexiWorkspaceEditor {
               }
             }
           }
-          .width('100%').constraintSize({ maxWidth: 800 })
+          .width('100%').constraintSize({ maxWidth: this.editorLimitWidth ? 800 : 10000 })
           .padding({ left: 56, right: 56, top: 42, bottom: 80 }).alignItems(HorizontalAlign.Start)
         }
         .id(`workspace-document-${this.noteId}-${this.continuationOwner}`).layoutWeight(1).height('100%')
+        .enableScrollInteraction(!this.wheelZoomLock)
         .align(Alignment.Top).scrollBar(BarState.Auto)
-        if (this.inspectorOpen && this.paneWidth >= 680) { this.inspector(); }
+        if (!this.externalInspector && this.inspectorOpen && this.paneWidth >= 680) { this.inspector(); }
       }.width('100%').layoutWeight(1)
+        .onAxisEvent((event: AxisEvent): void => { LexiAppearanceSettings.handleAxis(event); })
       Row({ space: this.paneWidth >= 600 ? 16 : 8 }) {
         Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
           Row({ space: 6 }) {
@@ -849,9 +1155,11 @@ export struct LexiWorkspaceEditor {
           .backgroundColor($r('app.color.soft_surface')).accessibilityText('语音记录，打开离线语音速记')
           .enabled(this.loaded && !this.loadFailed && !this.conflictResolving)
           .onClick((): void => { this.requestVoiceCapture(); })
-        if (this.paneWidth >= 600) {
-          Text(this.editing ? 'Markdown 源码' : this.paneWidth >= 900 ? '实时预览 · 点按段落编辑' : '实时预览')
-            .fontSize(11).fontColor($r('app.color.text_secondary')).maxLines(1)
+        if (this.editorViewStatus && this.paneWidth >= 600) {
+          Button(this.reading ? '阅读视图' : this.editing ? 'Markdown 源码' : '实时预览',
+            { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
+            .id('workspace-view-status').height(32).fontSize(11).fontColor($r('app.color.text_secondary'))
+            .onClick((): void => { this.liveController.finishEditing(); this.reading = !this.reading; })
         }
         if (this.paneWidth >= 900) {
           Text(`${this.backlinks.length} 个反向链接`).fontSize(11).fontColor($r('app.color.text_secondary')).maxLines(1)

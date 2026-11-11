@@ -1,3 +1,5 @@
+import { LexiI18n } from '../core/LexiI18n';
+import { LexiInterfaceSettings } from '../core/LexiInterfaceSettings';
 import { AbilityConstant, Configuration, ConfigurationConstant, UIAbility, Want, wantConstant } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { display, KeyboardAvoidMode, window } from '@kit.ArkUI';
@@ -10,6 +12,9 @@ import { LexiShareCapture } from '../core/LexiShareCapture';
 import { LexiShareService } from '../core/LexiShareService';
 
 const DOMAIN = 0x1050;
+const PC_TITLE_BUTTON_SIZE: number = 32;
+const PC_TITLE_BUTTON_GAP: number = 8;
+const PC_TITLE_BUTTON_RIGHT: number = 8;
 
 export default class EntryAbility extends UIAbility {
   private mainWindow: window.Window | undefined;
@@ -40,6 +45,7 @@ export default class EntryAbility extends UIAbility {
     } catch (err) {
       hilog.error(DOMAIN, 'LexiNote', 'Failed to set colorMode: %{public}s', JSON.stringify(err));
     }
+    LexiI18n.initialize();
     this.receiveLaunch(want, launchParam);
   }
 
@@ -104,6 +110,9 @@ export default class EntryAbility extends UIAbility {
         hilog.error(DOMAIN, 'LexiNote', 'Failed to load content: %{public}s', JSON.stringify(err));
         return;
       }
+      try { LexiInterfaceSettings.attachStage(windowStage); } catch {
+        hilog.warn(DOMAIN, 'LexiNote', 'Interface zoom unavailable');
+      }
       this.mainWindow?.getUIContext().setKeyboardAvoidMode(KeyboardAvoidMode.RESIZE);
       this.updatePcTitleBar();
       this.updateInsets();
@@ -163,11 +172,11 @@ export default class EntryAbility extends UIAbility {
     try {
       this.mainWindow.setDecorButtonStyle({
         colorMode: configuration.colorMode,
-        buttonBackgroundSize: 32,
+        buttonBackgroundSize: PC_TITLE_BUTTON_SIZE,
         buttonIconSize: 18,
         buttonBackgroundCornerRadius: 6,
-        spacingBetweenButtons: 12,
-        closeButtonRightMargin: 12
+        spacingBetweenButtons: PC_TITLE_BUTTON_GAP,
+        closeButtonRightMargin: PC_TITLE_BUTTON_RIGHT
       });
     } catch {
       hilog.warn(DOMAIN, 'LexiNote', 'Using the default window button appearance');
@@ -175,8 +184,12 @@ export default class EntryAbility extends UIAbility {
   }
 
   private updateTitleButtonsInset(rect: window.TitleButtonRect): void {
-    // TitleButtonRect is already in vp, unlike windowRect and system avoid areas.
-    AppStorage.setOrCreate('lexiWindowButtonsInset', this.titleIntegrated ? Math.max(0, rect.width + rect.right) : 0);
+    // The reported hot zone includes empty leading padding. Reserve the visible
+    // three-button group so workspace actions sit directly beside it.
+    const controlsWidth = 3 * PC_TITLE_BUTTON_SIZE + 2 * PC_TITLE_BUTTON_GAP + PC_TITLE_BUTTON_RIGHT;
+    const reportedWidth = Math.max(0, rect.width + rect.right);
+    AppStorage.setOrCreate('lexiWindowButtonsInset', this.titleIntegrated ?
+      Math.min(reportedWidth > 0 ? reportedWidth : controlsWidth, controlsWidth) : 0);
   }
 
   private restorePcTitleBar(): void {
@@ -241,6 +254,7 @@ export default class EntryAbility extends UIAbility {
   }
 
   onWindowStageDestroy(): void {
+    LexiInterfaceSettings.detachStage();
     LexiShareService.unregisterWindow('EntryAbility');
     this.restorePcTitleBar();
     if (this.mainWindow && this.avoidListening) {

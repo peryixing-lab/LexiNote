@@ -1,0 +1,20 @@
+{
+  "string": [
+    {
+      "name": "lexi_form_quick_name",
+      "value": "LexiNote Quick Capture"
+    },
+    {
+      "name": "lexi_form_quick_description",
+      "value": "Open quick capture, voice input, or today’s note."
+    },
+    {
+      "name": "lexi_form_today_name",
+      "value": "LexiNote Today and Review"
+    },
+    {
+      "name": "lexi_form_today_description",
+      "value": "See today’s tasks and an older note from the current workspace. Tap tasks to update and save them."
+    }
+  ]
+}

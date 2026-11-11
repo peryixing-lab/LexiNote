@@ -1,8 +1,15 @@
+import { LexiI18n } from '../core/LexiI18n';
 import { uiMaterial } from '@kit.ArkUI';
 import { LexiIcon } from './LexiIcon';
 
 @Component
 export struct LexiNavigation {
+  @StorageProp('lexiLanguage') private interfaceLanguage: string = LexiI18n.language();
+
+  private tr(source: string, args: string[] = []): string {
+    return LexiI18n.text(source, this.interfaceLanguage, args);
+  }
+
   @Prop active: number = 0;
   onSelect: (index: number) => void = () => {};
   @State private immersiveSupported: boolean = false;
@@ -57,7 +64,7 @@ export struct LexiNavigation {
         : undefined
     )
     .accessibilityText(title)
-    .accessibilityDescription(this.active === index ? '已选中' : `前往${title}`)
+    .accessibilityDescription(this.active === index ? this.tr('已选中') : this.tr('前往{0}', [title]))
     .onClick(() => {
       this.onSelect(index);
     })
@@ -77,10 +84,10 @@ export struct LexiNavigation {
       }
       .margin({ right: 28 })
 
-      this.navigationItem(0, '首页', 'home')
-      this.navigationItem(1, '知识库', 'vault')
-      this.navigationItem(2, '关联', 'explore')
-      this.navigationItem(3, '设置', 'profile')
+      this.navigationItem(0, this.tr('首页'), 'home')
+      this.navigationItem(1, this.tr('知识库'), 'vault')
+      this.navigationItem(2, this.tr('关联'), 'explore')
+      this.navigationItem(3, this.tr('设置'), 'profile')
     }
     .height(56)
     .width('auto')

@@ -1,4 +1,6 @@
+import { LexiMathBitmapHost } from '../components/LexiMathBitmapHost';
 import { common } from '@kit.AbilityKit';
+import { LexiAppearanceSettings } from '../core/LexiAppearanceSettings';
 import { LexiWorkspaceEditor } from '../components/LexiWorkspaceEditor';
 import { LexiWorkspaceMindMap } from '../components/LexiWorkspaceMindMap';
 import { LexiWorkspaceTab } from '../core/LexiWorkspaceModels';
@@ -9,6 +11,7 @@ import { LexiSharableNoteSnapshot, LexiShareService } from '../core/LexiShareSer
 @Entry({ useSharedStorage: true })
 @Component
 struct DocumentWindow {
+  @StorageProp('lexiMathBitmapNeeded') private mathBitmapNeeded: boolean = false;
   @LocalStorageProp('documentNoteId') private documentId: string = '';
   @StorageProp('lexiWorkspaceRevision') @Watch('refresh') private revision: number = 0;
   @State private windowWidth: number = 900;
@@ -56,6 +59,7 @@ struct DocumentWindow {
     });
   }
   build() {
+    Stack() {
     Column() {
       Row({ space: 10 }) {
         Image($r('app.media.lexi_logo')).width(26).height(26)
@@ -92,5 +96,11 @@ struct DocumentWindow {
       }
     }.width('100%').height('100%').backgroundColor($r('app.color.workspace_page'))
       .onAreaChange((_old: Area, current: Area): void => { this.windowWidth = Number(current.width); })
+      .onKeyEventDispatch((event: KeyEvent): boolean => {
+        LexiAppearanceSettings.trackModifierKey(event);
+        return false;
+      })
+      if (this.mathBitmapNeeded) { LexiMathBitmapHost() }
+    }.width('100%').height('100%')
   }
 }

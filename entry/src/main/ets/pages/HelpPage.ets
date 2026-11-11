@@ -1,3 +1,4 @@
+import { LexiI18n } from '../core/LexiI18n';
 import { LexiBackHeader } from '../components/LexiBackHeader';
 
 @Builder
@@ -7,6 +8,12 @@ export function helpPageBuilder() {
 
 @Component
 export struct HelpPage {
+  @StorageProp('lexiLanguage') private interfaceLanguage: string = LexiI18n.language();
+
+  private tr(source: string, args: string[] = []): string {
+    return LexiI18n.text(source, this.interfaceLanguage, args);
+  }
+
   @StorageProp('lexiTopInset') titleTopInset: number = 0;
   @StorageProp('lexiBottomInset') bottomInset: number = 0;
   @StorageProp('lexiViewportWidth') viewportWidth: number = 390;
@@ -15,11 +22,11 @@ export struct HelpPage {
   @Builder
   guideSection(title: string, desc: string, bullets: string[]) {
     Column({ space: 10 }) {
-      Text(title)
+      Text(this.tr(title))
         .fontSize(17)
         .fontWeight(FontWeight.Bold)
         .fontColor($r('app.color.text_primary'))
-      Text(desc)
+      Text(this.tr(desc))
         .fontSize(13)
         .lineHeight(21)
         .fontColor($r('app.color.text_secondary'))
@@ -31,7 +38,7 @@ export struct HelpPage {
               .fontSize(14)
               .fontWeight(FontWeight.Bold)
               .fontColor($r('app.color.brand'))
-            Text(line)
+            Text(this.tr(line))
               .fontSize(13)
               .lineHeight(20)
               .fontColor($r('app.color.text_primary'))
@@ -53,7 +60,7 @@ export struct HelpPage {
   @Builder
   private pageTitleBar() {
     LexiBackHeader({
-      title: '使用说明',
+      title: this.tr('使用说明'),
       onBack: () => {
         this.pathStack.pop();
       }
@@ -106,7 +113,7 @@ export struct HelpPage {
           )
 
           this.guideSection(
-            '1.2.0 每日笔记与模板',
+            '2.0.0 每日笔记与模板',
             '首页与桌面侧边栏可一键打开今日笔记，同一天会继续使用已有日记。',
             [
               '模板独立于工作区保存，内置日记、日程、代码、学习、会议和项目模板，均可编辑。右键或手机长按笔记选择“设为模板”，也可在模板库中新建，并设置默认日记模板。',

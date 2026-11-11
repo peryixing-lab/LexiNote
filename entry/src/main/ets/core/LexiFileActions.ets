@@ -32,8 +32,12 @@ export class LexiFileActions {
     if (target.kind === 'note') { return (await Storage.getNoteById(target.id))?.path || ''; }
     const project = target.projectId ? (await Storage.getProjects('', true)).find((p: LexiProject): boolean => p.id === target.projectId) : undefined;
     const vault = (await Storage.getVaults(true)).find((v: VaultItem): boolean => v.id === target.vaultId);
-    return project?.folderUri ? LexiFolderStore.path(project.folderUri) : vault?.folderUri ? LexiFolderStore.path(vault.folderUri) :
-      `${context.filesDir}/vaults/${target.vaultId}`;
+    const root = project?.folderUri ? LexiFolderStore.path(project.folderUri) : vault?.folderUri ? LexiFolderStore.path(vault.folderUri) : '';
+    if (target.kind === 'mindmap') {
+      return root ? `${root}/${LexiFolderStore.mindMapRelativePath(target.id)}` :
+        `${context.filesDir}/vaults/${target.vaultId}/maps/${target.id}.json`;
+    }
+    return root || `${context.filesDir}/vaults/${target.vaultId}`;
   }
   static async copyPath(context: common.UIAbilityContext, target: LexiContextTarget, relative: boolean): Promise<void> {
     let path = await LexiFileActions.path(context, target);
@@ -48,18 +52,18 @@ export class LexiFileActions {
     const path = await LexiFileActions.path(context, target);
     if (!path) { throw new Error('文件尚未保存'); }
     await context.startAbility({ action: 'ohos.want.action.viewData', uri: fileUri.getUriFromPath(path),
-      type: 'text/markdown', flags: 1 });
+      type: target.kind === 'mindmap' ? 'application/json' : 'text/markdown', flags: 1 });
   }
 
   static async reveal(context: common.UIAbilityContext, target: LexiContextTarget): Promise<void> {
     const project = target.projectId ? (await Storage.getProjects('', true)).find((p: LexiProject): boolean => p.id === target.projectId) : undefined;
     const vault = (await Storage.getVaults(true)).find((v: VaultItem): boolean => v.id === target.vaultId);
     const rootUri = project?.folderUri || vault?.folderUri || '';
-    if (!rootUri) { throw new Error('笔记保存在应用内部，系统文件管理无法直接访问'); }
+    if (!rootUri) { throw new Error('请先在“工作区与项目”中保存到本地文件夹，再在系统文件管理中定位'); }
     const root = LexiFolderStore.path(rootUri);
     let path = await LexiFileActions.path(context, target);
     if (!path) { throw new Error('文件尚未保存'); }
-    if (target.kind === 'note') { path = path.substring(0, path.lastIndexOf('/')); }
+    if (target.kind === 'note' || target.kind === 'mindmap') { path = path.substring(0, path.lastIndexOf('/')); }
     if (!root || (path !== root && !path.startsWith(`${root}/`))) { throw new Error('无法定位到已授权的工作区文件夹'); }
     const relative = path === root ? '' : path.substring(root.length + 1);
     const directoryUri = rootUri.replace(/\/+$/, '') + (relative ? '/' + relative.split('/').map((part: string): string => encodeURIComponent(part)).join('/') : '');
@@ -81,6 +85,25 @@ export class LexiFileActions {
     }
     const saved = await Storage.saveNote(context, note); return saved.id;
   }
+
+  private static remapCopiedWikiLinks(content: string, idMap: Map<string, string>): string {
+    // Scan original links once. Replacing each old-id prefix in turn could rewrite
+    // a newly generated UUID when it happens to begin with another old note id.
+    return content.replace(/\[\[([^\[\]\r\n]+)\]\]/g, (full: string, inner: string): string => {
+      let targetEnd = inner.length;
+      const anchorAt = inner.indexOf('#');
+      const aliasAt = inner.indexOf('|');
+      if (anchorAt >= 0) { targetEnd = Math.min(targetEnd, anchorAt); }
+      if (aliasAt >= 0) { targetEnd = Math.min(targetEnd, aliasAt); }
+      const rawTarget = inner.substring(0, targetEnd);
+      const target = rawTarget.trim();
+      const newId = idMap.get(target);
+      if (!target || newId === undefined) { return full; }
+      const targetAt = rawTarget.indexOf(target);
+      return `[[${rawTarget.substring(0, targetAt)}${newId}${rawTarget.substring(targetAt + target.length)}${inner.substring(targetEnd)}]]`;
+    });
+  }
+
   static async duplicateScope(context: common.UIAbilityContext, target: LexiContextTarget): Promise<void> {
     let destination = target.vaultId;
     let projectId = '';
@@ -104,7 +127,7 @@ export class LexiFileActions {
       const copy = JSON.parse(JSON.stringify(original)) as NoteItem;
       copy.id = idMap.get(original.id)!; copy.vaultId = destination; copy.projectId = target.kind === 'workspace' ? projectMap.get(original.projectId) ?? '' : projectId;
       copy.path = ''; copy.createdAt = 0; copy.updatedAt = 0;
-      idMap.forEach((newId: string, oldId: string): void => { copy.content = copy.content.split(`[[${oldId}`).join(`[[${newId}`); });
+      copy.content = LexiFileActions.remapCopiedWikiLinks(original.content, idMap);
       await Storage.saveNote(context, copy);
     }
     for (const original of await Storage.getMindMaps(target.vaultId)) {

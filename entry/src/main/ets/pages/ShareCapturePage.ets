@@ -1,5 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { LexiMarkdownPreview } from '../components/LexiEditorPanels';
+import { LexiMathBitmapHost } from '../components/LexiMathBitmapHost';
 import { LexiShareCapture } from '../core/LexiShareCapture';
 import { LexiShareContent, LexiShareDraft } from '../core/LexiShareContent';
 import { LexiStorageService } from '../core/LexiStorageService';
@@ -12,6 +13,7 @@ struct ShareCapturePage {
   @LocalStorageProp('lexiShareSessionId') private sessionId: string = '';
   @LocalStorageProp('lexiShareDraftJson') @Watch('draftArrived') private draftJson: string = '';
   @LocalStorageProp('lexiShareError') private receiveError: string = '';
+  @StorageProp('lexiMathBitmapNeeded') private mathBitmapNeeded: boolean = false;
   @State private titleText: string = '';
   @State private sourceText: string = '';
   @State private quoteText: string = '';
@@ -278,6 +280,7 @@ struct ShareCapturePage {
           .onClick((): void => { this.handleSaveClick(); })
           .margin({ top: 8, bottom: 16 })
       }
+      if (this.mathBitmapNeeded) { LexiMathBitmapHost() }
     }.width('100%').height('100%').padding({ left: 8, right: 8 }).backgroundColor($r('app.color.surface'))
   }
 }

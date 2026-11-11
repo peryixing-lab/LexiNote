@@ -1,6 +1,7 @@
+import { LexiCollectionBackup } from './LexiModels';
 import { common } from '@kit.AbilityKit';
 import { preferences, relationalStore } from '@kit.ArkData';
-import { fileIo as fs, picker } from '@kit.CoreFileKit';
+import { fileIo as fs, fileUri, picker } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import {
   CanvasBoard,
@@ -24,11 +25,23 @@ import { LexiTemplates } from './LexiTemplates';
 import { LexiTemplateItem, LexiTemplateLibrary, LexiTemplateLibraryState } from './LexiTemplateLibrary';
 import { LexiFormService } from './LexiFormService';
 import { LexiStorageLock } from './LexiStorageLock';
+import { LexiWorkspacePreferences } from './LexiWorkspacePreferences';
+
+const STORAGE_ACCESS_PROMPT_STATE: string = 'storageAccessPrompt:v1';
 
 export class LexiCapturedNoteSaveResult {
   note: NoteItem = new NoteItem();
   duplicate: boolean = false;
   alreadySaved: boolean = false;
+}
+
+interface LexiLegacyPluginPreference {
+  id: string;
+  enabled: boolean;
+}
+
+interface LexiInstalledPluginEntry {
+  id: string;
 }
 
 export class LexiStorageService {
@@ -42,6 +55,12 @@ export class LexiStorageService {
   private static actionTransaction: boolean = false;
   private static appContext: common.Context | undefined;
   private static nativeSnapshotTimer: number = -1;
+  private static storagePromptNoteId: string = '';
+  // Each workspace window runs in its own process. Never read another window's last selection.
+  private static windowVaultId: string = '';
+
+  static bindWindowWorkspace(vaultId: string): void { LexiStorageService.windowVaultId = vaultId; }
+  static settingsOwner(): string { return LexiStorageService.windowVaultId; }
 
   static async init(context: common.Context): Promise<void> {
     LexiStorageService.appContext = context;
@@ -79,6 +98,7 @@ export class LexiStorageService {
     LexiStorageService.notesIndexReady = store.version >= 2;
     await LexiStorageService.refreshSettings(context);
     await LexiStorageService.ensureCleanStart(context);
+    await LexiStorageService.migrateWorkspacePreferences();
     if (!LexiStorageService.notesIndexReady) { await LexiStorageService.migrateNotesIndex(context); }
   }
 
@@ -86,10 +106,54 @@ export class LexiStorageService {
   // target private implementations, so unrelated async calls cannot inherit ownership.
   private static async withStorageLock<T>(context: common.Context | undefined, operation: () => Promise<T>): Promise<T> {
     if (!context) { throw new Error('知识库尚未初始化'); }
-    return LexiStorageLock.run<T>(context, async (): Promise<T> => {
+    let notifyStorageAccess = false;
+    const result = await LexiStorageLock.run<T>(context, async (): Promise<T> => {
       await LexiStorageService.refreshSettings(context);
-      return operation();
+      try {
+        const saved = await operation();
+        // Only an operation that actually committed a new internal note may queue the
+        // prompt. Extension processes persist the same flag and never present UI here.
+        try { notifyStorageAccess = await LexiStorageService.queueStorageAccessPromptUnlocked(); } catch {}
+        return saved;
+      } finally { LexiStorageService.storagePromptNoteId = ''; }
     });
+    if (notifyStorageAccess) {
+      // Publish after releasing the OS lock. A UI listener may immediately start a
+      // migration, which owns that same lock; awaiting UI under it would deadlock.
+      try {
+        AppStorage.setOrCreate<number>('lexiStorageAccessRevision',
+          (AppStorage.get<number>('lexiStorageAccessRevision') || 0) + 1);
+      } catch {}
+    }
+    return result;
+  }
+
+  private static async queueStorageAccessPromptUnlocked(): Promise<boolean> {
+    if (!LexiStorageService.storagePromptNoteId ||
+      await LexiStorageService.getSetting(STORAGE_ACCESS_PROMPT_STATE, '') !== '' ||
+      await LexiStorageService.getSetting('localRootUri', '') !== '') { return false; }
+    await LexiStorageService.setSettingUnlocked(STORAGE_ACCESS_PROMPT_STATE, 'pending');
+    return true;
+  }
+
+  /** Consume once before showing UI. Dismissal, denial, or process interruption keeps internal storage. */
+  static async takeStorageAccessPrompt(): Promise<boolean> {
+    return LexiStorageService.withStorageLock<boolean>(LexiStorageService.appContext, async (): Promise<boolean> => {
+      if (await LexiStorageService.getSetting(STORAGE_ACCESS_PROMPT_STATE, '') !== 'pending') { return false; }
+      await LexiStorageService.setSettingUnlocked(STORAGE_ACCESS_PROMPT_STATE, 'internal');
+      const notes = await LexiStorageService.noteMetadata();
+      return notes.some((note: NoteItem): boolean => note.trashedAt === 0) &&
+        await LexiStorageService.getSetting('localRootUri', '') === '';
+    });
+  }
+
+  static async storageLocationStatus(): Promise<string> {
+    // Location describes where existing files live, not whether a grant is still
+    // usable. Revocation must not make external notes appear to have moved inside.
+    if (await LexiStorageService.getSetting('localRootUri', '') !== '') { return 'external'; }
+    const vaultId = await LexiStorageService.getActiveVaultId();
+    const binding = await LexiStorageService.folderBinding(vaultId, await LexiStorageService.getActiveProjectId(vaultId));
+    return binding.folderUri ? 'external' : 'internal';
   }
 
   private static async refreshSettings(context: common.Context): Promise<void> {
@@ -263,24 +327,92 @@ export class LexiStorageService {
     });
   }
 
-  static async getSetting(key: string, fallback: string = ''): Promise<string> {
+  private static async migrateWorkspacePreferences(): Promise<void> {
+    const settings = LexiStorageService.settings;
+    if (!settings || await settings.get('workspacePreferencesMigrated:v1', '') === 'true') { return; }
+    const vaults = await LexiStorageService.getVaults();
+    const previous = await settings.get('activeVaultId', 'default-vault') as string;
+    const vaultId = vaults.some((vault: VaultItem): boolean => vault.id === previous) ? previous : vaults[0]?.id;
+    if (!vaultId) { return; }
+    // Migrate once, to the workspace that owned the old global settings. Other workspaces use defaults.
+    for (const key of LexiWorkspacePreferences.keys) {
+      const old = await settings.get(key, '') as string;
+      if (old !== '') { await settings.put(LexiWorkspacePreferences.key(vaultId, key), old); }
+    }
+    try {
+      const legacyPlugins = JSON.parse(await LexiStorageService.getRawValue('plugin.records', '[]')) as LexiLegacyPluginPreference[];
+      if (Array.isArray(legacyPlugins)) {
+        const enabled = legacyPlugins.filter((plugin: LexiLegacyPluginPreference): boolean => !!plugin && plugin.enabled === true &&
+          typeof plugin.id === 'string').map((plugin: LexiLegacyPluginPreference): string => plugin.id);
+        if (enabled.length > 0) { await settings.put(LexiWorkspacePreferences.key(vaultId, 'enabledPlugins'), JSON.stringify(enabled)); }
+      }
+    } catch { /* Plugin catalogue corruption must not block opening a workspace. */ }
+    await settings.put('workspacePreferencesLegacyOwner:v1', vaultId);
+    await settings.put('workspacePreferencesMigrated:v1', 'true');
+    await settings.flush();
+  }
+
+  static async getSetting(key: string, fallback: string = '', vaultId: string = ''): Promise<string> {
     if (!LexiStorageService.settings) {
       return fallback;
     }
-    return (await LexiStorageService.settings.get(key, fallback)) as string;
+    // This one preference is global. Refresh under the process lock so all open windows see a new choice.
+    if (key === 'workspaceOpenMode') {
+      return LexiStorageService.withStorageLock<string>(LexiStorageService.appContext, async (): Promise<string> =>
+        (await LexiStorageService.settings!.get(key, fallback)) as string);
+    }
+    const scopedKey = LexiWorkspacePreferences.contains(key) ?
+      LexiWorkspacePreferences.key(vaultId || LexiStorageService.windowVaultId || await LexiStorageService.getActiveVaultId(), key) : key;
+    return (await LexiStorageService.settings.get(scopedKey, fallback)) as string;
   }
 
-  static async setSetting(key: string, value: string): Promise<void> {
+  static async setSetting(key: string, value: string, vaultId: string = ''): Promise<void> {
+    // Resolve ownership before waiting for the disk lock or a workspace switch.
+    const scopedKey = LexiWorkspacePreferences.contains(key) ?
+      LexiWorkspacePreferences.key(vaultId || LexiStorageService.windowVaultId || await LexiStorageService.getActiveVaultId(), key) : key;
     return LexiStorageService.withStorageLock<void>(LexiStorageService.appContext, async (): Promise<void> =>
-      LexiStorageService.setSettingUnlocked(key, value));
+      LexiStorageService.setSettingUnlocked(scopedKey, value));
   }
 
   private static async setSettingUnlocked(key: string, value: string): Promise<void> {
     if (!LexiStorageService.settings) {
       return;
     }
-    await LexiStorageService.settings.put(key, value);
+    const scopedKey = LexiWorkspacePreferences.contains(key) ?
+      LexiWorkspacePreferences.key(await LexiStorageService.getActiveVaultId(), key) : key;
+    await LexiStorageService.settings.put(scopedKey, value);
     await LexiStorageService.settings.flush();
+  }
+
+  static async setPluginEnabled(pluginId: string, enabled: boolean, vaultId: string = ''): Promise<void> {
+    const owner = vaultId || LexiStorageService.windowVaultId || await LexiStorageService.getActiveVaultId();
+    return LexiStorageService.withStorageLock<void>(LexiStorageService.appContext, async (): Promise<void> => {
+      const current = LexiWorkspacePreferences.pluginIds(await LexiStorageService.getSetting('enabledPlugins', '[]', owner));
+      const next = current.filter((id: string): boolean => id !== pluginId);
+      if (enabled) { next.push(pluginId); }
+      await LexiStorageService.setSettingUnlocked(LexiWorkspacePreferences.key(owner, 'enabledPlugins'), JSON.stringify(next));
+    });
+  }
+
+  static async getEnabledPlugins(vaultId: string): Promise<string[]> {
+    return LexiStorageService.withStorageLock<string[]>(LexiStorageService.appContext, async (): Promise<string[]> =>
+      LexiWorkspacePreferences.pluginIds(await LexiStorageService.getSetting('enabledPlugins', '[]', vaultId)));
+  }
+
+  /** Update one entry under the process lock; another window's installations must survive. */
+  static async updateInstalledPlugin(pluginId: string, recordJson: string): Promise<void> {
+    return LexiStorageService.withStorageLock<void>(LexiStorageService.appContext, async (): Promise<void> => {
+      const entries = JSON.parse(await LexiStorageService.getRawValue('plugin.records', '[]')) as LexiInstalledPluginEntry[];
+      if (!Array.isArray(entries)) { throw new Error('插件清单格式错误'); }
+      const next = entries.filter((entry: LexiInstalledPluginEntry): boolean => entry.id !== pluginId);
+      if (recordJson) {
+        const entry = JSON.parse(recordJson) as LexiInstalledPluginEntry;
+        if (!entry || entry.id !== pluginId) { throw new Error('插件标识不匹配'); }
+        const previous = entries.findIndex((item: LexiInstalledPluginEntry): boolean => item.id === pluginId);
+        next.splice(previous < 0 ? next.length : previous, 0, entry);
+      }
+      await LexiStorageService.setRawValueUnlocked('plugin.records', JSON.stringify(next));
+    });
   }
 
   static async getVaults(includeArchived: boolean = false): Promise<VaultItem[]> {
@@ -294,12 +426,14 @@ export class LexiStorageService {
   }
 
   static async getActiveVaultId(): Promise<string> {
-    const current = await LexiStorageService.getSetting('activeVaultId', 'default-vault');
+    const current = LexiStorageService.windowVaultId || await LexiStorageService.getSetting('activeVaultId', 'default-vault');
     const vaults = await LexiStorageService.getVaults();
     if (vaults.some((v: VaultItem): boolean => v.id === current)) {
+      LexiStorageService.windowVaultId = current;
       return current;
     }
-    return vaults.length > 0 ? vaults[0].id : 'default-vault';
+    LexiStorageService.windowVaultId = vaults.length > 0 ? vaults[0].id : 'default-vault';
+    return LexiStorageService.windowVaultId;
   }
 
   static async getProjects(vaultId: string = '', includeArchived: boolean = false): Promise<LexiProject[]> {
@@ -368,6 +502,196 @@ export class LexiStorageService {
       }
     }
     return binding;
+  }
+
+  static async localRootReady(): Promise<boolean> {
+    const binding = new LexiFolderBinding();
+    binding.folderUri = await LexiStorageService.getSetting('localRootUri', '');
+    binding.permissionUri = await LexiStorageService.getSetting('localRootPermissionUri', '');
+    if (!binding.folderUri) { return false; }
+    try { await LexiFolderStore.activate(binding); return true; } catch { return false; }
+  }
+
+  static async configureLocalRoot(context: common.Context, documentsUri: string): Promise<string> {
+    return LexiStorageService.withStorageLock<string>(context, async (): Promise<string> =>
+      LexiStorageService.actionMutation<string>(async (): Promise<string> => {
+        const documents = new LexiFolderBinding();
+        documents.folderUri = documentsUri; documents.permissionUri = documentsUri;
+        const root = await LexiFolderStore.ensureChild(documents, 'LexiNote');
+        const vaults = await LexiStorageService.getVaults(true);
+        const projects = await LexiStorageService.getProjects('', true);
+        const notes = await LexiStorageService.getNotes('');
+        const originalPaths = notes.map((note: NoteItem): string => note.path);
+        const maps = await LexiStorageService.getMindMaps('');
+        const boards = await LexiStorageService.getCanvases('');
+        const usedNames = new Set<string>();
+        for (const vault of vaults) {
+          let folderName = LexiFolderPolicy.fileName(vault.name);
+          if (usedNames.has(folderName)) { folderName += `-${vault.id}`; }
+          usedNames.add(folderName);
+          const binding = await LexiFolderStore.ensureChild(root, folderName);
+          await LexiStorageService.writeScopeFiles(binding, vault.id, '', notes, maps, boards);
+          vault.folderUri = binding.folderUri; vault.permissionUri = binding.permissionUri;
+          const usedProjectNames = new Set<string>(['思维导图']);
+          for (const project of projects.filter((item: LexiProject): boolean => item.vaultId === vault.id)) {
+            let projectName = LexiFolderPolicy.fileName(project.name);
+            if (usedProjectNames.has(projectName)) { projectName += `-${project.id}`; }
+            usedProjectNames.add(projectName);
+            const child = await LexiFolderStore.ensureChild(binding, projectName);
+            await LexiStorageService.writeScopeFiles(child, vault.id, project.id, notes, maps, boards);
+            project.folderUri = child.folderUri; project.permissionUri = child.permissionUri;
+          }
+        }
+        await LexiStorageService.enqueueWrite(async (): Promise<void> => {
+          const db = LexiStorageService.db(); await db.beginTransaction();
+          try {
+            await LexiStorageService.writeValueInTransaction('vaults', JSON.stringify(vaults));
+            await LexiStorageService.writeValueInTransaction('projects', JSON.stringify(projects));
+            await LexiStorageService.writeValueInTransaction('notes', JSON.stringify(notes));
+            await db.commit();
+          } catch (error) { await db.rollBack(); throw error as Error; }
+        });
+        await LexiStorageService.setSettingUnlocked('localRootUri', root.folderUri);
+        await LexiStorageService.setSettingUnlocked('localRootPermissionUri', root.permissionUri);
+        await LexiStorageService.setSettingUnlocked(STORAGE_ACCESS_PROMPT_STATE, 'external');
+        await LexiStorageService.cleanupMigratedMarkdown(context, notes, originalPaths, root);
+        await LexiStorageService.moveLegacyShareFiles(context, root);
+        return root.folderUri;
+      }));
+  }
+
+  static async getNoteFileUri(note: NoteItem): Promise<string> {
+    const binding = await LexiStorageService.folderBinding(note.vaultId, note.projectId || '');
+    if (binding.folderUri && LexiFolderPolicy.within(LexiFolderStore.path(binding.folderUri), note.path)) {
+      const relative = note.path.substring(LexiFolderStore.path(binding.folderUri).length + 1);
+      return binding.folderUri.replace(/\/+$/, '') + '/' + relative.split('/').map((part: string): string => encodeURIComponent(part)).join('/');
+    }
+    return note.path.startsWith('file:') ? note.path : fileUri.getUriFromPath(note.path);
+  }
+
+  static async getActiveFolderUri(): Promise<string> {
+    const vaultId = await LexiStorageService.getActiveVaultId();
+    const binding = await LexiStorageService.folderBinding(vaultId, await LexiStorageService.getActiveProjectId(vaultId));
+    if (!binding.folderUri) { throw new Error('请先选择本地工作区文件夹'); }
+    await LexiFolderStore.activate(binding);
+    return binding.folderUri;
+  }
+
+  static async saveScopeToFolder(context: common.Context, id: string, isProject: boolean, parentUri: string,
+    createChild: boolean = true): Promise<string> {
+    return LexiStorageService.withStorageLock<string>(context, async (): Promise<string> =>
+      LexiStorageService.actionMutation<string>(async (): Promise<string> =>
+        LexiStorageService.saveScopeToFolderUnlocked(context, id, isProject, parentUri, createChild)));
+  }
+
+  private static async saveScopeToFolderUnlocked(context: common.Context, id: string, isProject: boolean, parentUri: string,
+    createChild: boolean): Promise<string> {
+    const vaults = await LexiStorageService.getVaults(true);
+    const projects = await LexiStorageService.getProjects('', true);
+    const project = isProject ? projects.find((item: LexiProject): boolean => item.id === id) : undefined;
+    const vaultId = project ? project.vaultId : id;
+    const vault = vaults.find((item: VaultItem): boolean => item.id === vaultId);
+    if (!vault || (isProject && !project)) { throw new Error('工作区或项目已不存在'); }
+    if (project ? !!project.folderUri : !!vault.folderUri) { throw new Error('此工作区或项目已经保存到本地文件夹'); }
+    const binding = await LexiFolderStore.bind(parentUri, project ? project.name : vault.name, createChild);
+    await LexiStorageService.assertNewFolder(binding.folderUri);
+    const root = await LexiFolderStore.activate(binding);
+    if ((await fs.listFile(root, { recursion: false })).length > 0) {
+      throw new Error('请选择空文件夹，或勾选“在所选目录下新建同名文件夹”');
+    }
+    const notes = await LexiStorageService.getNotes('');
+    const originalPaths = notes.map((note: NoteItem): string => note.path);
+    const maps = await LexiStorageService.getMindMaps('');
+    const boards = await LexiStorageService.getCanvases('');
+    await LexiStorageService.writeScopeFiles(binding, vaultId, project ? project.id : '', notes, maps, boards);
+    if (project) {
+      project.folderUri = binding.folderUri; project.permissionUri = binding.permissionUri;
+    } else {
+      for (const child of projects.filter((item: LexiProject): boolean => item.vaultId === vaultId && !item.folderUri)) {
+        const childName = `${LexiFolderPolicy.fileName(child.name)}-${child.id.substring(0, 8)}`;
+        const childBinding = await LexiFolderStore.bind(binding.folderUri, childName, true, binding.permissionUri);
+        await LexiStorageService.writeScopeFiles(childBinding, vaultId, child.id, notes, maps, boards);
+        child.folderUri = childBinding.folderUri; child.permissionUri = childBinding.permissionUri;
+      }
+      vault.folderUri = binding.folderUri; vault.permissionUri = binding.permissionUri;
+    }
+    // Publish new paths and bindings together, only after every local file is durable.
+    // The original sandbox files remain available if copying or indexing fails.
+    await LexiStorageService.enqueueWrite(async (): Promise<void> => {
+      const db = LexiStorageService.db(); await db.beginTransaction();
+      try {
+        await LexiStorageService.writeValueInTransaction('vaults', JSON.stringify(vaults));
+        await LexiStorageService.writeValueInTransaction('projects', JSON.stringify(projects));
+        await LexiStorageService.writeValueInTransaction('notes', JSON.stringify(notes));
+        await db.commit();
+      } catch (error) { await db.rollBack(); throw error as Error; }
+    });
+    await LexiStorageService.cleanupMigratedMarkdown(context, notes, originalPaths, binding);
+    await LexiStorageService.moveLegacyShareFiles(context, binding);
+    return binding.folderUri;
+  }
+
+  private static async cleanupMigratedMarkdown(context: common.Context, notes: NoteItem[], originalPaths: string[],
+    binding: LexiFolderBinding): Promise<void> {
+    for (let i = 0; i < notes.length; i++) {
+      const original = originalPaths[i]; const note = notes[i];
+      if (!original || original === note.path || !LexiFolderPolicy.within(context.filesDir, original) ||
+        !/\.(md|markdown)$/i.test(original) || !fs.accessSync(original)) { continue; }
+      const persisted = fs.readTextSync(note.path);
+      if (persisted !== LexiFrontmatter.serialize(note)) { throw new Error('本地文件核验未通过，原文件已保留'); }
+      const oldContent = fs.readTextSync(original);
+      if (oldContent !== persisted) {
+        await LexiFolderStore.writeMarkdownArchive(binding, `${note.title || note.id}-${note.id}`, oldContent);
+      }
+      fs.unlinkSync(original);
+    }
+  }
+
+  private static async moveLegacyShareFiles(context: common.Context, binding: LexiFolderBinding): Promise<void> {
+    const roots: string[] = [`${context.cacheDir}/share-out`, `${context.filesDir}/share-out`, `${context.filesDir}/knock-receive`];
+    for (const directory of roots) {
+      if (!fs.accessSync(directory)) { continue; }
+      const names = await fs.listFile(directory, { recursion: false });
+      for (const rawName of names) {
+        const name = rawName.replace(/^\/+/, '');
+        if (!/\.(md|markdown)$/i.test(name) || !LexiFolderPolicy.safeRelative(name)) { continue; }
+        const path = `${directory}/${name}`;
+        if (fs.lstatSync(path).isSymbolicLink()) { continue; }
+        await LexiFolderStore.writeMarkdownArchive(binding, name.replace(/\.(md|markdown)$/i, ''), fs.readTextSync(path));
+        fs.unlinkSync(path);
+      }
+    }
+  }
+
+  private static async writeScopeFiles(binding: LexiFolderBinding, vaultId: string, projectId: string,
+    notes: NoteItem[], maps: MindMapDoc[], boards: CanvasBoard[]): Promise<void> {
+    const scopedNotes = notes.filter((note: NoteItem): boolean => note.vaultId === vaultId && (note.projectId || '') === projectId);
+    const root = LexiFolderStore.path(binding.folderUri);
+    const existing = await LexiFolderStore.read(binding);
+    for (const note of scopedNotes) {
+      if (!LexiFolderPolicy.within(root, note.path)) {
+        const metadata = existing.catalog.notes.find((item: NoteItem): boolean => item.id === note.id && LexiFolderPolicy.safeRelative(item.path));
+        if (metadata) { note.path = `${root}/${metadata.path}`; }
+      }
+      note.path = await LexiFolderStore.writeNote(binding, note);
+      note.sourceMissing = false;
+    }
+    const catalogNotes = scopedNotes.slice();
+    for (const metadata of existing.catalog.notes) {
+      if (!catalogNotes.some((note: NoteItem): boolean => note.id === metadata.id) && LexiFolderPolicy.safeRelative(metadata.path)) {
+        const savedMetadata = JSON.parse(JSON.stringify(metadata)) as NoteItem;
+        savedMetadata.path = `${root}/${metadata.path}`; catalogNotes.push(savedMetadata);
+      }
+    }
+    const scopedMaps = maps.filter((doc: MindMapDoc): boolean => doc.vaultId === vaultId && (doc.projectId || '') === projectId);
+    for (const doc of existing.catalog.mindMaps) {
+      if (!scopedMaps.some((current: MindMapDoc): boolean => current.id === doc.id)) { scopedMaps.push(doc); }
+    }
+    const scopedBoards = boards.filter((board: CanvasBoard): boolean => board.vaultId === vaultId && (board.projectId || '') === projectId);
+    for (const board of existing.catalog.canvases) {
+      if (!scopedBoards.some((current: CanvasBoard): boolean => current.id === board.id)) { scopedBoards.push(board); }
+    }
+    await LexiFolderStore.writeCatalog(binding, catalogNotes, scopedMaps, scopedBoards);
   }
 
   private static async excludedFolderRoots(uri: string): Promise<string[]> {
@@ -506,7 +830,15 @@ export class LexiStorageService {
     for (const source of snapshot.catalog.mindMaps) {
       LexiBackupValidation.validateMap(source);
       const existing = maps.find((doc: MindMapDoc): boolean => doc.id === source.id && doc.vaultId === vault.id && (doc.projectId || '') === projectId);
-      if (existing) { continue; }
+      if (existing) {
+        if (source.updatedAt > existing.updatedAt) {
+          const restored = JSON.parse(JSON.stringify(source)) as MindMapDoc;
+          restored.vaultId = vault.id; restored.projectId = projectId;
+          for (const node of restored.nodes) { node.noteRefId = noteIds.get(node.noteRefId) || node.noteRefId; }
+          maps[maps.indexOf(existing)] = restored;
+        }
+        continue;
+      }
       const doc = JSON.parse(JSON.stringify(source)) as MindMapDoc;
       if (maps.some((other: MindMapDoc): boolean => other.id === doc.id)) { doc.id = `map-${util.generateRandomUUID(true)}`; }
       doc.vaultId = vault.id; doc.projectId = projectId;
@@ -577,7 +909,11 @@ export class LexiStorageService {
   }
 
   private static async setActiveVaultIdUnlocked(vaultId: string): Promise<void> {
+    if (!(await LexiStorageService.getVaults()).some((vault: VaultItem): boolean => vault.id === vaultId)) {
+      throw new Error('工作区不存在或已归档');
+    }
     await LexiStorageService.setSettingUnlocked('activeVaultId', vaultId);
+    LexiStorageService.windowVaultId = vaultId;
   }
 
   static async createVault(context: common.Context, name: string, description: string): Promise<VaultItem> {
@@ -599,6 +935,13 @@ export class LexiStorageService {
     vault.description = description.trim() || '独立本地知识空间';
     vault.createdAt = Date.now();
     vault.version = 1;
+    const root = new LexiFolderBinding();
+    root.folderUri = await LexiStorageService.getSetting('localRootUri', '');
+    root.permissionUri = await LexiStorageService.getSetting('localRootPermissionUri', '');
+    if (root.folderUri) {
+      const binding = await LexiFolderStore.ensureChild(root, `${LexiFolderPolicy.fileName(vault.name)}-${vault.id}`);
+      vault.folderUri = binding.folderUri; vault.permissionUri = binding.permissionUri;
+    }
     vaults.push(vault);
     LexiStorageService.ensureVaultDirs(context, vault.id);
     await LexiStorageService.setRawValueUnlocked('vaults', JSON.stringify(vaults));
@@ -724,18 +1067,19 @@ export class LexiStorageService {
     });
   }
 
-  static async saveNoteIfCurrent(context: common.Context, snapshot: NoteItem, expectedTitle: string, expectedContent: string): Promise<NoteItem> {
+  static async saveNoteIfCurrent(context: common.Context, snapshot: NoteItem, expectedTitle: string, expectedContent: string, validateCurrent?: () => void): Promise<NoteItem> {
     const captured = JSON.parse(JSON.stringify(snapshot)) as NoteItem;
     return LexiStorageService.withStorageLock<NoteItem>(context, async (): Promise<NoteItem> =>
-      LexiStorageService.saveNoteIfCurrentUnlocked(context, captured, expectedTitle, expectedContent));
+      LexiStorageService.saveNoteIfCurrentUnlocked(context, captured, expectedTitle, expectedContent, validateCurrent));
   }
 
-  private static async saveNoteIfCurrentUnlocked(context: common.Context, snapshot: NoteItem, expectedTitle: string, expectedContent: string): Promise<NoteItem> {
+  private static async saveNoteIfCurrentUnlocked(context: common.Context, snapshot: NoteItem, expectedTitle: string, expectedContent: string, validateCurrent?: () => void): Promise<NoteItem> {
     return LexiStorageService.actionMutation<NoteItem>(async (): Promise<NoteItem> => {
       const latest = await LexiStorageService.getNoteById(snapshot.id);
       if (!latest || latest.trashedAt > 0 || latest.title !== expectedTitle || latest.content !== expectedContent) {
         throw new Error('DOCUMENT_CHANGED_ELSEWHERE');
       }
+      if (validateCurrent) { validateCurrent(); }
       return LexiStorageService.saveNoteSnapshot(context, snapshot);
     });
   }
@@ -836,6 +1180,33 @@ export class LexiStorageService {
       const next = JSON.parse(JSON.stringify(original)) as NoteItem; next.title = title.trim();
       const binding = await LexiStorageService.folderBinding(next.vaultId, next.projectId || '');
       return binding.folderUri ? LexiStorageService.relocateNote(context, original, next) : LexiStorageService.saveNoteSnapshot(context, next);
+    });
+  }
+
+  static async moveNoteSelection(context: common.Context, sourceId: string, targetId: string, start: number, end: number, expected: string): Promise<NoteItem> {
+    return LexiStorageService.withStorageLock<NoteItem>(context, async (): Promise<NoteItem> => {
+      return LexiStorageService.actionMutation<NoteItem>(async (): Promise<NoteItem> => {
+        const source = await LexiStorageService.getNoteById(sourceId);
+        const target = await LexiStorageService.getNoteById(targetId);
+        if (!source || !target || source.id === target.id || source.trashedAt || target.trashedAt || source.vaultId !== target.vaultId) { throw new Error('请选择同一工作区中的其他笔记'); }
+        if (!expected || start < 0 || end <= start || source.content.substring(start, end) !== expected) { throw new Error('选区已变化，请重新选择'); }
+        const originals: NoteItem[] = JSON.parse(JSON.stringify([source, target])) as NoteItem[];
+        source.content = source.content.substring(0, start) + source.content.substring(end);
+        target.content += '\n\n' + expected;
+        await LexiStorageService.store?.beginTransaction(); LexiStorageService.actionTransaction = true;
+        try {
+          await LexiStorageService.saveNoteSnapshot(context, target);
+          await LexiStorageService.saveNoteSnapshot(context, source);
+          await LexiStorageService.store?.commit(); LexiStorageService.actionTransaction = false;
+          return target;
+        } catch (error) {
+          await LexiStorageService.store?.rollBack(); LexiStorageService.actionTransaction = false;
+          await LexiStorageService.restorePhysicalNotes(context, originals);
+          await LexiStorageService.persistFolderCatalog(source.vaultId, source.projectId || '');
+          await LexiStorageService.persistFolderCatalog(target.vaultId, target.projectId || '');
+          throw error as Error;
+        }
+      });
     });
   }
 
@@ -1046,6 +1417,10 @@ export class LexiStorageService {
     const binding = await LexiStorageService.folderBinding(note.vaultId, note.projectId || '');
     note.content = LexiFrontmatter.serialize(note);
     if (binding.folderUri) {
+      // Retained editors can still hold a pre-migration sandbox path.
+      if (note.path.length > 0 && previous && previous.vaultId === note.vaultId && (previous.projectId || '') === (note.projectId || '') &&
+        !LexiFolderPolicy.within(LexiFolderStore.path(binding.folderUri), note.path) &&
+        LexiFolderPolicy.within(LexiFolderStore.path(binding.folderUri), previous.path)) { note.path = previous.path; }
       note.path = await LexiFolderStore.writeNote(binding, note);
     } else {
       const vaultBase = LexiStorageService.ensureVaultDirs(context, note.vaultId);
@@ -1107,7 +1482,7 @@ export class LexiStorageService {
     if (!previous || oldTitle !== newTitle || previous.vaultId !== note.vaultId || previous.trashedAt !== note.trashedAt) {
       await LexiStorageService.syncLinkTable(await LexiStorageService.getNotes());
     } else { await LexiStorageService.syncNoteLinks(note, all); }
-    await LexiStorageService.setSettingUnlocked('lastEditedNoteId', note.id);
+    await LexiStorageService.setSettingUnlocked(LexiWorkspacePreferences.key(note.vaultId, 'lastEditedNoteId'), note.id);
     await LexiStorageService.persistFolderCatalog(note.vaultId, note.projectId || '');
     if (oldTitle && newTitle && oldTitle !== newTitle) {
       await LexiStorageService.persistFolderCatalog(note.vaultId, '');
@@ -1121,6 +1496,7 @@ export class LexiStorageService {
       version.savedAt = previous.updatedAt; version.snapshot = previous;
       await LexiStorageService.setRawValueUnlocked(`history:${note.id}`, JSON.stringify([version].concat(versions).slice(0, 20)));
     }
+    if (!previous && !binding.folderUri) { LexiStorageService.storagePromptNoteId = note.id; }
     return note;
   }
 
@@ -1369,7 +1745,9 @@ export class LexiStorageService {
     await LexiStorageService.setRawValueUnlocked(`history:${noteId}`, '[]');
     await LexiStorageService.setSettingUnlocked(`noteRedirect:${noteId}`, '');
     await LexiStorageService.syncLinkTable(next);
-    if (target) { await LexiStorageService.persistFolderCatalog(target.vaultId, target.projectId || ''); }
+    if (target) {
+      await LexiStorageService.persistFolderCatalog(target.vaultId, target.projectId || '');
+    }
   }
 
   static async getMindMaps(vaultId: string = ''): Promise<MindMapDoc[]> {
@@ -1422,19 +1800,26 @@ export class LexiStorageService {
     }
     doc.updatedAt = now;
 
-    const vaultBase = LexiStorageService.ensureVaultDirs(context, doc.vaultId);
-    const mapPath = `${vaultBase}/maps/${doc.id}.json`;
-    LexiStorageService.writeTextAtomic(mapPath, JSON.stringify(doc, null, 2));
-
     const idx = all.findIndex((m: MindMapDoc): boolean => m.id === doc.id);
     if (idx >= 0) {
       all[idx] = doc;
     } else {
       all.unshift(doc);
     }
+    const binding = await LexiStorageService.folderBinding(doc.vaultId, doc.projectId || '');
+    if (binding.folderUri) {
+      const notes = (await LexiStorageService.noteMetadata()).filter((note: NoteItem): boolean =>
+        note.vaultId === doc.vaultId && (note.projectId || '') === (doc.projectId || ''));
+      const boards = (await LexiStorageService.getCanvases(doc.vaultId)).filter((board: CanvasBoard): boolean =>
+        (board.projectId || '') === (doc.projectId || ''));
+      await LexiFolderStore.writeCatalog(binding, notes, all.filter((map: MindMapDoc): boolean =>
+        map.vaultId === doc.vaultId && (map.projectId || '') === (doc.projectId || '')), boards);
+    } else {
+      const vaultBase = LexiStorageService.ensureVaultDirs(context, doc.vaultId);
+      LexiStorageService.writeTextAtomic(`${vaultBase}/maps/${doc.id}.json`, JSON.stringify(doc, null, 2));
+    }
     await LexiStorageService.setRawValueUnlocked('mindmaps', JSON.stringify(all));
-    await LexiStorageService.setSettingUnlocked('lastEditedMapId', doc.id);
-    await LexiStorageService.persistFolderCatalog(doc.vaultId, doc.projectId || '');
+    await LexiStorageService.setSettingUnlocked(LexiWorkspacePreferences.key(doc.vaultId, 'lastEditedMapId'), doc.id);
     return doc;
   }
 
@@ -1625,6 +2010,12 @@ export class LexiStorageService {
     pkg.notes = await LexiStorageService.getNotes('');
     pkg.mindMaps = await LexiStorageService.getMindMaps('');
     pkg.canvases = await LexiStorageService.getCanvases('');
+    for (const vault of pkg.vaults) {
+      const collection = new LexiCollectionBackup(); collection.vaultId = vault.id;
+      collection.bookmarks = await LexiStorageService.getRawValue('bookmarks:' + vault.id, '[]');
+      collection.databases = await LexiStorageService.getRawValue('databases:' + vault.id, '[]');
+      pkg.collections.push(collection);
+    }
     pkg.templateLibrary = await LexiStorageService.templateMutation<string>(async (): Promise<string> => JSON.stringify(await LexiStorageService.templateLibraryState()));
     return pkg;
   }
@@ -1659,14 +2050,15 @@ export class LexiStorageService {
   ): Promise<string> {
     const vaultBase = LexiStorageService.ensureVaultDirs(context, 'default-vault');
     const localCopyPath = `${vaultBase}/backups/${util.generateRandomUUID(true)}_${fileName.replace(/[\\/:*?"<>|]/g, '_')}`;
-    try {
-      LexiStorageService.writeTextAtomic(localCopyPath, content);
-    } catch {}
+    const keepInternalBackup = !/\.(md|markdown)$/i.test(fileName);
+    if (keepInternalBackup) {
+      try { LexiStorageService.writeTextAtomic(localCopyPath, content); } catch {}
+    }
 
     const docPicker = new picker.DocumentViewPicker(context);
     const uris = await docPicker.save({ newFileNames: [fileName] });
     if (!uris || uris.length === 0) {
-      throw new Error('已取消外部保存，备份副本已保留在本机知识库目录');
+      throw new Error(keepInternalBackup ? '已取消外部保存，备份副本已保留在本机知识库目录' : '已取消保存，未创建 Markdown 文件副本');
     }
     const targetFile = await fs.open(uris[0], fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
     try {
@@ -1737,26 +2129,29 @@ export class LexiStorageService {
     return `成功导入 ${importedNotes} 篇笔记${importedMaps > 0 ? `、${importedMaps} 幅思维导图` : ''}`;
   }
 
-  static async restoreFromBackupPackage(context: common.Context, pkg: LexiBackupPackage): Promise<void> {
+  static async restoreFromBackupPackage(context: common.Context, pkg: LexiBackupPackage, destinationUri: string = ''): Promise<void> {
     const captured = JSON.parse(JSON.stringify(pkg)) as LexiBackupPackage;
+    LexiBackupValidation.validate(captured);
+    const selectedUri = destinationUri;
     return LexiStorageService.withStorageLock<void>(context, async (): Promise<void> =>
-      LexiStorageService.restoreFromBackupPackageUnlocked(context, captured));
+      LexiStorageService.restoreFromBackupPackageUnlocked(context, captured, selectedUri));
   }
 
   private static async restoreFromBackupPackageUnlocked(
     context: common.Context,
-    pkg: LexiBackupPackage
+    pkg: LexiBackupPackage,
+    destinationUri: string
   ): Promise<void> {
     const snapshot = JSON.parse(JSON.stringify(pkg)) as LexiBackupPackage;
     LexiBackupValidation.validate(snapshot);
     const operation = LexiStorageService.mutationQueue.then(async (): Promise<void> => {
-      await LexiStorageService.templateMutation<void>(async (): Promise<void> => { await LexiStorageService.restoreValidatedSnapshot(context, snapshot); });
+      await LexiStorageService.templateMutation<void>(async (): Promise<void> => { await LexiStorageService.restoreValidatedSnapshot(context, snapshot, destinationUri); });
     });
     LexiStorageService.mutationQueue = operation.catch((): void => {});
     await operation;
   }
 
-  private static async restoreValidatedSnapshot(context: common.Context, pkg: LexiBackupPackage): Promise<void> {
+  private static async restoreValidatedSnapshot(context: common.Context, pkg: LexiBackupPackage, destinationUri: string = ''): Promise<void> {
     // Backup paths never grant access to external folders. Restore into a fresh local generation.
     pkg.projects = Array.isArray(pkg.projects) ? pkg.projects : [];
     for (const vault of pkg.vaults) { vault.folderUri = ''; vault.permissionUri = ''; }
@@ -1775,21 +2170,34 @@ export class LexiStorageService {
     for (const board of pkg.canvases) {
       if (!pkg.projects.some((project: LexiProject): boolean => project.id === board.projectId && project.vaultId === board.vaultId)) { board.projectId = ''; }
     }
-    const generation = `${context.filesDir}/restores/${util.generateRandomUUID(true)}`;
-    for (const vault of pkg.vaults) {
-      for (const dir of ['notes', 'maps', 'canvases']) {
-        fs.mkdirSync(`${generation}/${vault.id}/${dir}`, true);
+    if (destinationUri) {
+      const restoreKey = util.generateRandomUUID(true).substring(0, 8);
+      for (const vault of pkg.vaults) {
+        const binding = await LexiFolderStore.bind(destinationUri, `${LexiFolderPolicy.fileName(vault.name)}-${restoreKey}`, true);
+        vault.folderUri = binding.folderUri; vault.permissionUri = binding.permissionUri;
+        await LexiStorageService.writeScopeFiles(binding, vault.id, '', pkg.notes, pkg.mindMaps, pkg.canvases);
+        for (const project of pkg.projects.filter((item: LexiProject): boolean => item.vaultId === vault.id)) {
+          const childBinding = await LexiFolderStore.bind(binding.folderUri,
+            `${LexiFolderPolicy.fileName(project.name)}-${project.id}`, true, binding.permissionUri);
+          project.folderUri = childBinding.folderUri; project.permissionUri = childBinding.permissionUri;
+          await LexiStorageService.writeScopeFiles(childBinding, vault.id, project.id, pkg.notes, pkg.mindMaps, pkg.canvases);
+        }
       }
-    }
-    for (const note of pkg.notes) {
-      note.path = `${generation}/${note.vaultId}/notes/${note.id}.md`;
-      LexiStorageService.writeTextAtomic(note.path, note.content);
-    }
-    for (const doc of pkg.mindMaps) {
-      LexiStorageService.writeTextAtomic(`${generation}/${doc.vaultId}/maps/${doc.id}.json`, JSON.stringify(doc));
-    }
-    for (const board of pkg.canvases) {
-      LexiStorageService.writeTextAtomic(`${generation}/${board.vaultId}/canvases/${board.id}.json`, JSON.stringify(board));
+    } else {
+      const generation = `${context.filesDir}/restores/${util.generateRandomUUID(true)}`;
+      for (const vault of pkg.vaults) {
+        for (const dir of ['notes', 'maps', 'canvases']) { fs.mkdirSync(`${generation}/${vault.id}/${dir}`, true); }
+      }
+      for (const note of pkg.notes) {
+        note.path = `${generation}/${note.vaultId}/notes/${note.id}.md`;
+        LexiStorageService.writeTextAtomic(note.path, note.content);
+      }
+      for (const doc of pkg.mindMaps) {
+        LexiStorageService.writeTextAtomic(`${generation}/${doc.vaultId}/maps/${doc.id}.json`, JSON.stringify(doc));
+      }
+      for (const board of pkg.canvases) {
+        LexiStorageService.writeTextAtomic(`${generation}/${board.vaultId}/canvases/${board.id}.json`, JSON.stringify(board));
+      }
     }
     const keys: string[] = ['vaults', 'projects', 'notes', 'mindmaps', 'canvases'];
     const values: string[] = [JSON.stringify(pkg.vaults), JSON.stringify(pkg.projects), JSON.stringify(pkg.notes),
@@ -1798,6 +2206,12 @@ export class LexiStorageService {
       const library = LexiTemplateLibrary.decode(pkg.templateLibrary);
       library.legacyImported = true;
       keys.push('templateLibrary:v1'); values.push(JSON.stringify(library));
+    }
+    if (pkg.collections) {
+      for (const collection of pkg.collections) {
+        keys.push('bookmarks:' + collection.vaultId, 'databases:' + collection.vaultId);
+        values.push(collection.bookmarks, collection.databases);
+      }
     }
     const links = MarkdownEngine.buildNoteLinks(pkg.notes);
     await LexiStorageService.enqueueWrite(async (): Promise<void> => {

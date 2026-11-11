@@ -1,11 +1,24 @@
 import { MarkdownBlock } from './LexiModels';
 import { MarkdownEngine } from './MarkdownEngine';
+import { LexiMathSyntax } from './LexiMathSyntax';
+
+export class LexiLiveSelection {
+  start: number = 0;
+  end: number = 0;
+}
 
 export class LexiLiveEditorController {
+  // Assigned by the owning page; mutations must await its conditional save.
+  flushPending: (() => Promise<void>) | null = null;
   caretPosition: (offset: number) => void = (_offset: number): void => {};
   setTextSelection: (start: number, end: number) => void = (_start: number, _end: number): void => {};
   insert: (snippet: string) => void = (_snippet: string): void => {};
   finishEditing: () => void = (): void => {};
+  // Plugin editor facade hooks; the live editor assigns real implementations on mount.
+  getText: () => string = (): string => '';
+  getSelection: () => LexiLiveSelection = (): LexiLiveSelection => new LexiLiveSelection();
+  replaceRange: (start: number, end: number, text: string) => void =
+    (_start: number, _end: number, _text: string): void => {};
 }
 
 export class LexiLiveRange {
@@ -108,8 +121,11 @@ export class LexiLiveMarkdown {
       const close = fence[1];
       return lines.slice(1).some((line: string): boolean => line.trim().startsWith(close));
     }
-    if (source.trimStart().startsWith('$$')) {
-      return source.trim().length > 4 && source.trim().endsWith('$$');
+    const trimmedStart = source.trimStart();
+    if (trimmedStart.startsWith('$$') || trimmedStart.startsWith('\\[') || /^\\begin\{[A-Za-z]+\*?\}/.test(trimmedStart)) {
+      const lines = source.trimEnd().split('\n');
+      const formula = LexiMathSyntax.displayBlock(lines, 0);
+      return formula !== undefined && formula.endLine === lines.length - 1;
     }
     if (kind === 'table' || kind === 'callout' || source.trimStart().startsWith('|') || source.trimStart().startsWith('>')) {
       return source.endsWith('\n\n');

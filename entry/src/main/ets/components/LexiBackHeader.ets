@@ -10,6 +10,7 @@ export struct LexiBackHeader {
   @Prop title: string = '';
   @Prop subtitle: string = '';
   @Prop actionLabel: string = '';
+  @Prop tintedBack: boolean = false;
   onBack: () => void = () => {};
   onAction: () => void = () => {};
   @State private immersiveSupported: boolean = false;
@@ -47,7 +48,9 @@ export struct LexiBackHeader {
         .width(40)
         .height(40)
         .padding(0)
-        .backgroundColor(this.immersiveSupported ? Color.Transparent : $r('app.color.surface'))
+        .backgroundColor(this.immersiveSupported
+          ? (this.tintedBack ? $r('app.color.title_chip_surface') : Color.Transparent)
+          : $r('app.color.surface'))
         .systemMaterial(this.immersiveSupported ? this.backMaterial : undefined)
         .accessibilityText('返回')
         .onClick(() => {

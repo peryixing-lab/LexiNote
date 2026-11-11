@@ -16,6 +16,8 @@ let deviceType = 'phone';
 let shareControllerCalls = [];
 let knockShareRegistrations = [];
 let dataReceiveRegistrations = [];
+let rejectAnchor = false;
+let decodedSize, releasedImages = 0;
 
 const FakeAppStorage = {
   setOrCreate(k, v) { appStorage.set(k, v); },
@@ -50,6 +52,7 @@ const nativeFs = {
 
 class FakeSharedData {
   constructor(record) {
+    if (record.utd === 'general.markdown' && !record.content) { throw Object.assign(new Error('Parameter error'), {code:401}); }
     this.records = [record];
   }
   addRecord(record) {
@@ -66,6 +69,8 @@ class FakeShareController {
   }
   async show(context, options) {
     shareControllerCalls.push({ context, data: this.data, options });
+    assert.equal(typeof options.anchor,'object','desktop sharing must not use a string or missing anchor');
+    if (rejectAnchor && options.anchor.windowOffset.x===240) { throw Object.assign(new Error('Parameter error'), {code:401}); }
   }
 }
 
@@ -111,7 +116,9 @@ const store = {
   async flushPendingWrites() {},
   async getNoteById(id) {
     return notes.has(id) ? JSON.parse(JSON.stringify(notes.get(id))) : undefined;
-  }
+  },
+  async getNoteFileUri(note) { return 'file://docs' + note.path; },
+  async getActiveFolderUri() { return 'file://docs/documents/工作区'; }
 };
 
 const cache = new Map();
@@ -124,6 +131,8 @@ function load(name) {
   const module = { exports: {} };
   cache.set(name, module.exports);
   const req = spec => {
+    if (spec === '@kit.ImageKit') return {image:{createImageSource:()=>({createPixelMap:async options=>{decodedSize=options.desiredSize;return {release:async()=>releasedImages++};},release:async()=>releasedImages++}),createImagePacker:()=>({packToData:async()=>new ArrayBuffer(256),release:async()=>releasedImages++})}};
+    if (spec === '@kit.PerformanceAnalysisKit') return {hilog:{info(){},error(){}}};
     if (spec === './LexiStorageService') return { LexiStorageService: store };
     if (spec.startsWith('./')) return load(spec.slice(2));
     if (spec === '@kit.ArkTS') return {
@@ -162,14 +171,15 @@ function load(name) {
         }
       }
     };
-    if (spec === '@kit.AbilityKit' || spec === '@kit.ArkUI') return {
+    if (spec === '@kit.ArkUI') return {window:{getLastWindow:async()=>({getWindowProperties:()=>({windowRect:{width:800,height:600}}),getUIContext:()=>({vp2px:n=>n*2,getAttachedFrameNodeById:()=>({isAttached:()=>true,isVisible:()=>true,getPositionToWindow:()=>({x:120,y:80}),getMeasuredSize:()=>({width:44,height:44})})})})}};
+    if (spec === '@kit.AbilityKit') return {
       AbilityConstant: { ContinueState: { ACTIVE: 0, INACTIVE: 1 } }
     };
     throw new Error('Unexpected import: ' + spec);
   };
   const canIUse = cap => cap === 'SystemCapability.Collaboration.HarmonyShare';
-  vm.runInThisContext('(function(require,module,exports,AppStorage,LocalStorage,canIUse){' + js + '\n})', { filename: name })(
-    req, module, module.exports, FakeAppStorage, FakeLocalStorage, canIUse
+  vm.runInThisContext('(function(require,module,exports,AppStorage,LocalStorage,canIUse,$r){' + js + '\n})', { filename: name })(
+    req, module, module.exports, FakeAppStorage, FakeLocalStorage, canIUse, () => ({id:1})
   );
   cache.set(name, module.exports);
   return module.exports;
@@ -183,6 +193,7 @@ const { LexiContextTarget, LexiContextBridge } = load('LexiContextModels');
 
 const context = {
   filesDir: '/sandbox/files',
+  cacheDir: '/sandbox/cache',
   abilityInfo: { name: 'EntryAbility' },
   setMissionContinueState: async () => {}
 };
@@ -197,6 +208,8 @@ function reset() {
   shareControllerCalls = [];
   knockShareRegistrations = [];
   dataReceiveRegistrations = [];
+  rejectAnchor = false;
+  decodedSize=undefined;releasedImages=0;LexiShareService.previewBytes=undefined;
   LexiContinuationSession.owner = '';
   LexiContinuationSession.getter = undefined;
   LexiShareService.activeOwner = '';
@@ -209,27 +222,51 @@ const tests = [
     assert.equal(LexiShareService.sanitizeFileName('  我的:笔记/草稿?*<>|  '), '我的_笔记_草稿.md');
     assert.equal(LexiShareService.sanitizeFileName('...'), '未命名笔记.md');
   }],
-  ['shareNoteById writes Markdown file into share-out and opens system ShareController with anchor', async () => {
+  ['shareNoteById shares a sandbox copy with FILE UTD and keeps the workspace original untouched', async () => {
     const n = new NoteItem();
     n.id = 'note-share-1';
     n.title = '分布式架构笔记';
     n.content = '# 分布式架构笔记\n\n支持系统文件分享与碰一碰。\n';
     n.notebook = '研发笔记';
+    n.path = '/documents/知萤/分布式架构笔记.md';
+    files.set(n.path, n.content);
     notes.set(n.id, n);
 
     await LexiShareService.shareNoteById(context, n.id, 'context-trigger-note-note-share-1');
     assert.equal(shareControllerCalls.length, 1);
     const call = shareControllerCalls[0];
-    assert.equal(call.options.anchor, 'context-trigger-note-note-share-1');
+    assert.deepEqual(call.options.anchor, {windowOffset:{x:240,y:160},size:{width:44,height:44}});
     assert.equal(call.options.previewMode, 0);
     assert.equal(call.options.selectionMode, 0);
 
     const records = call.data.getRecords();
     assert.equal(records.length, 1);
-    assert.equal(records[0].utd, 'general.markdown');
+    assert.equal(records[0].utd, 'general.file');
     assert.equal(records[0].title, '分布式架构笔记.md');
-    assert.ok(records[0].uri.startsWith('file://com.lovexjy.lexinote/sandbox/files/share-out/'));
-    assert.equal(files.get('/sandbox/files/share-out/分布式架构笔记.md'), '# 分布式架构笔记\n\n支持系统文件分享与碰一碰。\n');
+    assert.equal(records[0].uri, 'file://com.lovexjy.lexinote/sandbox/cache/lexi-share/分布式架构笔记.md');
+    assert.equal(files.get(n.path), n.content);
+    assert.ok(files.get('/sandbox/cache/lexi-share/分布式架构笔记.md').includes(n.content));
+    assert.equal(files.size,2);
+  }],
+  ['a detached share anchor retries at the default location', async () => {
+    const n=new NoteItem();n.id='anchor-note';n.title='定位';n.path='/documents/定位.md';n.content='内容';notes.set(n.id,n);files.set(n.path,n.content);rejectAnchor=true;
+    await LexiShareService.shareNoteById(context,n.id,'detached-trigger');
+    assert.equal(shareControllerCalls.length,2);assert.deepEqual(shareControllerCalls[1].options.anchor,{windowOffset:{x:400,y:300}});
+  }],
+  ['large Markdown bodies never enter the IPC record', async () => {
+    const n=new NoteItem();n.id='large-file';n.title='大文件';n.path='/documents/large.md';n.content='正文'.repeat(600000);notes.set(n.id,n);files.set(n.path,n.content);
+    await LexiShareService.shareNoteById(context,n.id);const record=shareControllerCalls[0].data.getRecords()[0];
+    assert.equal(record.content,undefined);assert.equal(record.thumbnail,undefined);assert.ok(JSON.stringify(record).length<1000);assert.equal(files.size,2);
+  }],
+  ['large app artwork is decoded to a small preview before Share Kit serialization', async () => {
+    const n=new NoteItem();n.id='preview';n.path='/documents/preview.md';notes.set(n.id,n);files.set(n.path,'正文');
+    const previewContext={...context,resourceManager:{getMediaContentSync:()=>new Uint8Array(18728)}};
+    await LexiShareService.shareNoteById(previewContext,n.id);const record=shareControllerCalls[0].data.getRecords()[0];
+    assert.deepEqual(decodedSize,{width:32,height:32});assert.equal(record.thumbnail.length,256);assert.ok(JSON.stringify(record).length<16384);assert.equal(releasedImages,3);
+  }],
+  ['sharing refuses a private or unsaved file without creating a Markdown cache', async () => {
+    const n=new NoteItem();n.id='private';n.path='/sandbox/files/private.md';notes.set(n.id,n);files.set(n.path,'保留');
+    await assert.rejects(LexiShareService.shareNoteById(context,n.id),/本地工作区/);assert.equal(files.size,1);assert.equal(shareControllerCalls.length,0);
   }],
   ['context menu for note includes share-file action', async () => {
     const n = new NoteItem();
@@ -239,6 +276,7 @@ const tests = [
     assert.ok(actions.some(a => a.id === 'share-file' && a.label === '系统分享文件'));
   }],
   ['knockShare shares active editor note from LexiContinuationSession with file URI and coordinate', async () => {
+    const n=new NoteItem();n.id='note-knock-1';n.path='/documents/碰一碰跨端笔记.md';n.content='# 碰一碰跨端笔记\n\n正在编辑的正文内容\n';notes.set(n.id,n);files.set(n.path,n.content);
     const owner = LexiContinuationSession.newOwner();
     LexiContinuationSession.activate(context, owner, () => {
       const draft = new LexiContinuationDraft();
@@ -250,7 +288,7 @@ const tests = [
 
     let sharedPayload;
     let clarified;
-    LexiShareService.handleKnockShare(context, {
+    await LexiShareService.handleKnockShare(context, {
       getInfo: () => ({ coordinate: { screenX: 180, screenY: 60 } }),
       async share(data) { sharedPayload = data; },
       async clarifyNonShare(info) { clarified = info; }
@@ -260,7 +298,7 @@ const tests = [
     assert.ok(sharedPayload);
     const records = sharedPayload.getRecords();
     assert.equal(records[0].title, '碰一碰跨端笔记.md');
-    assert.equal(files.get('/sandbox/files/share-out/碰一碰跨端笔记.md'), '# 碰一碰跨端笔记\n\n正在编辑的正文内容\n');
+    assert.equal(records[0].uri,'file://com.lovexjy.lexinote/sandbox/cache/lexi-share/碰一碰跨端笔记.md');assert.equal(files.size,2);
   }],
   ['knockShare calls clarifyNonShare when no note is open in editor', async () => {
     let sharedPayload;
@@ -272,7 +310,7 @@ const tests = [
     assert.equal(sharedPayload, undefined);
     assert.ok(clarified && clarified.message.includes('先打开一篇笔记'));
   }],
-  ['window registration uses phone/tablet knockShare on mobile and windowId + dataReceive on 2in1', async () => {
+  ['window registration supports outgoing knockShare and leaves incoming files with the system', async () => {
     const fakeWindow = { getWindowProperties: () => ({ id: 42 }) };
     deviceType = 'phone';
     LexiShareService.registerWindow('EntryAbility', context, fakeWindow);
@@ -289,32 +327,10 @@ const tests = [
     LexiShareService.registerWindow('EntryAbility', context, fakeWindow);
     assert.equal(knockShareRegistrations.length, 1);
     assert.deepEqual(knockShareRegistrations[0].capability, { windowId: 42 });
-    assert.equal(dataReceiveRegistrations.length, 1);
-    assert.equal(dataReceiveRegistrations[0].capability.windowId, 42);
-
-    // Simulate 2in1 receiving a Markdown file via knock dataReceive
-    files.set('/sandbox/files/knock-receive/incoming-note.md', '# PC 接收到的碰一碰笔记\n\n内容完整');
-    let receivedUri;
-    dataReceiveRegistrations[0].callback({
-      getInfo: () => ({ coordinate: { screenX: 220, screenY: 90 } }),
-      async receive(uri, callbacks) {
-        receivedUri = uri;
-        callbacks.onDataReceived(new FakeSharedData({
-          utd: 'general.markdown',
-          uri: '/sandbox/files/knock-receive/incoming-note.md',
-          title: 'incoming-note.md'
-        }));
-      }
-    });
-    assert.equal(receivedUri, 'file://com.lovexjy.lexinote/sandbox/files/knock-receive');
-    const published = JSON.parse(appStorage.get('lexiExternalMarkdownIncoming'));
-    assert.equal(published.isMarkdownFile, true);
-    assert.equal(published.title, 'incoming-note');
-    assert.ok(published.quote.includes('# PC 接收到的碰一碰笔记'));
+    assert.equal(dataReceiveRegistrations.length, 0, 'system owns incoming files; no app sandbox receiver');
 
     LexiShareService.unregisterWindow('EntryAbility');
     assert.equal(knockShareRegistrations[1].action, 'off');
-    assert.equal(dataReceiveRegistrations[1].action, 'off');
   }]
 ];
 

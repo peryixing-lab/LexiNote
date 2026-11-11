@@ -197,6 +197,12 @@ export class CanvasRouteParam {
   createNew: boolean = false;
 }
 
+export class LexiCollectionBackup {
+  vaultId: string = '';
+  bookmarks: string = '[]';
+  databases: string = '[]';
+}
+
 export class LexiBackupPackage {
   format: string = 'LexiNote.Backup';
   version: number = 1;
@@ -207,6 +213,7 @@ export class LexiBackupPackage {
   mindMaps: MindMapDoc[] = [];
   canvases: CanvasBoard[] = [];
   templateLibrary: string = '';
+  collections: LexiCollectionBackup[] = [];
 }
 
 export class TagCount {

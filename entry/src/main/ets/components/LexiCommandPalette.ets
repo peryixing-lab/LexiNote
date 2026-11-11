@@ -1,11 +1,21 @@
+import { LexiHotkeySettings } from '../core/LexiHotkeySettings';
+import { LexiI18n } from '../core/LexiI18n';
 import { CanvasBoard, MindMapDoc, NoteItem } from '../core/LexiModels';
 import { LEXI_COMMANDS, LexiCommand } from '../core/LexiCommands';
 import { LexiSearch } from '../core/LexiSearch';
 import { MarkdownEngine } from '../core/MarkdownEngine';
+import { PluginCommandRegistry, PluginCommandEntry } from '../plugin/core/PluginCommandRegistry';
 import { KeyCode } from '@kit.InputKit';
 
 @Component
 export struct LexiCommandPalette {
+  @StorageProp('lexiHotkeyOverrides') private hotkeyOverrides: string = '[]';
+  @StorageProp('lexiLanguage') private interfaceLanguage: string = LexiI18n.language();
+
+  private tr(source: string, args: string[] = []): string {
+    return LexiI18n.text(source, this.interfaceLanguage, args);
+  }
+
   @Prop mode: string = 'commands';
   @Prop notes: NoteItem[] = [];
   @Prop maps: MindMapDoc[] = [];
@@ -20,25 +30,32 @@ export struct LexiCommandPalette {
 
   private results(): LexiCommand[] {
     if (this.mode === 'commands') {
-      return LEXI_COMMANDS.filter((command: LexiCommand): boolean =>
-        LexiSearch.rank(command.title, this.paletteQuery) >= 0 || command.id.includes(this.paletteQuery.toLowerCase()));
+      const builtin = LEXI_COMMANDS.filter((command: LexiCommand): boolean =>
+        LexiSearch.rank(this.tr(command.title), this.paletteQuery) >= 0 || command.id.includes(this.paletteQuery.toLowerCase())).map((command: LexiCommand): LexiCommand =>
+          new LexiCommand(command.id, command.title, LexiHotkeySettings.bindings(this.hotkeyOverrides, command.id, LexiHotkeySettings.defaults(command.id)).join(' / ')));
+      // Plugin commands are merged after the static table; the table itself is never mutated.
+      const pluginCommands: LexiCommand[] = PluginCommandRegistry.visible()
+        .filter((entry: PluginCommandEntry): boolean =>
+          LexiSearch.rank(entry.title, this.paletteQuery) >= 0 || entry.qualifiedId.includes(this.paletteQuery.toLowerCase()))
+        .map((entry: PluginCommandEntry): LexiCommand => new LexiCommand(entry.qualifiedId, entry.title, '插件'));
+      return builtin.concat(pluginCommands);
     }
     const result: LexiCommand[] = [];
     for (const note of this.notes) {
       if (note.trashedAt > 0) { continue; }
       const title = MarkdownEngine.displayTitle(note);
       if (LexiSearch.rank(title, this.paletteQuery) >= 0 || (this.paletteQuery && LexiSearch.matches(note, this.paletteQuery))) {
-        result.push(new LexiCommand(note.id, title, `笔记 · ${note.notebook}`));
+        result.push(new LexiCommand(note.id, title, this.tr('笔记 · {0}', [note.notebook])));
       }
     }
     for (const map of this.maps) {
       if (map.trashedAt === 0 && LexiSearch.rank(map.title, this.paletteQuery) >= 0) {
-        result.push(new LexiCommand(`map:${map.id}`, map.title || '未命名导图', '思维导图'));
+        result.push(new LexiCommand(`map:${map.id}`, map.title || this.tr('未命名导图'), this.tr('思维导图')));
       }
     }
     for (const board of this.canvases) {
       if (LexiSearch.rank(board.title, this.paletteQuery) >= 0) {
-        result.push(new LexiCommand(`canvas:${board.id}`, board.title || '未命名白板', '白板'));
+        result.push(new LexiCommand(`canvas:${board.id}`, board.title || this.tr('未命名白板'), this.tr('白板')));
       }
     }
     return result.sort((a: LexiCommand, b: LexiCommand): number => {
@@ -50,6 +67,14 @@ export struct LexiCommandPalette {
 
   private choose(id: string): void {
     if (this.mode === 'commands') { this.onCommand(id); } else { this.onOpen(id); }
+  }
+
+  private commandTitle(command: LexiCommand): string {
+    if (this.mode === 'commands' && LEXI_COMMANDS.some((builtin: LexiCommand): boolean => builtin.id === command.id)) {
+      return this.tr(command.title);
+    }
+    // Plugin command titles are authored by the plugin and are shown verbatim.
+    return command.title;
   }
 
   private submit(): void {
@@ -72,20 +97,20 @@ export struct LexiCommandPalette {
 
   build() {
     Column({ space: 12 }) {
-      TextInput({ text: this.paletteQuery, placeholder: this.mode === 'commands' ? '搜索命令…' : '搜索笔记、导图或白板…' })
+      TextInput({ text: this.paletteQuery, placeholder: this.mode === 'commands' ? this.tr('搜索命令…') : this.tr('搜索笔记、导图或白板…') })
         .id('command-palette-input').height(48).fontSize(16)
         .fontColor($r('app.color.text_primary')).placeholderColor($r('app.color.text_secondary'))
         .backgroundColor($r('app.color.soft_surface')).borderRadius(12).defaultFocus(true)
         .onChange((text: string): void => { this.paletteQuery = text; this.selectedResult = 0; this.resultScroller.scrollEdge(Edge.Top); })
         .onSubmit((): void => { this.submit(); }).onKeyEvent((event: KeyEvent): void => { this.keyPressed(event); })
-      Text(this.mode === 'commands' ? '↑ ↓ 选择 · Enter 执行 · Esc 关闭' : '支持 tag:#标签 type:study notebook:分类 · Enter 打开')
+      Text(this.mode === 'commands' ? this.tr('↑ ↓ 选择 · Enter 执行 · Esc 关闭') : this.tr('支持 tag:#标签 type:study notebook:分类 · Enter 打开'))
         .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
       Scroll(this.resultScroller) {
         Column({ space: 2 }) {
           ForEach(this.results(), (command: LexiCommand, rowIndex: number) => {
             Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
               Column({ space: 4 }) {
-                Text(command.title).fontSize(14).fontColor($r('app.color.text_primary')).maxLines(1).width('100%')
+                Text(this.commandTitle(command)).fontSize(14).fontColor($r('app.color.text_primary')).maxLines(1).width('100%')
                 if (command.hint) { Text(command.hint).fontSize(11).fontColor($r('app.color.text_secondary')).maxLines(1).width('100%'); }
               }.width('100%').alignItems(HorizontalAlign.Start)
             }.id(`palette-result-${command.id}`).width('100%').height(54).padding({ left: 12, right: 12 }).borderRadius(8)
@@ -93,10 +118,10 @@ export struct LexiCommandPalette {
               .onClick((): void => { this.choose(command.id); })
           }, (command: LexiCommand): string => command.id)
           if (this.results().length === 0) {
-            Text(this.mode === 'commands' ? '没有匹配的命令' : '没有匹配的文档').fontSize(14)
+            Text(this.mode === 'commands' ? this.tr('没有匹配的命令') : this.tr('没有匹配的文档')).fontSize(14)
               .fontColor($r('app.color.text_secondary')).padding(20)
             if (this.mode !== 'commands' && this.paletteQuery.trim()) {
-              Button(`新建「${this.paletteQuery.trim()}」`).id('palette-create-note')
+              Button(this.tr('新建「{0}」', [this.paletteQuery.trim()])).id('palette-create-note')
                 .onClick((): void => { this.onCreate(this.paletteQuery.trim()); })
             }
           }

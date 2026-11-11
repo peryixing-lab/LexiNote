@@ -8,6 +8,7 @@ import {
   UnlinkedMention
 } from './LexiModels';
 import { LexiFrontmatter, LexiFrontmatterResult } from './LexiFrontmatter';
+import { LexiMathSyntax } from './LexiMathSyntax';
 
 export class RawWikiLink {
   targetText: string = '';
@@ -38,44 +39,75 @@ export class MarkdownEngine {
 
   static inlineSpans(text: string): LexiMarkdownInlineSpan[] {
     const spans: LexiMarkdownInlineSpan[] = [];
-    const pattern = /`([^`]+)`|\[\[([^\[\]]+)\]\]|\[([^\]]+)\]\(([^\s)]+)(?:\s+"[^"]*")?\)|\*\*([^*]+)\*\*|__([^_]+)__|==([^=]+)==|~~([^~]+)~~|\*([^*\n]+)\*|_([^_\n]+)_/g;
+    // Mask math before Markdown matching so subscripts, stars and brackets stay literal.
+    let protectedText = '';
+    let protectedCursor = 0;
+    for (const token of LexiMathSyntax.inlineTokens(text)) {
+      protectedText += text.substring(protectedCursor, token.start) + '\uFFFC'.repeat(token.end - token.start);
+      protectedCursor = token.end;
+    }
+    protectedText += text.substring(protectedCursor);
+    const pattern = /`([^`]+)`|\[\[([^\[\]]+)\]\]|\[([^\]]+)\]\(([^\s)]+)(?:\s+"[^"]*")?\)|\*\*([^*]+)\*\*|__([^_]+)__|==([^=]+)==|~~([^~]+)~~|\*([^*\n]+)\*|_([^_\n]+)_|<mark data-color="(red|orange|yellow|green|blue|purple)">([^<]+)<\/mark>/g;
     let cursor = 0;
-    let match: RegExpExecArray | null = pattern.exec(text);
+    let match: RegExpExecArray | null = pattern.exec(protectedText);
     while (match !== null) {
       if (match.index > cursor) {
-        const plain = new LexiMarkdownInlineSpan();
-        plain.id = `text-${cursor}`;
-        plain.text = text.substring(cursor, match.index);
-        spans.push(plain);
+        MarkdownEngine.appendMathSpans(spans, text.substring(cursor, match.index), cursor, 'text');
       }
       const segment = new LexiMarkdownInlineSpan();
       segment.id = `mark-${match.index}`;
+      const raw = text.substring(match.index, match.index + match[0].length);
+      let contentOffset = match.index + 1;
       if (match[1]) {
-        segment.kind = 'code'; segment.text = match[1];
+        segment.kind = 'code'; segment.text = raw.substring(1, raw.length - 1);
       } else if (match[2]) {
-        const parts = match[2].split('|');
+        const parts = raw.substring(2, raw.length - 2).split('|');
         segment.kind = 'link'; segment.target = parts[0].trim();
         segment.text = parts.length > 1 ? parts.slice(1).join('|').trim() : segment.target;
       } else if (match[3]) {
-        segment.kind = 'url'; segment.text = match[3]; segment.target = match[4];
+        segment.kind = 'url'; segment.text = raw.substring(1, 1 + match[3].length); segment.target = match[4];
       } else if (match[5] || match[6]) {
-        segment.kind = 'bold'; segment.text = match[5] || match[6];
+        segment.kind = 'bold'; segment.text = raw.substring(2, raw.length - 2); contentOffset++;
       } else if (match[7]) {
-        segment.kind = 'highlight'; segment.text = match[7];
+        segment.kind = 'highlight'; segment.text = raw.substring(2, raw.length - 2); contentOffset++;
       } else if (match[8]) {
-        segment.kind = 'strike'; segment.text = match[8];
+        segment.kind = 'strike'; segment.text = raw.substring(2, raw.length - 2); contentOffset++;
+      } else if (match[11]) {
+        segment.kind = 'highlight'; segment.target = match[11]; segment.text = match[12]; contentOffset = match.index + raw.indexOf('>') + 1;
       } else {
-        segment.kind = 'italic'; segment.text = match[9] || match[10];
+        segment.kind = 'italic'; segment.text = raw.substring(1, raw.length - 1);
       }
-      spans.push(segment);
+      if (segment.kind !== 'code' && segment.kind !== 'link' && segment.kind !== 'url' && LexiMathSyntax.hasMath(segment.text)) {
+        MarkdownEngine.appendMathSpans(spans, segment.text, contentOffset, segment.kind);
+      } else {
+        spans.push(segment);
+      }
       cursor = match.index + match[0].length;
-      match = pattern.exec(text);
+      match = pattern.exec(protectedText);
+    }
+    if (cursor < text.length) {
+      MarkdownEngine.appendMathSpans(spans, text.substring(cursor), cursor, 'text');
+    }
+    return spans;
+  }
+
+  private static appendMathSpans(spans: LexiMarkdownInlineSpan[], text: string, offset: number, kind: string): void {
+    let cursor = 0;
+    for (const token of LexiMathSyntax.inlineTokens(text)) {
+      if (token.start > cursor) {
+        const plain = new LexiMarkdownInlineSpan();
+        plain.id = `text-${offset + cursor}`; plain.kind = kind;
+        plain.text = text.substring(cursor, token.start); spans.push(plain);
+      }
+      const formula = new LexiMarkdownInlineSpan();
+      formula.id = `math-${offset + token.start}`; formula.text = token.text;
+      formula.kind = token.displayMode ? 'math-display' : 'math'; spans.push(formula);
+      cursor = token.end;
     }
     if (cursor < text.length) {
       const tail = new LexiMarkdownInlineSpan();
-      tail.id = `text-${cursor}`; tail.text = text.substring(cursor); spans.push(tail);
+      tail.id = `text-${offset + cursor}`; tail.kind = kind; tail.text = text.substring(cursor); spans.push(tail);
     }
-    return spans;
   }
 
   static splitTableRow(line: string): string[] {
@@ -83,11 +115,16 @@ export class MarkdownEngine {
     if (raw.startsWith('|')) { raw = raw.substring(1); }
     if (raw.endsWith('|') && !raw.endsWith('\\|')) { raw = raw.substring(0, raw.length - 1); }
     const cells: string[] = [];
+    const mathTokens = LexiMathSyntax.inlineTokens(raw);
+    let mathIndex = 0;
     let cell = '';
     let inCode = false;
     for (let index = 0; index < raw.length; index++) {
       const character = raw[index];
-      if (character === '\\' && raw[index + 1] === '|') { cell += '|'; index++; }
+      const mathToken = mathTokens[mathIndex];
+      if (mathToken && index === mathToken.start) {
+        cell += raw.substring(mathToken.start, mathToken.end); index = mathToken.end - 1; mathIndex++;
+      } else if (character === '\\' && raw[index + 1] === '|') { cell += '|'; index++; }
       else if (character === '`') { inCode = !inCode; cell += character; }
       else if (character === '|' && !inCode) { cells.push(cell.trim()); cell = ''; }
       else { cell += character; }
@@ -400,33 +437,31 @@ export class MarkdownEngine {
           i++;
         }
         i++;
+        const fenceText = codeLines.join('\n');
+        const langLower = lang.toLowerCase();
+        const isMathFence = langLower === 'math' || langLower === 'katex';
         const block = new MarkdownBlock();
         block.id = `block-${startLine}`;
-        block.kind = 'code';
-        block.meta = lang;
-        block.text = codeLines.join('\n');
+        if (isMathFence) {
+          block.kind = 'formula';
+          block.text = fenceText.trim().replace(/^(?:\$\$|\\\[)\s*([\s\S]*?)\s*(?:\$\$|\\\])$/, '$1').trim();
+        } else {
+          block.kind = 'code';
+          block.meta = lang;
+          block.text = fenceText;
+        }
         block.lineIndex = startLine;
         blocks.push(block);
         continue;
       }
-      if (trimmed.startsWith('$$')) {
-        const formulaLines: string[] = [];
+      const formula = LexiMathSyntax.displayBlock(lines, i);
+      if (formula) {
         const startLine = i;
-        if (trimmed.length > 4 && trimmed.endsWith('$$')) {
-          formulaLines.push(trimmed.substring(2, trimmed.length - 2).trim());
-          i++;
-        } else {
-          i++;
-          while (i < lines.length && !lines[i].trim().startsWith('$$')) {
-            formulaLines.push(lines[i]);
-            i++;
-          }
-          i++;
-        }
+        i = formula.endLine + 1;
         const block = new MarkdownBlock();
         block.id = `block-${startLine}`;
         block.kind = 'formula';
-        block.text = formulaLines.join('\n');
+        block.text = formula.text;
         block.lineIndex = startLine;
         blocks.push(block);
         continue;
@@ -481,7 +516,7 @@ export class MarkdownEngine {
         block.kind = 'todo';
         block.checked = false;
         block.text = trimmed.replace(/^[-*+]\s+\[ \]\s*/, '');
-      } else if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+      } else if (trimmed.startsWith('- ') || trimmed.startsWith('* ') || trimmed.startsWith('+ ')) {
         block.kind = 'bullet';
         block.text = trimmed.substring(2).trim();
       } else if (trimmed.startsWith('> [!')) {
@@ -494,9 +529,15 @@ export class MarkdownEngine {
           bodyLines.push(lines[i].trim().replace(/^>\s?/, ''));
         }
         block.text = bodyLines.filter((s: string): boolean => s.length > 0).join('\n');
-      } else if (trimmed.startsWith('> ')) {
+      } else if (trimmed === '>' || trimmed.startsWith('> ')) {
         block.kind = 'quote';
-        block.text = trimmed.substring(2).trim();
+        const quoteLines: string[] = [trimmed.replace(/^>\s?/, '')];
+        while (i + 1 < lines.length && (lines[i + 1].trim() === '>' || lines[i + 1].trim().startsWith('> ')) &&
+          !lines[i + 1].trim().startsWith('> [!')) {
+          i++;
+          quoteLines.push(lines[i].trim().replace(/^>\s?/, ''));
+        }
+        block.text = quoteLines.filter((s: string): boolean => s.length > 0).join('\n');
       } else {
         block.kind = 'paragraph';
         block.text = trimmed;

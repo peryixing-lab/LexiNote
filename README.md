@@ -31,11 +31,13 @@ Obsidian API 兼容层。
 - 入口：**设置 → 插件**。用户自行下载插件，通过「从本地安装 ZIP…」导入；应用不附带 Harness 安装包或专属安装入口。
 - 安装后默认**不授予任何能力**，需要逐项授权再启用；停用会立即释放事件、命令与运行时资源。
 - 插件只能通过受控 RPC 访问当前授权的知识库；拿不到物理路径、Node.js/Electron 模块或网络能力。
-  模型能力（`ai.inference`）由宿主代发请求，API Key 与 HTTP 留在宿主；侧栏视图（`ui.views`）渲染在插件
+  模型能力（`ai.inference`）由宿主代发 HTTP 请求；侧栏视图（`ui.views`）渲染在插件
   自己的 ArkWeb 页内。
 - 已测试范围：`Plugin` / `Notice` / `Vault` / `TFile` / `Events` / `Commands` / `Metadata` 子集。
   未实现的能力返回明确的 `E_UNSUPPORTED_API`，不会假装成功。
 - 安全边界尚未完成专项验证，**目前只应安装你自己编写或已审查的插件**；`isDesktopOnly` 的插件会被拒绝。
+
+**Harness 智能体 1.4.0**：[下载插件 ZIP](https://github.com/peryixing-lab/LexiNote/releases/download/v2.0.0/harness-lexinote-harness.zip)，然后在「设置 → 插件」中从本地安装。插件借鉴了 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 和 [dsh-token-usage](https://github.com/LaoYueHanNi/dsh-token-usage) 项目。多服务商配置会将 API Key 保存在插件的本地工作区数据中，未加密。
 
 开发原生插件请阅读 [LexiNote 原生插件制作规范](docs/native-plugin-authoring.md)，其中包含包结构、清单、
 SDK API、错误码、模板与验收清单。Obsidian 兼容范围见 [兼容性说明](docs/obsidian-compatibility.md)。

@@ -231,3 +231,7 @@ npm run package:win:ia32
 
 本项目沿用上游 **GNU General Public License v3.0**，见 [LICENSE](LICENSE)。界面图标与品牌资源来自
 上游 LexiNote 工程；第三方依赖许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## 参与贡献
+
+提交本系统的 PR 前，请阅读 [本分支贡献指南与 PR 规范](CONTRIBUTING.md)，并将 base 选择为 `Windows`。其他系统及共享插件规范见 [统一入口](https://github.com/peryixing-lab/LexiNote/blob/main/docs/PR_GUIDELINES.md)。

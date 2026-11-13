@@ -206,3 +206,7 @@ scripts/         构建、运行、自检、截图
 - **知萤 LexiNote**（HarmonyOS / ArkTS / ArkUI）的源码位于 [HarmonyOS 分支](https://github.com/peryixing-lab/LexiNote/tree/HarmonyOS)，macOS 版沿用其界面与设计体系，请遵循仓库的许可与署名要求。
 - 应用图标来自原工程 `docs/design/`；截图中的笔记内容为移植演示数据，仅用于文档，不随应用安装。
 - 感谢项目与社区贡献者。macOS、HarmonyOS 和 Windows 版在本仓库统一维护和发布。
+
+## 参与贡献
+
+提交本系统的 PR 前，请阅读 [本分支贡献指南与 PR 规范](CONTRIBUTING.md)，并将 base 选择为 `macOS`。其他系统及共享插件规范见 [统一入口](https://github.com/peryixing-lab/LexiNote/blob/main/docs/PR_GUIDELINES.md)。

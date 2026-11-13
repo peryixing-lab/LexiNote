@@ -79,7 +79,7 @@ function buildBundle() {
   chunks.push('    __modules[id] = factory;');
   chunks.push('  }');
   // Reuse the repository's pinned markdown-it 14.1.0 dependency. No remote scripts.
-  const markdownRoot = path.join(ROOT, 'tools/reading-bundle/node_modules/markdown-it');
+  const markdownRoot = path.join(HERE, 'node_modules/markdown-it');
   const markdownPackage = JSON.parse(fs.readFileSync(path.join(markdownRoot, 'package.json'), 'utf8'));
   if (markdownPackage.version !== '14.1.0') { throw new Error('Harness requires markdown-it 14.1.0'); }
   const markdown = fs.readFileSync(path.join(markdownRoot, 'dist/markdown-it.min.js'), 'utf8');

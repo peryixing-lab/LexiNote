@@ -1,0 +1,14 @@
+{
+  "name": "lexinote-harness",
+  "version": "1.5.0",
+  "private": true,
+  "license": "GPL-3.0",
+  "scripts": {
+    "build": "node build.cjs",
+    "test": "node tests/history.cjs",
+    "test:host": "node tests/profile-store.cjs"
+  },
+  "devDependencies": {
+    "markdown-it": "14.1.0"
+  }
+}

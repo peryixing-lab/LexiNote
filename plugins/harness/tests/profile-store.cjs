@@ -1,7 +1,9 @@
 'use strict';
 const assert = require('node:assert/strict');
 const { createProfileContext, STORAGE_KEY } = require('../src/profile-store');
-const { createSandbox } = require('../../../scripts/tests/lib/plugin-sandbox.cjs');
+const path = require('node:path');
+if (!process.env.LEXINOTE_HARMONY_ROOT) { throw Error('Set LEXINOTE_HARMONY_ROOT to a HarmonyOS branch checkout for host integration tests.'); }
+const { createSandbox } = require(path.join(process.env.LEXINOTE_HARMONY_ROOT, 'scripts/tests/lib/plugin-sandbox.cjs'));
 const box = createSandbox(); box.reset();
 const hostStorage = box.prepareStorage();
 const { PluginAiService: native } = box.load('plugin/ai/PluginAiService');

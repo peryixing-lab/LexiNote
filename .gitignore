@@ -1,85 +1,26 @@
-# DevEco Studio, Hvigor and dependencies
-.idea/
-.agents/
-.codex/
-.hvigor/
-**/build/
-**/oh_modules/
-**/node_modules/
-**/.preview/
-**/.cxx/
-**/.test/
-.appanalyzer/
-/.cache/
-/.dsh-hdc/
-/.dsh-hvigor-tmp/
-local.properties
+build/
+.build-cache/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+.DS_Store
 
-# Local signing configuration and credentials
-/build-profile.json5
-*.p12
-*.p7b
-*.cer
-*.pem
-*.key
-
-# Generated packages, exports and local working material
+# Generated files and private local material
+**/node_modules
+**/dist/
 *.hap
 *.hsp
 *.app
-/exports/
-# docs/ 为内部工作账面,不入库。
-/docs/*
-!/docs/native-plugin-authoring.md
-!/docs/plugin-api-reference.md
-!/docs/plugin-manifest-v2.md
-!/docs/plugin-security.md
-!/docs/plugin-marketplace.md
-!/docs/plugin-development.md
-!/docs/plugin-testing.md
-!/docs/obsidian-compatibility.md
-!/docs/plugin-inspector.md
-!/docs/lexinote_plugin_bridge_spec.md
-/plugins/harness/dist/
-*.textClipping
-/*.docx
-/design-qa.md
-/.fixtures-out/
-*.log
-
-# OS and editor temporary files
-.DS_Store
-Thumbs.db
-~$*
-*.swp
-*.swo
-
-# Desktop installers, local data and caches (assets under Windows/build are source)
 *.dmg
 *.exe
 *.msi
 *.zip
 *.blockmap
-**/dist/
-**/node_modules
-**/release/
-**/.build-cache/
-**/.build-home/
-**/.electron-cache/
-**/.eb-cache/
-**/.npm-cache/
-**/.dsh-*/
-**/DerivedData/
-**/xcuserdata/
-*.xcuserstate
-*.mobileprovision
+*.p12
+*.p7b
+*.cer
+*.pem
+*.key
 .env
 .env.*
 !.env.example
-/promo-video/
-/macOS/Reference/
-
-# Electron installer artwork is checked-in source, despite the directory name.
-!/Windows/build/
-!/Windows/build/icon.ico
-!/Windows/build/icon.png

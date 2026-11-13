@@ -1,126 +1,208 @@
-# 知萤 LexiNote
+# 知萤 LexiNote · macOS
 
-知萤是一款本地优先的 Markdown 笔记与知识整理应用，提供 HarmonyOS、macOS 和 Windows 版本。三个平台共享写作、知识连接与可视化整理的产品方向，具体功能及系统集成以各平台说明为准。
+## 分支选择
 
-## 下载与平台源码
+当前为 **macOS** 分支，应用项目位于仓库根目录。
 
-[下载 LexiNote 2.0.1](https://github.com/peryixing-lab/LexiNote/releases/tag/v2.0.1)。安装包只在 GitHub Releases 中提供。
+- [HarmonyOS：鸿蒙工程](https://github.com/peryixing-lab/LexiNote/tree/HarmonyOS)
+- [Windows：Windows 工程](https://github.com/peryixing-lab/LexiNote/tree/Windows)
+- [macOS：macOS 原生工程](https://github.com/peryixing-lab/LexiNote/tree/macOS)
+- [main：项目概览、Harness 插件和共享文档](https://github.com/peryixing-lab/LexiNote/tree/main)
 
-- **HarmonyOS**：ArkTS / ArkUI，适配手机、平板与二合一设备；源码保留在仓库根目录的 `AppScope/`、`entry/` 等路径。附件为 Release 模式的未签名 HAP，安装前需自行签名。
-- **macOS**：[原生 SwiftUI / AppKit 源码与构建说明](macOS/README.md)，面向 Apple Silicon，要求 macOS 14+；提供 ARM64 DMG，采用 ad-hoc 签名，未做 Apple 公证。
-- **Windows**：[Electron / React / TypeScript 源码与构建说明](Windows/README.md)，提供 x64、ARM64 和 32 位 x86 的 NSIS 安装文件；安装包未做代码签名。
+克隆当前平台：
 
-桌面版的插件宿主仍为实验性能力；鸿蒙服务卡片、分享剪藏、跨设备接续和生态联动以鸿蒙版为准。
+```sh
+git clone --branch macOS --single-branch https://github.com/peryixing-lab/LexiNote.git
+cd LexiNote
+```
 
-## 2.0.1 更新
 
-- 新增 macOS 原生版和 Windows 桌面版源码及安装包，三个平台统一使用 2.0.1 版本号。
-- HarmonyOS 新增主题选择与自定义配色，调整设置、命令面板和工作区界面，补齐内置命令的英文名称。
-- 增加设置与插件配置的导入导出，完善工作区偏好与本地存储相关操作。
-- 更新 **Harness 智能体 1.5.0**：多模型配置、会话与历史管理；API Key 由宿主隔离保存，插件无法读回。
+把「知萤 LexiNote」的 HarmonyOS 桌面工作区，重做为 **Apple 芯片原生 macOS 应用**。界面使用 SwiftUI + AppKit 文本引擎重写，功能落在本地 Markdown 文件上；HarmonyOS 的沉浸光感 / HDS 材质改为纯色分层，并在 macOS 26+ 使用 Apple **Liquid Glass**。
 
-完整说明与安装文件见 [2.0.1 Release](https://github.com/peryixing-lab/LexiNote/releases/tag/v2.0.1)。
+![知萤 LexiNote 原生窗口](docs/screenshots/00-native-window.png)
 
-## HarmonyOS 功能
+> 窗口控制使用 macOS 原生红绿灯（关闭 / 最小化 / 全屏，位于系统标准的左上角），「知萤 LexiNote」标识紧挨红绿灯并处于同一水平线。上图为真实窗口捕获；窗口未激活时红绿灯会呈系统灰色，激活后恢复彩色。下图为浅色与深色工作区。
 
-- **记录与写作**：快速记录、Markdown 编辑和预览、LaTeX 公式、代码块、每日笔记与模板。
-- **组织知识**：知识库、工作区和文件夹、标签与搜索，支持双向链接、反向链接和关系图谱。
-- **可视化整理**：思维导图与基础白板，可引用笔记并导出相关数据。
-- **数据管理**：Markdown 导入与导出、JSON 备份和恢复、回收站。
-- **系统集成**：桌面服务卡片支持速记、语音入口和今日待办；支持系统分享剪藏及单篇编辑状态跨设备接续。
-- **词萤与集萤联动**：接收单词卡、摘录、错题、OCR 识别稿、数据报告、物品档案和表单汇总，并归档到专属工作区；可从编辑器进入词萤伴读或调用集萤 OCR，也可通过笔记内链接回到对应应用。联动需要词萤和集萤 1.3.0 及以上版本。
-- **本地辅助**：支持设备离线能力时可使用中文语音识别和本地整理；具体能力取决于设备及其离线服务。
-- **智能助手（插件）**：安装 **Harness** 插件并在右侧栏绑定模型后，可与笔记对话、检索和整理；模型请求由宿主代办，插件本身不联网。
+| 浅色 | 深色 |
+| --- | --- |
+| ![浅色工作区](docs/screenshots/01-workspace-light.png) | ![深色工作区](docs/screenshots/02-workspace-dark.png) |
 
-笔记和索引保存在本机，无需账号。跨设备接续传递的是单篇编辑状态，不是整个工作区的云同步。建议定期导出备份；使用外部文件夹前请了解系统的文件授权要求。
+## 功能
 
-多窗口、桌面卡片和编辑器之间的保存操作会协调处理；遇到内容冲突时保留草稿，并支持另存副本。
+| 模块 | 已实现 |
+| --- | --- |
+| 桌面工作区 | 52pt 标题栏、56pt 图标栏、可拖动侧栏、标签页、右侧检查器、40pt 状态栏 |
+| 弹窗 | 设置与回收站为原生模态弹窗，不占用标签页；关闭后回到原文档 |
+| 写作 | 源码编辑、实时渲染预览、阅读视图；标题 / 标签 / 字符数与自动保存 |
+| Markdown | 标题、段落、列表、待办、引用、`[!NOTE]` 等标注、代码块与语言高亮、表格、图片、分隔线、`$…$` / `$$…$$` 公式 |
+| 知识连接 | `[[双向链接]]`、出链、反向链接、未创建链接、可点击大纲、笔记属性 |
+| 检索 | 侧栏即时过滤、`tag:` / `type:` / `notebook:` / `path:` 语法、快速切换与新建 |
+| 命令 | 56 条可执行命令的 ⌘K 命令面板；格式、视图、外观与文件操作菜单 |
+| 可视化 | 力导向关系图谱、可编辑思维导图、可拖动卡片白板 |
+| 组织 | 知识库 / 笔记本 / 标签 / 收藏 / 置顶 / 回收站 / 模板 / 每日笔记 |
+| 外观 | 原始主题 + 鸢尾紫、玫瑰粉、暖杏橙、森林绿、晴空蓝、石墨灰；自定义背景与正文色；浅色 / 深色 / 跟随系统 |
+| 系统 | 原生菜单与快捷键、原生红绿灯、Liquid Glass（macOS 26+）、系统材质回退、在 Finder 中显示、Markdown 导入与 JSON 备份 |
+| 数据 | 标准 Markdown + YAML Frontmatter，可随时用其他编辑器打开 |
+| 插件（实验性） | ZIP 安装、逐项权限、WKWebView 隔离运行时、原生插件与 Obsidian 兼容子集 |
 
-在「工作区与项目」中，可将现有应用内工作区或项目「保存到本地」。选择保存位置后，笔记会写为 `.md` 文件，思维导图会写入 `思维导图/` 下的 `.mindmap.json` 文件，后续编辑继续保存到该目录。原有工作区、项目归属和笔记引用保持关联；导图菜单支持复制路径和在文件管理中显示。
+### 界面速览
 
-首次启动不申请存储授权。创建第一篇笔记后，应用会请求选择本地保存目录；取消或拒绝授权时，笔记继续保存在应用内部，并明确提示保存位置。之后仍可在「工作区与项目」中选择本地文件夹，将已有笔记转存到外部目录。
+| 命令面板 | 关系图谱 |
+| --- | --- |
+| ![命令面板](docs/screenshots/05-command-palette.png) | ![关系图谱](docs/screenshots/07-graph.png) |
 
-公式使用内置 KaTeX 离线排版，支持行内 `$…$`、`\(...\)` 和块级 `$$…$$`、`\[…\]`，包括分式、根号、求和、积分、矩阵、分段函数和多行推导。支持范围见 [KaTeX 文档](https://katex.org/docs/supported.html)；语法错误或不支持的公式保留 LaTeX 原文，点击公式仍可编辑源码。
+| 思维导图 | 设置弹窗 |
+| --- | --- |
+| ![思维导图](docs/screenshots/08-mind-map.png) | ![设置弹窗](docs/screenshots/16-settings-sheet.png) |
 
-## 插件（实验性）
+| 回收站弹窗 | 全新安装（空工作区） |
+| --- | --- |
+| ![回收站弹窗](docs/screenshots/10-trash.png) | ![空工作区](docs/screenshots/15-empty.png) |
 
-知萤 2.0.1 提供一套**实验性**插件体系：一套共享内核之上，同时提供知萤自有插件 API 与
-Obsidian API 兼容层。
+更多状态见 [docs/screenshots](docs/screenshots)：检查器、阅读视图、快速切换、白板、深色命令面板、外观设置、欢迎引导。
 
-- 入口：**设置 → 插件**。用户自行下载插件，通过「从本地安装 ZIP…」导入；应用不附带 Harness 安装包或专属安装入口。
-- 安装后默认**不授予任何能力**，需要逐项授权再启用；停用会立即释放事件、命令与运行时资源。
-- 插件只能通过受控 RPC 访问当前授权的知识库；拿不到物理路径、Node.js/Electron 模块或网络能力。
-  模型能力（`ai.inference`）由宿主代发 HTTP 请求；侧栏视图（`ui.views`）渲染在插件
-  自己的 ArkWeb 页内。
-- 已测试范围：`Plugin` / `Notice` / `Vault` / `TFile` / `Events` / `Commands` / `Metadata` 子集。
-  未实现的能力返回明确的 `E_UNSUPPORTED_API`，不会假装成功。
-- 安全边界尚未完成专项验证，**目前只应安装你自己编写或已审查的插件**；`isDesktopOnly` 的插件会被拒绝。
+### Liquid Glass 与材质
 
-**Harness 智能体 1.5.0**：[下载最新插件 ZIP](https://github.com/peryixing-lab/LexiNote/releases/download/v2.0.1/harness-lexinote-harness.zip)，然后在「设置 → 插件」中从本地安装。插件借鉴了 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 和 [dsh-token-usage](https://github.com/LaoYueHanNi/dsh-token-usage) 项目。多服务商配置的 API Key 只写入宿主并按插件隔离保存（应用沙箱内，未额外加密），插件读不回，也不再写入插件本地数据；卸载插件会清除这些密钥。
-
-开发原生插件请阅读 [LexiNote 原生插件制作规范](docs/native-plugin-authoring.md)，其中包含包结构、清单、
-SDK API、错误码、模板与验收清单。Obsidian 兼容范围见 [兼容性说明](docs/obsidian-compatibility.md)。
-
-## 开发环境
-
-- DevEco Studio，以及 HarmonyOS SDK **26.0.0**（工程的 target 和 compatible SDK 版本）。
-- 支持 HarmonyOS 的手机、平板或二合一设备，或相应模拟器。
-- 安装项目依赖需要 DevEco Studio 自带的 OHPM；运行回归脚本需要 Node.js 和 TypeScript。
+- macOS 26+：标题栏、命令面板与 Toast 使用 SwiftUI `GlassEffect` / Liquid Glass；可在「设置 → 外观 → 材质与动效」关闭。
+- 较低版本：同一位置回退到 `NSVisualEffectView` / 系统材质。
+- HarmonyOS 的沉浸光感、HDS 模糊与渐变全部替换为 **纯色分层 + 0.5pt 发丝线**，与桌面截图中的浅紫体系一致。
 
 ## 构建与运行
 
-1. 克隆仓库，复制公开构建配置：
+要求：**Apple Silicon Mac**、macOS 14+、Xcode 27（Swift 6.4 工具链；命令行工具也可）。Liquid Glass 需要 macOS 26+，否则自动回退。
 
-   ```sh
-   git clone https://github.com/peryixing-lab/LexiNote.git
-   cd LexiNote
-   cp build-profile.example.json5 build-profile.json5
-   ```
-
-2. 用 DevEco Studio 打开项目，安装或同步 OHPM 依赖，并确保已安装 HarmonyOS SDK 26.0.0。
-3. 在 **File → Project Structure → Signing Configs** 中为本机配置签名，再选择设备或模拟器运行。未配置签名时可构建未签名包，但安装到设备需要有效签名。
-
-`build-profile.json5`、`local.properties`、证书和密钥均被忽略。请不要将本机签名信息提交到仓库。仓库中的 `build-profile.example.json5` 不含签名信息，需要变更共享构建选项时也请同步更新模板。
-
-安装了 DevEco CLI 的开发者也可以在项目目录运行 `devecocli build` 或 `devecocli run`。macOS 上的 `scripts/build.sh` 使用默认位置的 DevEco Studio；可通过 `DEVECO_APP_PATH` 指定其他安装路径。
-
-## 回归检查
-
-核心回归脚本会转译并运行非 UI 的 ArkTS 代码，使用模拟的文件系统和数据库，不替代真机或模拟器测试。例如，在 macOS 的默认 DevEco Studio 安装位置：
+### 直接构建 .app（推荐）
 
 ```sh
-/Applications/DevEco-Studio.app/Contents/tools/node/bin/node scripts/tests/core-regression.cjs
-/Applications/DevEco-Studio.app/Contents/tools/node/bin/node scripts/tests/markdown-110-regression.cjs
-/Applications/DevEco-Studio.app/Contents/tools/node/bin/node scripts/tests/math-parser-regression.cjs
-/Applications/DevEco-Studio.app/Contents/tools/node/bin/node scripts/tests/math-renderer-regression.cjs
+./scripts/build.sh
+open build/LexiNote.app
 ```
 
-多数脚本支持通过 `LEXI_TYPESCRIPT` 指定 TypeScript 模块路径；部分脚本目前仍使用上述默认安装路径。其他回归脚本见 `scripts/tests/`。
+产物：`build/LexiNote.app`（arm64，ad-hoc 签名）。
 
+### 用 Xcode
+
+```sh
+open LexiNote.xcodeproj
+```
+
+选择 `LexiNote` scheme 与 `My Mac` 运行。工程使用 Xcode 的 synchronized folder，`Sources/LexiNoteMac/` 下新增的 Swift 文件会自动纳入编译。
+
+命令行：
+
+```sh
+./scripts/build-xcode.sh
+open build/xcode-derived/Build/Products/Release/LexiNote.app
+```
+
+### 创建 DMG
+
+```sh
+./scripts/package-dmg.sh
+```
+
+产物为 `build/LexiNote-2.0.1-arm64.dmg`。当前仅支持 Apple Silicon；ad-hoc 签名，未做 Apple 公证。
+
+## 快捷键
+
+| 动作 | 快捷键 | 动作 | 快捷键 |
+| --- | --- | --- | --- |
+| 命令面板 | ⌘K | 快速切换文档 | ⌘P |
+| 新建笔记 | ⌘N | 新建快速笔记 | ⇧⌘N |
+| 保存 | ⌘S | 今日笔记 | ⌘D |
+| 从模板新建 | ⇧⌘T | 阅读视图 | ⌘E |
+| 查找 | ⌘F | 关闭标签 | ⌘W |
+| 侧边栏 | ⌃⌘S | 检查器 | ⌥⌘S |
+| 关系图谱 | ⌘G | 在 Finder 中显示 | ⇧⌘R |
+| 导出 Markdown | ⇧⌘E | 导入 Markdown | ⌘O |
+| 加粗 / 倾斜 | ⌘B / ⌘I | 高亮 | ⇧⌘H |
+| 设置 | ⌘, | 上一个 / 下一个标签 | ⌃⇧[ / ⌃⇧] |
+
+主窗口没有打开的标签时点击「关闭标签」，会关闭窗口；红绿灯始终走 macOS 原生行为。
+
+## 数据位置
+
+默认写入：
+
+```text
+~/Library/Application Support/LexiNote/
+  我的工作区/          # 全新安装时为空
+    （新建笔记后才会出现 Markdown 文件）
+  library.json         # 工作区元数据
+  session.json         # 标签页与会话
+```
+
+- **全新安装不预置任何笔记、导图或白板**；首次启动只有 1 个空工作区「我的工作区」。截图中的内容来自内存演示数据，仅用于生成文档，不会写入你的知识库。
+- 每篇笔记开头是稳定主键、标题、笔记本、类型、标签、属性与时间戳的 Frontmatter。
+- 修改标题会同步重命名文件；修改笔记本会移动到对应文件夹。
+- 回收站通过 Frontmatter 的 `trashed` 时间标记，永久删除才移除文件。
+- 需要便携目录时，可用环境变量覆盖：
+
+```sh
+LEXINOTE_STORE="$HOME/Documents/LexiNote" ./build/LexiNote.app/Contents/MacOS/LexiNote
+```
+
+> 如果你把应用放在受 macOS 沙盒或权限限制的位置，写入失败会显示「保存失败 · 点击重试」，数据仍保留在内存中，可先导出备份。
+
+## 验证
+
+```sh
+# 1. 落盘、重新载入、Frontmatter、搜索、反链、图谱、回收站、导图
+./scripts/selftest.sh
+# SELFTEST PASS
+
+# 2. 重新生成 docs/screenshots（真实 NSHostingView + 原生窗口）
+./scripts/snapshot.sh
+```
+
+自检会使用 `build/selftest-vault`，不会接触你的真实知识库。
+
+自检包含 Harness 1.5.0 与 Obsidian 兼容插件。运行前从 [Release](https://github.com/peryixing-lab/LexiNote/releases/tag/v2.0.1) 下载 Harness ZIP，或使用 main 分支的 `plugins/harness/` 自行构建，将 ZIP 放入本工程的 `tests/fixtures/harness-lexinote-harness.zip`。也可通过 `LEXINOTE_HARNESS_ZIP` 指定测试包的绝对路径。
 
 ## 项目结构
 
 ```text
-macOS/                       macOS 原生应用、资源、文档和构建脚本
-Windows/                     Windows 应用、资源、测试和构建配置
-AppScope/                    HarmonyOS 应用元信息与图标
-entry/src/main/ets/          ArkUI 页面、组件与核心逻辑
-entry/src/main/resources/    应用资源
-entry/src/test/              单元测试
-entry/src/ohosTest/          设备测试
-entry/src/main/ets/plugin/   插件宿主（model / adapters / core / runtime / ui）
-packages/                    插件 JS 运行时、SDK、Obsidian 兼容层（开发机侧）
-docs/                        公开的插件制作规范及插件生态文档
-scripts/tests/               Node.js 回归脚本（含 plugin-*.cjs）
-build-profile.example.json5  不含本地签名的构建配置模板
+Sources/LexiNoteMac/
+  App/           入口、菜单、自检、截图
+  Core/          主题引擎、数据模型、Markdown 解析、存储、命令、设置
+  UI/            工作区装配、编辑器 NSTextView、预览、检查器、面板、图谱、
+                 思维导图、白板、设置
+  Resources/     AppIcon 资源目录（Xcode）
+HarmonyOS 分支/entry/  鸿蒙源码（移植依据，见分支入口）
+docs/specs/      从原工程提取的工作区、主题设置、核心功能规格
+docs/screenshots/  最终界面截图
+scripts/         构建、运行、自检、截图
 ```
 
-## 参与贡献
+### 代码要点
 
-欢迎使用 [Issue 模板](https://github.com/peryixing-lab/LexiNote/issues/new/choose)反馈问题或提出建议，也欢迎提交 Pull Request。提交前请阅读 [贡献指南与 PR 规范](CONTRIBUTING.md)，说明改动范围、测试环境和验证结果；界面改动请附相关截图或录屏。请勿提交个人笔记、完整设备日志、签名材料或其他敏感信息。
+- `Core/Theme.swift`：按原 `LexiTheme.ets` 的 `mix / luminance / contrast / readable / fitText` 逐项移植，保留原始亮/暗色 22 个关键色值与 6 个预设强调色。
+- `Core/Markdown.swift`：块级/行内 Markdown 解析、标注、公式块、代码围栏、表格、双链与大纲；`LatexRenderer` 将常见 LaTeX 转成可读 Unicode，避免引入 WebView。
+- `UI/EditorBridge.swift`：`NSTextView` 编辑引擎，保留系统撤销、查找、拼写检查、行内 Markdown 着色与列表续写。
+- `UI/RootView.swift`：标题栏 / 图标栏 / 侧栏 / 标签页 / 空状态；`UI/NoteWorkspace.swift`：编辑器三态与状态栏。
+- `Core/AppModel.swift`：本地 Markdown 读写、会话恢复、搜索、反链、图谱、导图、白板、回收站与导入导出。
 
-感谢 [ZhangJing-gugugaga](https://github.com/ZhangJing-gugugaga) 对 LexiNote 插件兼容性作出的贡献。
+## 与 HarmonyOS 版的差异
 
-## 许可证
+这是一次**界面与核心写作体验**的原生移植，不是逐行复刻。保留桌面布局、视觉体系、快捷键语义与本地文件模型；以下能力暂未移植或采用替代实现：
 
-本项目采用 [GNU General Public License v3.0](LICENSE)。
+| 项 | HarmonyOS 版 | macOS 版 |
+| --- | --- | --- |
+| 实时预览 | 点击块内联编辑 | 整页渲染预览；悬停段落点「编辑」跳到源码对应行，源码模式完整编辑 |
+| 公式 | 内置 KaTeX 离线排版 | 原生 Unicode/衬线近似渲染，覆盖常见希腊字母、分式、根号、上下标、矩阵；复杂公式保留源码 |
+| 语音 | 离线语音识别 | 「语音记录」打开速记面板，可配合 macOS 系统听写使用 |
+| 插件 | 原生插件宿主 + Obsidian 兼容层 | 实验性 WKWebView 插件宿主、ZIP 安装与逐项授权；兼容范围以实际测试为准 |
+| 生态联动 | 词萤 / 集萤 / 分享剪藏 / 卡片 | 未移植 |
+| 多窗口 | 文档窗口、分屏、标签组 | 单主窗口 + 标签页；设置与回收站为模态弹窗 |
+| 导出 | Markdown / JSON / PDF | Markdown / JSON 备份；PDF 未移植 |
+| 语言 | 中 / 英 | 简体中文 |
+| 材质 | HDS 沉浸光感 | 纯色分层 + Liquid Glass（macOS 26+）+ 系统材质回退 |
+
+更细的映射与取舍见 [macOS 移植说明](docs/macOS-port-notes.md)。
+
+## 许可证与致谢
+
+- 本项目继承原工程的 **GNU General Public License v3.0**，见 [LICENSE](LICENSE)。
+- **知萤 LexiNote**（HarmonyOS / ArkTS / ArkUI）的源码位于 [HarmonyOS 分支](https://github.com/peryixing-lab/LexiNote/tree/HarmonyOS)，macOS 版沿用其界面与设计体系，请遵循仓库的许可与署名要求。
+- 应用图标来自原工程 `docs/design/`；截图中的笔记内容为移植演示数据，仅用于文档，不随应用安装。
+- 感谢项目与社区贡献者。macOS、HarmonyOS 和 Windows 版在本仓库统一维护和发布。

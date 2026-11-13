@@ -1,33 +1,28 @@
-## 解决的问题
+<!-- GitHub 默认模板入口。请先选择正确的 base，再使用相应系统模板。 -->
 
-<!-- 说明触发场景、原有行为和改动后的行为。文档 PR 说明修正或补充了什么。 -->
+## 选择平台规范与模板
 
-## 关联 Issue
+- **HarmonyOS**：base 选 `HarmonyOS`；[规范](https://github.com/peryixing-lab/LexiNote/blob/HarmonyOS/CONTRIBUTING.md) / [模板](https://github.com/peryixing-lab/LexiNote/blob/main/.github/PULL_REQUEST_TEMPLATE/HarmonyOS.md)
+- **Windows**：base 选 `Windows`；[规范](https://github.com/peryixing-lab/LexiNote/blob/Windows/CONTRIBUTING.md) / [模板](https://github.com/peryixing-lab/LexiNote/blob/main/.github/PULL_REQUEST_TEMPLATE/Windows.md)
+- **macOS**：base 选 `macOS`；[规范](https://github.com/peryixing-lab/LexiNote/blob/macOS/CONTRIBUTING.md) / [模板](https://github.com/peryixing-lab/LexiNote/blob/main/.github/PULL_REQUEST_TEMPLATE/macOS.md)
+- **插件 / 共享文档**：base 选 `main`；[规范](https://github.com/peryixing-lab/LexiNote/blob/main/CONTRIBUTING.md) / [模板](https://github.com/peryixing-lab/LexiNote/blob/main/.github/PULL_REQUEST_TEMPLATE/main.md)
 
-<!-- 完整解决问题时使用 Closes #编号；部分实现使用 Refs #编号。无关联 Issue 可写“无”。 -->
+创建 PR 的比较链接可添加 `template=HarmonyOS.md`、`template=Windows.md`、`template=macOS.md` 或 `template=main.md` 以载入对应模板。**模板参数不会设置目标分支**，请检查 base。[选择方法与示例](https://github.com/peryixing-lab/LexiNote/blob/main/docs/PR_GUIDELINES.md)
 
-## 改动范围
+## 问题与修改后的行为
 
-<!-- 概述主要改动。分批提交时注明本批范围、依赖及后续工作；较大改动说明关键取舍。 -->
+<!-- 说明触发操作、原有行为、修改后的结果及关联 Issue。可将本正文替换为上面的系统模板。 -->
 
-## 验证结果
+## 目标与验证
 
-<!-- 列出实际执行的命令、结果及环境。未执行的项目写明原因。 -->
-
-- 构建 / 静态检查：
-- 相关回归脚本：
-- 设备验证：真机 / 模拟器 / 未执行；型号、操作系统版本和场景：
-- 界面截图或录屏（涉及 UI 时）：
-
-## 兼容性与剩余问题
-
-<!-- 说明数据格式、存储迁移、权限、网络请求、依赖或设备兼容性的变化。
-     涉及数据迁移时写明失败后的处理方式；无相关影响可写“无”。
-     写明已知限制和未完成的验证，勿将模拟测试等同于真机验证。 -->
+- 目标分支及改动范围：
+- 系统 / 工具链 / 架构：
+- 实际执行的构建、测试或文档检查与结果：
+- 截图 / 录屏（如适用）：
+- 未执行项、兼容性及已知限制：
 
 ## 提交前检查
 
-- [ ] 我已阅读 [贡献指南](https://github.com/peryixing-lab/LexiNote/blob/main/CONTRIBUTING.md)，本 PR 聚焦一个明确目标。
-- [ ] 我已检查完整 diff，未包含个人数据、完整设备日志、密钥、签名材料、本机配置、缓存或构建产物。
-- [ ] 我已按改动范围完成验证，并如实说明未执行的检查和已知问题。
-- [ ] 涉及行为、构建配置或第三方依赖的变更时，已同步相关文档、公开配置模板及许可证说明；不适用项已在描述中注明。
+- [ ] base 与所选平台一致，已阅读对应规范并补齐系统专属验证项。
+- [ ] 未将整个平台工程合并到 main，跨分支改动已拆分并互相链接。
+- [ ] 未包含安装包、缓存、个人数据、真实凭据或签名材料。

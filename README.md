@@ -44,6 +44,7 @@ Harness 借鉴了 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-har
 ## 项目文档
 
 - [分支布局与协作方式](docs/BRANCHES.md)
+- [各平台 PR 规范与模板](docs/PR_GUIDELINES.md)
 - [HarmonyOS 平台说明](docs/HarmonyOS.md)
 - [Windows 平台说明](docs/Windows.md)
 - [macOS 平台说明](docs/macOS.md)

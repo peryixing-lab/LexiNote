@@ -77,9 +77,3 @@ Thumbs.db
 .env.*
 !.env.example
 /promo-video/
-/macOS/Reference/
-
-# Electron installer artwork is checked-in source, despite the directory name.
-!/Windows/build/
-!/Windows/build/icon.ico
-!/Windows/build/icon.png

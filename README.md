@@ -2,15 +2,26 @@
 
 知萤是一款本地优先的 Markdown 笔记与知识整理应用，提供 HarmonyOS、macOS 和 Windows 版本。三个平台共享写作、知识连接与可视化整理的产品方向，具体功能及系统集成以各平台说明为准。
 
-## 下载与平台源码
+## 分支选择
 
-[下载 LexiNote 2.0.1](https://github.com/peryixing-lab/LexiNote/releases/tag/v2.0.1)。安装包只在 GitHub Releases 中提供。
+当前为 **HarmonyOS** 分支，应用项目位于仓库根目录。
 
-- **HarmonyOS**：ArkTS / ArkUI，适配手机、平板与二合一设备；源码保留在仓库根目录的 `AppScope/`、`entry/` 等路径。附件为 Release 模式的未签名 HAP，安装前需自行签名。
-- **macOS**：[原生 SwiftUI / AppKit 源码与构建说明](macOS/README.md)，面向 Apple Silicon，要求 macOS 14+；提供 ARM64 DMG，采用 ad-hoc 签名，未做 Apple 公证。
-- **Windows**：[Electron / React / TypeScript 源码与构建说明](Windows/README.md)，提供 x64、ARM64 和 32 位 x86 的 NSIS 安装文件；安装包未做代码签名。
+- [HarmonyOS：鸿蒙工程](https://github.com/peryixing-lab/LexiNote/tree/HarmonyOS)
+- [Windows：Windows 工程](https://github.com/peryixing-lab/LexiNote/tree/Windows)
+- [macOS：macOS 原生工程](https://github.com/peryixing-lab/LexiNote/tree/macOS)
+- [main：项目概览、Harness 插件和共享文档](https://github.com/peryixing-lab/LexiNote/tree/main)
 
-桌面版的插件宿主仍为实验性能力；鸿蒙服务卡片、分享剪藏、跨设备接续和生态联动以鸿蒙版为准。
+克隆当前平台：
+
+```sh
+git clone --branch HarmonyOS --single-branch https://github.com/peryixing-lab/LexiNote.git
+cd LexiNote
+```
+
+
+## 下载
+
+[LexiNote 2.0.1 Release](https://github.com/peryixing-lab/LexiNote/releases/tag/v2.0.1) 提供 Release 模式构建的未签名 HAP，安装前需自行签名。
 
 ## 2.0.1 更新
 
@@ -72,7 +83,7 @@ SDK API、错误码、模板与验收清单。Obsidian 兼容范围见 [兼容�
 1. 克隆仓库，复制公开构建配置：
 
    ```sh
-   git clone https://github.com/peryixing-lab/LexiNote.git
+   git clone --branch HarmonyOS --single-branch https://github.com/peryixing-lab/LexiNote.git
    cd LexiNote
    cp build-profile.example.json5 build-profile.json5
    ```
@@ -101,8 +112,6 @@ SDK API、错误码、模板与验收清单。Obsidian 兼容范围见 [兼容�
 ## 项目结构
 
 ```text
-macOS/                       macOS 原生应用、资源、文档和构建脚本
-Windows/                     Windows 应用、资源、测试和构建配置
 AppScope/                    HarmonyOS 应用元信息与图标
 entry/src/main/ets/          ArkUI 页面、组件与核心逻辑
 entry/src/main/resources/    应用资源

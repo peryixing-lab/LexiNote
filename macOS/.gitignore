@@ -1,6 +1,0 @@
-build/
-.build-cache/
-DerivedData/
-*.xcuserstate
-xcuserdata/
-.DS_Store

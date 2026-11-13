@@ -8,7 +8,7 @@ const require = createRequire(import.meta.url);
 const electronPath = require('electron');
 
 const ROOT = process.cwd();
-const HARNESS_ZIP = process.env.LEXINOTE_HARNESS_ZIP || path.resolve(ROOT, '../plugins/harness/dist/harness-lexinote-harness.zip');
+const HARNESS_ZIP = process.env.LEXINOTE_HARNESS_ZIP || path.join(ROOT, 'tests', 'fixtures', 'harness-lexinote-harness.zip');
 const WORK_DIR = path.join(ROOT, '.dsh-plugin-test');
 const USER_DATA_DIR = path.join(WORK_DIR, 'user-data');
 const FIXTURES_DIR = path.join(WORK_DIR, 'fixtures');

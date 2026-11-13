@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { common } from '@kit.AbilityKit';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { util } from '@kit.ArkTS';
@@ -17,6 +18,7 @@ interface LexiWorkspaceMapToolParams {
 
 @Component
 export struct LexiWorkspaceMindMap {
+  @StorageProp('lexiThemePalette') @Watch('drawCanvas') private palette: LexiThemePalette = LexiTheme.current();
   mapId: string = '';
   editorController: LexiWorkspaceEditorController = new LexiWorkspaceEditorController();
   @Prop @Watch('vaultNotesChanged') vaultNotes: NoteItem[] = [];
@@ -445,7 +447,7 @@ export struct LexiWorkspaceMindMap {
     }
     this.ctx2d.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
 
-    this.ctx2d.fillStyle = 'rgba(182, 156, 255, 0.14)';
+    this.ctx2d.fillStyle = this.palette.divider;
     for (let gx = 20; gx < this.canvasWidth; gx += 32) {
       for (let gy = 20; gy < this.canvasHeight; gy += 32) {
         this.ctx2d.fillRect(gx, gy, 2, 2);
@@ -501,14 +503,14 @@ export struct LexiWorkspaceMindMap {
       this.ctx2d.beginPath();
       this.ctx2d.roundRect(rx, ry, node.boxWidth, node.boxHeight, 12);
       if (isRoot) {
-        this.ctx2d.fillStyle = '#6E44D9';
+        this.ctx2d.fillStyle = this.palette.brand;
       } else if (isSelected) {
-        this.ctx2d.fillStyle = '#38295C';
+        this.ctx2d.fillStyle = this.palette.workspace_selection;
       } else {
-        this.ctx2d.fillStyle = '#261E3D';
+        this.ctx2d.fillStyle = this.palette.surface;
       }
       if (isSelected) {
-        this.ctx2d.shadowColor = '#B69CFF';
+        this.ctx2d.shadowColor = this.palette.dock_light;
         this.ctx2d.shadowBlur = 12;
       }
       this.ctx2d.fill();
@@ -517,10 +519,10 @@ export struct LexiWorkspaceMindMap {
       }
 
       this.ctx2d.lineWidth = isSelected ? 2.5 : 1.3;
-      this.ctx2d.strokeStyle = isSelected ? '#E0D0FF' : accent;
+      this.ctx2d.strokeStyle = isSelected ? this.palette.brand : accent;
       this.ctx2d.stroke();
 
-      this.ctx2d.fillStyle = '#F5F0FF';
+      this.ctx2d.fillStyle = isRoot ? this.palette.inverse_text : this.palette.text_primary;
       this.ctx2d.font = `${isRoot ? 'bold 14vp' : 'medium 13vp'} sans-serif`;
       this.ctx2d.textAlign = 'center';
       this.ctx2d.textBaseline = 'middle';
@@ -529,7 +531,7 @@ export struct LexiWorkspaceMindMap {
       this.ctx2d.fillText(label, node.x, textY);
 
       if (node.noteRefId.length > 0 || node.note.length > 0) {
-        this.ctx2d.fillStyle = '#C9B5FF';
+        this.ctx2d.fillStyle = isRoot ? this.palette.inverse_text : this.palette.text_secondary;
         this.ctx2d.font = '10vp sans-serif';
         const subText = node.noteRefTitle.length > 0 ? `🔗 ${node.noteRefTitle.slice(0, 9)}` : `✦ ${node.note.slice(0, 9)}`;
         this.ctx2d.fillText(subText, node.x, node.y + 11);
@@ -541,9 +543,9 @@ export struct LexiWorkspaceMindMap {
         const by = node.y;
         this.ctx2d.beginPath();
         this.ctx2d.arc(bx, by, 10, 0, Math.PI * 2);
-        this.ctx2d.fillStyle = '#6E44D9';
+        this.ctx2d.fillStyle = this.palette.brand;
         this.ctx2d.fill();
-        this.ctx2d.fillStyle = '#FFFFFF';
+        this.ctx2d.fillStyle = this.palette.inverse_text;
         this.ctx2d.font = 'bold 10vp sans-serif';
         this.ctx2d.fillText(`+${hiddenCount}`, bx, by);
       }
@@ -672,21 +674,21 @@ export struct LexiWorkspaceMindMap {
   private inspector() {
     Column({ space: 14 }) {
       Row() {
-        Text('节点属性').fontSize(13).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+        Text('节点属性').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.palette.text_primary)
         Blank()
-        Text(`${this.visibleNodes.length} 节点`).fontSize(11).fontColor($r('app.color.text_secondary'))
+        Text(`${this.visibleNodes.length} 节点`).fontSize(11).fontColor(this.palette.text_secondary)
       }.width('100%')
 
       Scroll() {
         Column({ space: 12 }) {
           Column({ space: 6 }) {
-            Text('主题文字').fontSize(11).fontColor($r('app.color.text_secondary')).width('100%')
+            Text('主题文字').fontSize(11).fontColor(this.palette.text_secondary).width('100%')
             TextInput({ text: this.editNodeText, placeholder: '节点主题文字' })
               .width('100%')
               .height(38)
               .fontSize(13)
               .fontWeight(FontWeight.Medium)
-              .backgroundColor($r('app.color.soft_surface'))
+              .backgroundColor(this.palette.soft_surface)
               .borderRadius(8)
               .onChange((val: string) => {
                 this.editNodeText = val;
@@ -704,12 +706,12 @@ export struct LexiWorkspaceMindMap {
           }.width('100%')
 
           Column({ space: 6 }) {
-            Text('节点备注').fontSize(11).fontColor($r('app.color.text_secondary')).width('100%')
+            Text('节点备注').fontSize(11).fontColor(this.palette.text_secondary).width('100%')
             TextInput({ text: this.editNodeNote, placeholder: '简短备注…' })
               .width('100%')
               .height(36)
               .fontSize(12)
-              .backgroundColor($r('app.color.soft_surface'))
+              .backgroundColor(this.palette.soft_surface)
               .borderRadius(8)
               .onChange((val: string) => {
                 this.editNodeNote = val;
@@ -727,8 +729,8 @@ export struct LexiWorkspaceMindMap {
               .height(34)
               .fontSize(12)
               .borderRadius(8)
-              .backgroundColor($r('app.color.soft_surface'))
-              .fontColor($r('app.color.text_primary'))
+              .backgroundColor(this.palette.soft_surface)
+              .fontColor(this.palette.text_primary)
               .onClick((): void => {
                 this.toggleCollapseSelected();
               })
@@ -738,8 +740,8 @@ export struct LexiWorkspaceMindMap {
               .padding(0)
               .fontSize(13)
               .borderRadius(8)
-              .backgroundColor($r('app.color.soft_surface'))
-              .fontColor($r('app.color.text_primary'))
+              .backgroundColor(this.palette.soft_surface)
+              .fontColor(this.palette.text_primary)
               .onClick((): void => {
                 this.moveSelectedOrder(-1);
               })
@@ -749,8 +751,8 @@ export struct LexiWorkspaceMindMap {
               .padding(0)
               .fontSize(13)
               .borderRadius(8)
-              .backgroundColor($r('app.color.soft_surface'))
-              .fontColor($r('app.color.text_primary'))
+              .backgroundColor(this.palette.soft_surface)
+              .fontColor(this.palette.text_primary)
               .onClick((): void => {
                 this.moveSelectedOrder(1);
               })
@@ -761,14 +763,14 @@ export struct LexiWorkspaceMindMap {
             .height(34)
             .padding(0)
             .borderRadius(8)
-            .backgroundColor($r('app.color.soft_surface'))
+            .backgroundColor(this.palette.soft_surface)
             .onClick((): void => {
               this.deleteSelectedSubtree();
             })
           }.width('100%')
 
           Column({ space: 6 }) {
-            Text('节点配色').fontSize(11).fontColor($r('app.color.text_secondary')).width('100%')
+            Text('节点配色').fontSize(11).fontColor(this.palette.text_secondary).width('100%')
             Flex({ wrap: FlexWrap.Wrap }) {
               ForEach(
                 [
@@ -801,18 +803,18 @@ export struct LexiWorkspaceMindMap {
             }.width('100%')
           }.width('100%')
 
-          Divider().color($r('app.color.workspace_line')).margin({ top: 4, bottom: 4 })
+          Divider().color(this.palette.workspace_line).margin({ top: 4, bottom: 4 })
 
           Column({ space: 8 }) {
             Row() {
-              Text('关联笔记').fontSize(12).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+              Text('关联笔记').fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.palette.text_primary)
               Blank()
               if (this.currentSelectedNode()?.noteRefId) {
                 Button('打开笔记 →', { buttonStyle: ButtonStyleMode.TEXTUAL })
                   .fontSize(11)
                   .height(28)
                   .padding(0)
-                  .fontColor($r('app.color.brand'))
+                  .fontColor(this.palette.brand)
                   .onClick((): void => {
                     const refId = this.currentSelectedNode()?.noteRefId || '';
                     if (refId) {
@@ -827,8 +829,8 @@ export struct LexiWorkspaceMindMap {
               .height(34)
               .fontSize(12)
               .borderRadius(8)
-              .backgroundColor($r('app.color.brand_soft'))
-              .fontColor($r('app.color.brand_ink'))
+              .backgroundColor(this.palette.brand_soft)
+              .fontColor(this.palette.brand_ink)
               .onClick((): void => {
                 this.createNoteFromSelectedNode();
               })
@@ -844,12 +846,12 @@ export struct LexiWorkspaceMindMap {
                   .borderRadius(6)
                   .fontColor(
                     this.currentSelectedNode()?.noteRefId === n.id
-                      ? $r('app.color.brand_ink')
-                      : $r('app.color.text_secondary')
+                      ? this.palette.brand_ink
+                      : this.palette.text_secondary
                   )
                   .backgroundColor(
                     this.currentSelectedNode()?.noteRefId === n.id
-                      ? $r('app.color.workspace_selection')
+                      ? this.palette.workspace_selection
                       : Color.Transparent
                   )
                   .onClick((): void => {
@@ -865,8 +867,8 @@ export struct LexiWorkspaceMindMap {
     .width(236)
     .height('100%')
     .padding({ left: 18, right: 18, top: 20, bottom: 20 })
-    .backgroundColor($r('app.color.workspace_inspector'))
-    .border({ width: { left: 0.5 }, color: $r('app.color.workspace_line') })
+    .backgroundColor(this.palette.workspace_inspector)
+    .border({ width: { left: 0.5 }, color: this.palette.workspace_line })
   }
 
   @Builder
@@ -887,11 +889,11 @@ export struct LexiWorkspaceMindMap {
                 Text(node.text)
                   .fontSize(node.level === 0 ? 16 : 14)
                   .fontWeight(node.level <= 1 ? FontWeight.Bold : FontWeight.Medium)
-                  .fontColor(node.id === this.selectedNodeId ? $r('app.color.brand') : $r('app.color.text_primary'))
+                  .fontColor(node.id === this.selectedNodeId ? this.palette.brand : this.palette.text_primary)
                 if (node.note.length > 0) {
                   Text(node.note)
                     .fontSize(11)
-                    .fontColor($r('app.color.text_secondary'))
+                    .fontColor(this.palette.text_secondary)
                 }
               }
               .layoutWeight(1)
@@ -902,8 +904,8 @@ export struct LexiWorkspaceMindMap {
                   .height(28)
                   .fontSize(11)
                   .borderRadius(8)
-                  .backgroundColor($r('app.color.brand_soft'))
-                  .fontColor($r('app.color.brand'))
+                  .backgroundColor(this.palette.brand_soft)
+                  .fontColor(this.palette.brand)
                   .onClick((): void => {
                     this.onOpenNote(node.noteRefId);
                   })
@@ -911,7 +913,7 @@ export struct LexiWorkspaceMindMap {
             }
             .width('100%')
             .padding({ left: 12 + node.level * 18, right: 14, top: 10, bottom: 10 })
-            .backgroundColor(node.id === this.selectedNodeId ? $r('app.color.brand_soft') : $r('app.color.surface'))
+            .backgroundColor(node.id === this.selectedNodeId ? this.palette.brand_soft : this.palette.surface)
             .borderRadius(12)
             .onClick((): void => {
               this.selectNode(node.id);
@@ -942,8 +944,8 @@ export struct LexiWorkspaceMindMap {
           .padding({ left: 8, right: 8 })
           .fontSize(13)
           .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
-          .backgroundColor($r('app.color.soft_surface'))
+          .fontColor(this.palette.text_primary)
+          .backgroundColor(this.palette.soft_surface)
           .borderRadius(7)
           .onChange((val: string) => {
             if (val !== this.titleText) {
@@ -973,8 +975,8 @@ export struct LexiWorkspaceMindMap {
                 .padding({ left: 8, right: 8 })
                 .fontSize(11)
                 .borderRadius(6)
-                .backgroundColor(this.doc.layoutKind === item[0] ? $r('app.color.workspace_selection') : Color.Transparent)
-                .fontColor(this.doc.layoutKind === item[0] ? $r('app.color.brand_ink') : $r('app.color.text_secondary'))
+                .backgroundColor(this.doc.layoutKind === item[0] ? this.palette.workspace_selection : Color.Transparent)
+                .fontColor(this.doc.layoutKind === item[0] ? this.palette.brand_ink : this.palette.text_secondary)
                 .onClick((): void => {
                   this.doc.layoutKind = item[0];
                   this.viewFitted = false;
@@ -985,7 +987,7 @@ export struct LexiWorkspaceMindMap {
           )
         }
         .padding(2)
-        .backgroundColor($r('app.color.soft_surface'))
+        .backgroundColor(this.palette.soft_surface)
         .borderRadius(8)
 
         Blank()
@@ -996,8 +998,8 @@ export struct LexiWorkspaceMindMap {
           .padding({ left: 12, right: 12 })
           .fontSize(12)
           .borderRadius(7)
-          .backgroundColor($r('app.color.brand'))
-          .fontColor($r('app.color.inverse_text'))
+          .backgroundColor(this.palette.brand)
+          .fontColor(this.palette.inverse_text)
           .onClick((): void => {
             this.addChildNode();
           })
@@ -1008,8 +1010,8 @@ export struct LexiWorkspaceMindMap {
           .padding({ left: 10, right: 10 })
           .fontSize(12)
           .borderRadius(7)
-          .backgroundColor($r('app.color.brand_soft'))
-          .fontColor($r('app.color.brand_ink'))
+          .backgroundColor(this.palette.brand_soft)
+          .fontColor(this.palette.brand_ink)
           .onClick((): void => {
             this.addSiblingNode();
           })
@@ -1019,8 +1021,8 @@ export struct LexiWorkspaceMindMap {
           .padding({ left: 10, right: 10 })
           .fontSize(12)
           .borderRadius(7)
-          .backgroundColor(this.viewKind === 'outline' ? $r('app.color.workspace_selection') : Color.Transparent)
-          .fontColor($r('app.color.brand_ink'))
+          .backgroundColor(this.viewKind === 'outline' ? this.palette.workspace_selection : Color.Transparent)
+          .fontColor(this.palette.brand_ink)
           .onClick((): void => {
             this.viewKind = this.viewKind === 'map' ? 'outline' : 'map';
             if (this.viewKind === 'map') {
@@ -1046,19 +1048,19 @@ export struct LexiWorkspaceMindMap {
           .fontSize(12)
           .padding({ left: 8, right: 8 })
           .borderRadius(7)
-          .fontColor($r('app.color.text_secondary'))
+          .fontColor(this.palette.text_secondary)
           .backgroundColor(Color.Transparent)
           .bindMenu(this.mapMenu())
 
         Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-          SymbolGlyph($r('sys.symbol.list_bullet')).fontSize(17).fontColor([$r('app.color.text_secondary')])
+          SymbolGlyph($r('sys.symbol.list_bullet')).fontSize(17).fontColor([this.palette.text_secondary])
         }
         .id('mindmap-inspector-toggle')
         .width(34)
         .height(34)
         .padding(0)
         .borderRadius(7)
-        .backgroundColor(this.inspectorOpen ? $r('app.color.workspace_selection') : Color.Transparent)
+        .backgroundColor(this.inspectorOpen ? this.palette.workspace_selection : Color.Transparent)
         .accessibilityText('展开或收起节点属性')
         .onClick((): void => {
           if (this.inspectorOpen) {
@@ -1074,12 +1076,12 @@ export struct LexiWorkspaceMindMap {
       .height(48)
       .width('100%')
       .padding({ left: 20, right: 14 })
-      .border({ width: { bottom: 0.5 }, color: $r('app.color.workspace_line') })
+      .border({ width: { bottom: 0.5 }, color: this.palette.workspace_line })
 
       Row() {
         if (this.loadFailed) {
           Column({ space: 12 }) {
-            Text('思维导图暂时无法打开').fontSize(20).fontColor($r('app.color.text_primary'))
+            Text('思维导图暂时无法打开').fontSize(20).fontColor(this.palette.text_primary)
             Button('重新读取').onClick((): void => {
               this.loading = this.load();
               this.loading.catch((): void => {
@@ -1098,7 +1100,7 @@ export struct LexiWorkspaceMindMap {
                 .accessibilityText(`思维导图画布，${this.visibleNodes.length} 个主题。拖动主题移动分支，拖动空白平移。`)
                 .width('100%')
                 .height('100%')
-                .backgroundColor($r('app.color.canvas_surface'))
+                .backgroundColor(this.palette.canvas_surface)
                 .onReady(() => {
                   this.canvasReady = true;
                   this.relayoutAndDraw();
@@ -1127,8 +1129,8 @@ export struct LexiWorkspaceMindMap {
                   .padding(0)
                   .fontSize(15)
                   .borderRadius(8)
-                  .backgroundColor('#332854')
-                  .fontColor('#F2EEFF')
+                  .backgroundColor(this.palette.soft_surface)
+                  .fontColor(this.palette.text_primary)
                   .onClick((): void => {
                     this.zoomScale = Math.max(0.1, Number((this.zoomScale - 0.15).toFixed(2)));
                     this.drawCanvas();
@@ -1138,8 +1140,8 @@ export struct LexiWorkspaceMindMap {
                   .padding({ left: 10, right: 10 })
                   .fontSize(11)
                   .borderRadius(8)
-                  .backgroundColor('#332854')
-                  .fontColor('#F2EEFF')
+                  .backgroundColor(this.palette.soft_surface)
+                  .fontColor(this.palette.text_primary)
                   .onClick((): void => {
                     this.fitCanvasToNodes();
                     this.drawCanvas();
@@ -1150,8 +1152,8 @@ export struct LexiWorkspaceMindMap {
                   .padding(0)
                   .fontSize(15)
                   .borderRadius(8)
-                  .backgroundColor('#332854')
-                  .fontColor('#F2EEFF')
+                  .backgroundColor(this.palette.soft_surface)
+                  .fontColor(this.palette.text_primary)
                   .onClick((): void => {
                     this.zoomScale = Math.min(1.6, Number((this.zoomScale + 0.15).toFixed(2)));
                     this.drawCanvas();
@@ -1178,13 +1180,13 @@ export struct LexiWorkspaceMindMap {
       .layoutWeight(1)
 
       Row({ space: 16 }) {
-        Text('思维导图').fontSize(11).fontColor($r('app.color.text_secondary'))
+        Text('思维导图').fontSize(11).fontColor(this.palette.text_secondary)
         Blank()
-        Text(`${this.doc.nodes.length} 个节点`).fontSize(11).fontColor($r('app.color.text_secondary'))
+        Text(`${this.doc.nodes.length} 个节点`).fontSize(11).fontColor(this.palette.text_secondary)
         Text(this.saveStatus)
           .id('workspace-mindmap-save-status')
           .fontSize(11)
-          .fontColor($r('app.color.text_secondary'))
+          .fontColor(this.palette.text_secondary)
           .onClick((): void => {
             this.flush().catch((): void => {
               this.saveStatus = '保存失败 · 点击重试';
@@ -1194,10 +1196,10 @@ export struct LexiWorkspaceMindMap {
       .height(deviceInfo.deviceType === '2in1' ? 30 : 34)
       .width('100%')
       .padding({ left: 24, right: 20, bottom: deviceInfo.deviceType === '2in1' ? 0 : 4 })
-      .border({ width: { top: 0.5 }, color: $r('app.color.workspace_line') })
+      .border({ width: { top: 0.5 }, color: this.palette.workspace_line })
     }
     .width('100%')
     .height('100%')
-    .backgroundColor($r('app.color.workspace_page'))
+    .backgroundColor(this.palette.workspace_page)
   }
 }

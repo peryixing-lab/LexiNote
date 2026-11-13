@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { common } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
 import { LexiBackHeader } from '../components/LexiBackHeader';
@@ -20,6 +21,7 @@ export function mindMapEditorBuilder() {
 
 @Component
 export struct MindMapPage {
+  @StorageProp('lexiThemePalette') @Watch('drawCanvas') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiTopInset') titleTopInset: number = 0;
   @StorageProp('lexiBottomInset') bottomInset: number = 0;
   @StorageProp('lexiViewportWidth') viewportWidth: number = 390;
@@ -429,7 +431,7 @@ export struct MindMapPage {
     this.ctx2d.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
 
     // Draw subtle background grid dots in screen space to avoid hundreds of arc paths
-    this.ctx2d.fillStyle = 'rgba(182, 156, 255, 0.14)';
+    this.ctx2d.fillStyle = this.palette.divider;
     for (let gx = 20; gx < this.canvasWidth; gx += 32) {
       for (let gy = 20; gy < this.canvasHeight; gy += 32) {
         this.ctx2d.fillRect(gx, gy, 2, 2);
@@ -487,14 +489,14 @@ export struct MindMapPage {
       this.ctx2d.beginPath();
       this.ctx2d.roundRect(rx, ry, node.boxWidth, node.boxHeight, 12);
       if (isRoot) {
-        this.ctx2d.fillStyle = '#6E44D9';
+        this.ctx2d.fillStyle = this.palette.brand;
       } else if (isSelected) {
-        this.ctx2d.fillStyle = '#38295C';
+        this.ctx2d.fillStyle = this.palette.workspace_selection;
       } else {
-        this.ctx2d.fillStyle = '#261E3D';
+        this.ctx2d.fillStyle = this.palette.surface;
       }
       if (isSelected) {
-        this.ctx2d.shadowColor = '#B69CFF';
+        this.ctx2d.shadowColor = this.palette.dock_light;
         this.ctx2d.shadowBlur = 12;
       }
       this.ctx2d.fill();
@@ -503,11 +505,11 @@ export struct MindMapPage {
       }
 
       this.ctx2d.lineWidth = isSelected ? 2.5 : 1.3;
-      this.ctx2d.strokeStyle = isSelected ? '#E0D0FF' : accent;
+      this.ctx2d.strokeStyle = isSelected ? this.palette.brand : accent;
       this.ctx2d.stroke();
 
       // Node main label
-      this.ctx2d.fillStyle = '#F5F0FF';
+      this.ctx2d.fillStyle = isRoot ? this.palette.inverse_text : this.palette.text_primary;
       this.ctx2d.font = `${isRoot ? 'bold 14vp' : 'medium 13vp'} sans-serif`;
       this.ctx2d.textAlign = 'center';
       this.ctx2d.textBaseline = 'middle';
@@ -516,7 +518,7 @@ export struct MindMapPage {
       this.ctx2d.fillText(label, node.x, textY);
 
       if (node.noteRefId.length > 0 || node.note.length > 0) {
-        this.ctx2d.fillStyle = '#C9B5FF';
+        this.ctx2d.fillStyle = isRoot ? this.palette.inverse_text : this.palette.text_secondary;
         this.ctx2d.font = '10vp sans-serif';
         const subText = node.noteRefTitle.length > 0 ? `🔗 ${node.noteRefTitle.slice(0, 9)}` : `✦ ${node.note.slice(0, 9)}`;
         this.ctx2d.fillText(subText, node.x, node.y + 11);
@@ -529,9 +531,9 @@ export struct MindMapPage {
         const by = node.y;
         this.ctx2d.beginPath();
         this.ctx2d.arc(bx, by, 10, 0, Math.PI * 2);
-        this.ctx2d.fillStyle = '#6E44D9';
+        this.ctx2d.fillStyle = this.palette.brand;
         this.ctx2d.fill();
-        this.ctx2d.fillStyle = '#FFFFFF';
+        this.ctx2d.fillStyle = this.palette.inverse_text;
         this.ctx2d.font = 'bold 10vp sans-serif';
         this.ctx2d.fillText(`+${hiddenCount}`, bx, by);
       }
@@ -615,7 +617,7 @@ export struct MindMapPage {
           .height(38)
           .fontSize(15)
           .fontWeight(FontWeight.Bold)
-          .backgroundColor($r('app.color.soft_surface'))
+          .backgroundColor(this.palette.soft_surface)
           .borderRadius(12)
           .onChange((val: string) => {
             this.doc.title = val;
@@ -632,8 +634,8 @@ export struct MindMapPage {
             .padding({ left: 12, right: 12 })
             .fontSize(12)
             .borderRadius(10)
-            .backgroundColor(this.viewKind === 'map' ? $r('app.color.brand') : Color.Transparent)
-            .fontColor(this.viewKind === 'map' ? $r('app.color.inverse_text') : $r('app.color.text_secondary'))
+            .backgroundColor(this.viewKind === 'map' ? this.palette.brand : Color.Transparent)
+            .fontColor(this.viewKind === 'map' ? this.palette.inverse_text : this.palette.text_secondary)
             .onClick(() => {
               this.viewKind = 'map';
               this.relayoutAndDraw();
@@ -643,14 +645,14 @@ export struct MindMapPage {
             .padding({ left: 12, right: 12 })
             .fontSize(12)
             .borderRadius(10)
-            .backgroundColor(this.viewKind === 'outline' ? $r('app.color.brand') : Color.Transparent)
-            .fontColor(this.viewKind === 'outline' ? $r('app.color.inverse_text') : $r('app.color.text_secondary'))
+            .backgroundColor(this.viewKind === 'outline' ? this.palette.brand : Color.Transparent)
+            .fontColor(this.viewKind === 'outline' ? this.palette.inverse_text : this.palette.text_secondary)
             .onClick(() => {
               this.viewKind = 'outline';
             })
         }
         .padding(3)
-        .backgroundColor($r('app.color.soft_surface'))
+        .backgroundColor(this.palette.soft_surface)
         .borderRadius(12)
       }
       .width('100%')
@@ -658,11 +660,11 @@ export struct MindMapPage {
       Row({ space: 8 }) {
         Button('+ 子主题', { type: ButtonType.Normal })
           .id('mindmap-add-child').layoutWeight(1).height(40).fontSize(12).borderRadius(12)
-          .backgroundColor($r('app.color.brand')).fontColor($r('app.color.inverse_text'))
+          .backgroundColor(this.palette.brand).fontColor(this.palette.inverse_text)
           .onClick((): void => { this.addChildNode(); })
         Button('+ 同级主题', { type: ButtonType.Normal })
           .id('mindmap-add-sibling').layoutWeight(1).height(40).fontSize(12).borderRadius(12)
-          .backgroundColor($r('app.color.brand_soft')).fontColor($r('app.color.brand_ink'))
+          .backgroundColor(this.palette.brand_soft).fontColor(this.palette.brand_ink)
           .onClick((): void => { this.addSiblingNode(); })
       }.width('100%')
 
@@ -679,8 +681,8 @@ export struct MindMapPage {
               .height(32)
               .fontSize(11)
               .borderRadius(10)
-              .backgroundColor(this.doc.layoutKind === item[0] ? $r('app.color.brand_soft') : $r('app.color.soft_surface'))
-              .fontColor(this.doc.layoutKind === item[0] ? $r('app.color.brand') : $r('app.color.text_secondary'))
+              .backgroundColor(this.doc.layoutKind === item[0] ? this.palette.brand_soft : this.palette.soft_surface)
+              .fontColor(this.doc.layoutKind === item[0] ? this.palette.brand : this.palette.text_secondary)
               .onClick(() => {
                 this.doc.layoutKind = item[0];
                 this.viewFitted = false;
@@ -698,7 +700,7 @@ export struct MindMapPage {
         .height(32)
         .borderRadius(10)
         .enabled(this.undoCount > 0)
-        .backgroundColor($r('app.color.soft_surface'))
+        .backgroundColor(this.palette.soft_surface)
         .onClick(() => {
           this.undo();
         })
@@ -711,7 +713,7 @@ export struct MindMapPage {
         .height(32)
         .borderRadius(10)
         .enabled(this.redoCount > 0)
-        .backgroundColor($r('app.color.soft_surface'))
+        .backgroundColor(this.palette.soft_surface)
         .onClick(() => {
           this.redo();
         })
@@ -720,7 +722,7 @@ export struct MindMapPage {
     }
     .width('100%')
     .padding(14)
-    .backgroundColor($r('app.color.surface'))
+    .backgroundColor(this.palette.surface)
     .borderRadius(20)
   }
 
@@ -733,8 +735,8 @@ export struct MindMapPage {
           .padding({ left: 10, right: 10 })
           .fontSize(12)
           .borderRadius(12)
-          .backgroundColor($r('app.color.soft_surface'))
-          .fontColor($r('app.color.text_primary'))
+          .backgroundColor(this.palette.soft_surface)
+          .fontColor(this.palette.text_primary)
           .onClick(() => {
             this.toggleCollapseSelected();
           })
@@ -745,8 +747,8 @@ export struct MindMapPage {
           .height(38)
           .fontSize(14)
           .borderRadius(12)
-          .backgroundColor($r('app.color.soft_surface'))
-          .fontColor($r('app.color.text_primary'))
+          .backgroundColor(this.palette.soft_surface)
+          .fontColor(this.palette.text_primary)
           .onClick(() => {
             this.moveSelectedOrder(-1);
           })
@@ -757,8 +759,8 @@ export struct MindMapPage {
           .height(38)
           .fontSize(14)
           .borderRadius(12)
-          .backgroundColor($r('app.color.soft_surface'))
-          .fontColor($r('app.color.text_primary'))
+          .backgroundColor(this.palette.soft_surface)
+          .fontColor(this.palette.text_primary)
           .onClick(() => {
             this.moveSelectedOrder(1);
           })
@@ -770,7 +772,7 @@ export struct MindMapPage {
         .padding(0)
         .height(38)
         .borderRadius(12)
-        .backgroundColor($r('app.color.soft_surface'))
+        .backgroundColor(this.palette.soft_surface)
         .onClick(() => {
           this.deleteSelectedSubtree();
         })
@@ -783,7 +785,7 @@ export struct MindMapPage {
           .height(40)
           .fontSize(14)
           .fontWeight(FontWeight.Medium)
-          .backgroundColor($r('app.color.soft_surface'))
+          .backgroundColor(this.palette.soft_surface)
           .borderRadius(12)
           .onChange((val: string) => {
             this.editNodeText = val;
@@ -799,7 +801,7 @@ export struct MindMapPage {
           .layoutWeight(1)
           .height(40)
           .fontSize(13)
-          .backgroundColor($r('app.color.soft_surface'))
+          .backgroundColor(this.palette.soft_surface)
           .borderRadius(12)
           .onChange((val: string) => {
             this.editNodeNote = val;
@@ -854,8 +856,8 @@ export struct MindMapPage {
           .padding({ left: 12, right: 12 })
           .fontSize(12)
           .borderRadius(10)
-          .backgroundColor($r('app.color.brand_soft'))
-          .fontColor($r('app.color.brand'))
+          .backgroundColor(this.palette.brand_soft)
+          .fontColor(this.palette.brand)
           .onClick(() => {
             this.showNoteLinker = !this.showNoteLinker;
           })
@@ -868,12 +870,12 @@ export struct MindMapPage {
             Text('将当前导图节点关联至笔记')
               .fontSize(13)
               .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.text_primary'))
+              .fontColor(this.palette.text_primary)
             Blank()
             if (this.currentSelectedNode()?.noteRefId) {
               Button('打开已关联笔记 →', { buttonStyle: ButtonStyleMode.TEXTUAL })
                 .fontSize(12)
-                .fontColor($r('app.color.brand'))
+                .fontColor(this.palette.brand)
                 .onClick(() => {
                   this.openLinkedNote(this.currentSelectedNode()?.noteRefId || '');
                 })
@@ -887,8 +889,8 @@ export struct MindMapPage {
               .margin({ right: 6, bottom: 6 })
               .fontSize(11)
               .borderRadius(9)
-              .backgroundColor($r('app.color.brand'))
-              .fontColor($r('app.color.inverse_text'))
+              .backgroundColor(this.palette.brand)
+              .fontColor(this.palette.inverse_text)
               .onClick(() => {
                 this.createNoteFromSelectedNode();
               })
@@ -901,8 +903,8 @@ export struct MindMapPage {
                   .margin({ right: 6, bottom: 6 })
                   .fontSize(11)
                   .borderRadius(9)
-                  .backgroundColor($r('app.color.soft_surface'))
-                  .fontColor($r('app.color.text_primary'))
+                  .backgroundColor(this.palette.soft_surface)
+                  .fontColor(this.palette.text_primary)
                   .onClick(() => {
                     this.linkSelectedToNote(n);
                   })
@@ -914,13 +916,13 @@ export struct MindMapPage {
         }
         .width('100%')
         .padding(12)
-        .backgroundColor($r('app.color.soft_surface'))
+        .backgroundColor(this.palette.soft_surface)
         .borderRadius(14)
       }
     }
     .width('100%')
     .padding(16)
-    .backgroundColor($r('app.color.surface'))
+    .backgroundColor(this.palette.surface)
     .borderRadius(22)
   }
 
@@ -931,11 +933,11 @@ export struct MindMapPage {
         Text('大纲视图')
           .fontSize(13)
           .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_primary'))
+          .fontColor(this.palette.text_primary)
         Blank()
         Button('导出 .md 大纲', { buttonStyle: ButtonStyleMode.TEXTUAL })
           .fontSize(12)
-          .fontColor($r('app.color.brand'))
+          .fontColor(this.palette.brand)
           .onClick(() => {
             this.exportOutlineOrJson(false);
           })
@@ -956,11 +958,11 @@ export struct MindMapPage {
               Text(node.text)
                 .fontSize(node.level === 0 ? 16 : 14)
                 .fontWeight(node.level <= 1 ? FontWeight.Bold : FontWeight.Medium)
-                .fontColor(node.id === this.selectedNodeId ? $r('app.color.brand') : $r('app.color.text_primary'))
+                .fontColor(node.id === this.selectedNodeId ? this.palette.brand : this.palette.text_primary)
               if (node.note.length > 0) {
                 Text(node.note)
                   .fontSize(11)
-                  .fontColor($r('app.color.text_secondary'))
+                  .fontColor(this.palette.text_secondary)
               }
             }
             .layoutWeight(1)
@@ -971,8 +973,8 @@ export struct MindMapPage {
                 .height(28)
                 .fontSize(11)
                 .borderRadius(8)
-                .backgroundColor($r('app.color.brand_soft'))
-                .fontColor($r('app.color.brand'))
+                .backgroundColor(this.palette.brand_soft)
+                .fontColor(this.palette.brand)
                 .onClick(() => {
                   this.openLinkedNote(node.noteRefId);
                 })
@@ -980,7 +982,7 @@ export struct MindMapPage {
           }
           .width('100%')
           .padding({ left: 10 + node.level * 18, right: 12, top: 10, bottom: 10 })
-          .backgroundColor(node.id === this.selectedNodeId ? $r('app.color.brand_soft') : $r('app.color.soft_surface'))
+          .backgroundColor(node.id === this.selectedNodeId ? this.palette.brand_soft : this.palette.soft_surface)
           .borderRadius(14)
           .onClick(() => {
             this.selectNode(node.id);
@@ -991,7 +993,7 @@ export struct MindMapPage {
     }
     .width('100%')
     .padding(18)
-    .backgroundColor($r('app.color.surface'))
+    .backgroundColor(this.palette.surface)
     .borderRadius(22)
   }
 
@@ -1023,7 +1025,7 @@ export struct MindMapPage {
                 .accessibilityText(`思维导图画布，${this.visibleNodes.length} 个主题。拖动主题移动分支，拖动空白平移。`)
                 .width('100%')
                 .height(420)
-                .backgroundColor($r('app.color.canvas_surface'))
+                .backgroundColor(this.palette.canvas_surface)
                 .borderRadius(24)
                 .onReady(() => {
                   this.canvasReady = true;
@@ -1053,8 +1055,8 @@ export struct MindMapPage {
                   .height(32)
                   .fontSize(15)
                   .borderRadius(10)
-                  .backgroundColor('#332854')
-                  .fontColor('#F2EEFF')
+                  .backgroundColor(this.palette.soft_surface)
+                  .fontColor(this.palette.text_primary)
                   .onClick(() => {
                     this.zoomScale = Math.max(0.1, Number((this.zoomScale - 0.15).toFixed(2)));
                     this.drawCanvas();
@@ -1064,8 +1066,8 @@ export struct MindMapPage {
                   .padding({ left: 10, right: 10 })
                   .fontSize(11)
                   .borderRadius(10)
-                  .backgroundColor('#332854')
-                  .fontColor('#F2EEFF')
+                  .backgroundColor(this.palette.soft_surface)
+                  .fontColor(this.palette.text_primary)
                   .onClick(() => {
                     this.fitCanvasToNodes();
                     this.drawCanvas();
@@ -1076,8 +1078,8 @@ export struct MindMapPage {
                   .height(32)
                   .fontSize(15)
                   .borderRadius(10)
-                  .backgroundColor('#332854')
-                  .fontColor('#F2EEFF')
+                  .backgroundColor(this.palette.soft_surface)
+                  .fontColor(this.palette.text_primary)
                   .onClick(() => {
                     this.zoomScale = Math.min(1.6, Number((this.zoomScale + 0.15).toFixed(2)));
                     this.drawCanvas();
@@ -1117,7 +1119,7 @@ export struct MindMapPage {
         scrollEffectOptions: { scrollEffectType: ScrollEffectType.GRADUAL_BLUR }
       }
     )
-    .backgroundColor($r('app.color.background'))
+    .backgroundColor(this.palette.background)
     .onReady((ctx: NavDestinationContext) => {
       this.pathStack = ctx.pathStack;
       const param = ctx.pathInfo.param as MindMapRouteParam | undefined;

@@ -18,6 +18,10 @@ export class PluginErrorCode {
   static readonly UNSUPPORTED_API: string = 'E_UNSUPPORTED_API';
   /** Model service not configured, unreachable, or returned a non-2xx reply. */
   static readonly MODEL_UNAVAILABLE: string = 'E_MODEL_UNAVAILABLE';
+  /** No credential is stored for the requested provider profile. */
+  static readonly MISSING_CREDENTIAL: string = 'E_MISSING_CREDENTIAL';
+  /** A stored credential cannot travel in an HTTP header (blank or non-printable-ASCII). */
+  static readonly INVALID_CREDENTIAL: string = 'E_INVALID_CREDENTIAL';
   static readonly UNSUPPORTED_MODULE: string = 'E_UNSUPPORTED_MODULE';
   static readonly PLUGIN_DISABLED: string = 'E_PLUGIN_DISABLED';
   static readonly PLUGIN_FAILED: string = 'E_PLUGIN_FAILED';

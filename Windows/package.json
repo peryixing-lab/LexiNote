@@ -1,0 +1,47 @@
+{
+  "name": "lexinote-windows",
+  "productName": "LexiNote",
+  "version": "2.0.1",
+  "description": "知萤 LexiNote for Windows — local-first Markdown knowledge workspace",
+  "main": "dist/main/main.js",
+  "author": "LexiNote",
+  "license": "GPL-3.0",
+  "private": true,
+  "scripts": {
+    "build:runtime": "node scripts/build-plugin-runtime.mjs",
+    "build:main": "node scripts/build-main.mjs",
+    "build:renderer": "vite build",
+    "build": "npm run build:runtime && npm run build:main && npm run build:renderer",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
+    "start": "npm run build && electron .",
+    "dev": "node scripts/dev.mjs",
+    "shot": "node scripts/screenshot.mjs",
+    "shots": "npm run build && node scripts/screenshot.mjs workspace right palette settings appearance dark mindmap graph library canvas templates workspaces help trash reading english",
+    "smoke": "node scripts/smoke.mjs",
+    "test:plugins": "node scripts/plugins-test.mjs",
+    "package:win": "node scripts/package-windows.mjs",
+    "package:win:x64": "node scripts/package-windows.mjs x64",
+    "package:win:arm64": "node scripts/package-windows.mjs arm64",
+    "package:win:ia32": "node scripts/package-windows.mjs ia32",
+    "package:dir": "node scripts/package-windows.mjs --dir",
+    "empty": "node scripts/empty.mjs"
+  },
+  "dependencies": {
+    "highlight.js": "^11.11.1",
+    "katex": "^0.16.22",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/katex": "^0.16.7",
+    "@types/node": "^22.15.21",
+    "@types/react": "^18.3.23",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.5.0",
+    "electron": "^36.3.1",
+    "electron-builder": "^26.0.12",
+    "esbuild": "^0.25.5",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}

@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { common } from '@kit.AbilityKit';
 import { LexiMarkdownPreview } from '../components/LexiEditorPanels';
 import { LexiMathBitmapHost } from '../components/LexiMathBitmapHost';
@@ -10,6 +11,7 @@ import { MarkdownEngine } from '../core/MarkdownEngine';
 @Entry({ useSharedStorage: true })
 @Component
 struct ShareCapturePage {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @LocalStorageProp('lexiShareSessionId') private sessionId: string = '';
   @LocalStorageProp('lexiShareDraftJson') @Watch('draftArrived') private draftJson: string = '';
   @LocalStorageProp('lexiShareError') private receiveError: string = '';
@@ -224,63 +226,63 @@ struct ShareCapturePage {
       Row({ space: 10 }) {
         Image($r('app.media.lexi_logo')).width(28).height(28).borderRadius(7)
         Text(this.draft.isMarkdownFile ? '打开并编辑 Markdown' : '保存到知萤')
-          .fontSize(18).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary')).layoutWeight(1)
+          .fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.palette.text_primary).layoutWeight(1)
         Button(this.savedNoteId ? '完成' : '返回', { buttonStyle: ButtonStyleMode.TEXTUAL }).id('share-capture-close')
-          .height(40).fontSize(13).fontColor($r('app.color.brand_ink')).enabled(!this.saving).onClick((): void => { this.close(); })
+          .height(40).fontSize(13).fontColor(this.palette.brand_ink).enabled(!this.saving).onClick((): void => { this.close(); })
       }.width('100%').padding({ left: 20, right: 12, top: 12, bottom: 8 })
       Scroll() {
         Column({ space: 14 }) {
           Text(this.draft.isMarkdownFile
             ? '已打开分享的 Markdown 文件，可直接编辑正文，点击“保存”时可选择是否添加到当前工作区。'
             : '只接收本次分享的文字和链接，在本机生成 Markdown。返回时保留草稿，再次分享相同内容可继续编辑。')
-            .fontSize(12).lineHeight(20).fontColor($r('app.color.text_secondary')).width('100%')
+            .fontSize(12).lineHeight(20).fontColor(this.palette.text_secondary).width('100%')
           if (this.receiveError) {
-            Text(this.receiveError).id('share-capture-receive-error').fontSize(14).lineHeight(23).fontColor($r('app.color.text_primary')).width('100%')
+            Text(this.receiveError).id('share-capture-receive-error').fontSize(14).lineHeight(23).fontColor(this.palette.text_primary).width('100%')
           } else if (!this.ready) {
-            Text('正在读取分享内容…').fontSize(14).fontColor($r('app.color.text_secondary')).padding(24)
+            Text('正在读取分享内容…').fontSize(14).fontColor(this.palette.text_secondary).padding(24)
           }
           if (this.ready) {
             Row({ space: 8 }) {
               Button(this.workspaceName(), { buttonStyle: ButtonStyleMode.TEXTUAL }).id('share-capture-workspace')
-                .layoutWeight(1).height(40).fontSize(13).fontColor($r('app.color.brand_ink')).backgroundColor($r('app.color.soft_surface'))
+                .layoutWeight(1).height(40).fontSize(13).fontColor(this.palette.brand_ink).backgroundColor(this.palette.soft_surface)
                 .enabled(!this.saving && !this.savedNoteId).bindMenu(this.workspaceMenu())
               Button(this.selectedProjectName(), { buttonStyle: ButtonStyleMode.TEXTUAL }).id('share-capture-project')
-                .layoutWeight(1).height(40).fontSize(13).fontColor($r('app.color.brand_ink')).backgroundColor($r('app.color.soft_surface'))
+                .layoutWeight(1).height(40).fontSize(13).fontColor(this.palette.brand_ink).backgroundColor(this.palette.soft_surface)
                 .enabled(!this.saving && !this.savedNoteId).bindMenu(this.projectMenu())
             }.width('100%')
             TextInput({ text: this.titleText, placeholder: this.draft.isMarkdownFile ? 'Markdown 文件标题' : '剪藏标题' })
               .id('share-capture-title').height(44).maxLength(160)
-              .fontSize(16).fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.soft_surface'))
+              .fontSize(16).fontColor(this.palette.text_primary).backgroundColor(this.palette.soft_surface)
               .enabled(!this.saving && !this.savedNoteId).onChange((text: string): void => { this.titleText = text; this.changed(); })
             if (!this.draft.isMarkdownFile) {
               TextInput({ text: this.sourceText, placeholder: '来源链接（可选，仅 HTTP / HTTPS）' }).id('share-capture-source')
-                .height(42).maxLength(4096).fontSize(12).fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.soft_surface'))
+                .height(42).maxLength(4096).fontSize(12).fontColor(this.palette.text_primary).backgroundColor(this.palette.soft_surface)
                 .enabled(!this.saving && !this.savedNoteId).onChange((text: string): void => { this.sourceText = text; this.changed(); })
             }
             TextArea({ text: this.quoteText, placeholder: this.draft.isMarkdownFile ? '在此编辑 Markdown 文件内容…' : '引用文本，可在保存前修改' })
               .id('share-capture-text')
               .height(this.draft.isMarkdownFile ? 260 : 160).maxLength(this.draft.isMarkdownFile ? 1048576 : 102400)
-              .fontSize(14).fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.soft_surface'))
+              .fontSize(14).fontColor(this.palette.text_primary).backgroundColor(this.palette.soft_surface)
               .enabled(!this.saving && !this.savedNoteId).onChange((text: string): void => { this.quoteText = text; this.changed(); })
             Button(this.showPreview ? '收起 Markdown 预览' : '查看 Markdown 预览', { buttonStyle: ButtonStyleMode.TEXTUAL })
-              .id('share-capture-preview-toggle').fontSize(12).height(34).fontColor($r('app.color.brand_ink'))
+              .id('share-capture-preview-toggle').fontSize(12).height(34).fontColor(this.palette.brand_ink)
               .onClick((): void => { this.showPreview = !this.showPreview; })
-            if (this.previewError) { Text(this.previewError).fontSize(12).fontColor($r('app.color.text_secondary')).width('100%'); }
+            if (this.previewError) { Text(this.previewError).fontSize(12).fontColor(this.palette.text_secondary).width('100%'); }
             if (this.showPreview && !this.previewError) { LexiMarkdownPreview({ blocks: this.previewBlocks, frameless: true }); }
           }
-          if (this.notice) { Text(this.notice).id('share-capture-notice').fontSize(12).lineHeight(20).fontColor($r('app.color.brand_ink')).width('100%'); }
-          if (this.errorText) { Text(this.errorText).id('share-capture-error').fontSize(13).lineHeight(21).fontColor($r('app.color.text_primary')).width('100%'); }
+          if (this.notice) { Text(this.notice).id('share-capture-notice').fontSize(12).lineHeight(20).fontColor(this.palette.brand_ink).width('100%'); }
+          if (this.errorText) { Text(this.errorText).id('share-capture-error').fontSize(13).lineHeight(21).fontColor(this.palette.text_primary).width('100%'); }
         }.width('100%').padding({ left: 20, right: 20, top: 10, bottom: 24 }).alignItems(HorizontalAlign.Start)
       }.width('100%').layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Auto)
       if (this.ready && !this.savedNoteId) {
         Button(this.saving ? '正在保存…' : this.duplicateNoteId ? '仍另存一份' : (this.draft.isMarkdownFile ? '保存' : '保存到剪藏收件箱'))
           .id('share-capture-save').width('100%').height(46).fontSize(15).borderRadius(14)
-          .fontColor($r('app.color.inverse_text')).backgroundColor($r('app.color.brand'))
+          .fontColor(this.palette.inverse_text).backgroundColor(this.palette.brand)
           .enabled(!this.saving && !!this.vaultId && !this.previewError)
           .onClick((): void => { this.handleSaveClick(); })
           .margin({ top: 8, bottom: 16 })
       }
       if (this.mathBitmapNeeded) { LexiMathBitmapHost() }
-    }.width('100%').height('100%').padding({ left: 8, right: 8 }).backgroundColor($r('app.color.surface'))
+    }.width('100%').height('100%').padding({ left: 8, right: 8 }).backgroundColor(this.palette.surface)
   }
 }

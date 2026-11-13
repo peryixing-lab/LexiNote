@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { LexiMultiCaret, LexiMultiCaretEdit } from '../core/LexiMultiCaret';
 import { LexiSpellcheck, LexiSpellingIssue } from '../core/LexiSpellcheck';
 import { LexiEditingActions } from '../core/LexiEditingActions';
@@ -46,6 +47,7 @@ interface LexiWorkspaceEditorToolParams {
 
 @Component
 export struct LexiWorkspaceEditor {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiEditorDefaultView') private editorDefaultView: string = 'edit';
   @StorageProp('lexiEditorDefaultMode') private editorDefaultMode: string = 'live';
   @StorageProp('lexiEditorShowTitle') private editorShowTitle: boolean = true;
@@ -55,7 +57,7 @@ export struct LexiWorkspaceEditor {
   @StorageProp('lexiTabHeaders') private showTabHeaders: boolean = true;
   @StorageProp('lexiFontSize') private noteFontSize: number = 16;
   @StorageProp('lexiWheelZoomLock') private wheelZoomLock: boolean = false;
-  @StorageProp('lexiAccent') private noteAccent: string = '#6E44D9';
+  @StorageProp('lexiEffectiveAccent') private noteAccent: string = '#6E44D9';
   noteId: string = '';
   @StorageProp('lexiAnchorRequest') @Watch('anchorRequested') anchorRequest: number = 0;
   @State private completionItems: LexiCompletionCandidate[] = [];
@@ -820,7 +822,7 @@ export struct LexiWorkspaceEditor {
     Button(label, { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
       .id(`workspace-tool-${this.noteId}-${action}`).width('32%').height(40).fontSize(12)
       .padding(2).borderRadius(8).margin({ right: '1%', bottom: 6 })
-      .fontColor($r('app.color.brand_ink')).backgroundColor($r('app.color.soft_surface'))
+      .fontColor(this.palette.brand_ink).backgroundColor(this.palette.soft_surface)
       .onClick((): void => { this.queueToolAction(action); })
   }
 
@@ -845,33 +847,33 @@ export struct LexiWorkspaceEditor {
           Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
             Row({ space: 3 }) {
               LexiIcon({ name: 'back', iconSize: 13 })
-              Text('返回').fontSize(12).fontColor($r('app.color.brand_ink'))
+              Text('返回').fontSize(12).fontColor(this.palette.brand_ink)
             }.width('100%').justifyContent(FlexAlign.Center)
           }.id(`workspace-tools-back-${this.noteId}`).width(62).height(32).padding(0).borderRadius(8)
             .accessibilityText('返回工具列表').onClick((): void => { this.toolPage = 'format'; })
         }
         Text(this.toolPage === 'links' ? '插入笔记链接' : '笔记工具').fontSize(14).fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+          .fontColor(this.palette.text_primary).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
         Button('关闭', { buttonStyle: ButtonStyleMode.TEXTUAL }).height(30).fontSize(11)
-          .fontColor($r('app.color.brand_ink')).onClick((): void => { this.pendingToolSnippet = ''; this.showToolsPopup = false; })
+          .fontColor(this.palette.brand_ink).onClick((): void => { this.pendingToolSnippet = ''; this.showToolsPopup = false; })
       }.width('100%')
       Scroll() {
         Column({ space: 7 }) {
           if (this.toolPage === 'links') {
             TextInput({ text: this.toolLinkQuery, placeholder: '搜索笔记或输入新标题' })
               .id(`workspace-tool-link-search-${this.noteId}`).height(36).fontSize(12)
-              .fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.soft_surface'))
+              .fontColor(this.palette.text_primary).backgroundColor(this.palette.soft_surface)
               .onChange((text: string): void => { this.toolLinkQuery = text; })
             ForEach(this.toolLinkCandidates(), (candidate: NoteItem) => {
               Button(MarkdownEngine.displayTitle(candidate), { buttonStyle: ButtonStyleMode.TEXTUAL })
                 .id(`workspace-tool-link-${this.noteId}-${candidate.id}`).width('100%').height(34).fontSize(12)
-                .fontColor($r('app.color.brand_ink')).onClick((): void => {
+                .fontColor(this.palette.brand_ink).onClick((): void => {
                   this.queueToolSnippet(`[[${MarkdownEngine.displayTitle(candidate)}]]`);
                 })
             }, (candidate: NoteItem): string => candidate.id)
             if (this.toolLinkQuery.trim()) {
               Button('插入此标题链接', { buttonStyle: ButtonStyleMode.TEXTUAL }).width('100%').height(34).fontSize(12)
-                .fontColor($r('app.color.brand_ink')).onClick((): void => { this.queueToolSnippet(`[[${this.toolLinkQuery.trim()}]]`); })
+                .fontColor(this.palette.brand_ink).onClick((): void => { this.queueToolSnippet(`[[${this.toolLinkQuery.trim()}]]`); })
             }
           } else {
             Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
@@ -894,7 +896,7 @@ export struct LexiWorkspaceEditor {
         }.width('100%').alignItems(HorizontalAlign.Start)
       }.width('100%').layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Auto)
     }.id(`workspace-tools-popup-${this.noteId}`).width(Math.min(312, Math.max(236, this.paneWidth - 32)))
-      .height(320).padding(12).backgroundColor($r('app.color.surface')).borderRadius(16)
+      .height(320).padding(12).backgroundColor(this.palette.surface).borderRadius(16)
       .onDisAppear((): void => { this.toolsPopupDidDisappear(); })
   }
 
@@ -911,6 +913,8 @@ export struct LexiWorkspaceEditor {
   @Builder
   private documentMenu() {
     Menu() {
+      MenuItem({ content: '撤销正文编辑' }).enabled(this.historyCount > 0)
+        .onClick((): void => { this.undo(); })
       MenuItem({ content: '文档属性与高级编辑' }).onClick((): void => {
         this.flush().then((): void => { this.onOpenAdvancedNote(this.noteId); }).catch((): void => {
           this.statusText = '保存失败 · 点击重试';
@@ -931,9 +935,9 @@ export struct LexiWorkspaceEditor {
   private inspector() {
     Column({ space: 18 }) {
       Row() {
-        Text(this.inspectorMode === 'properties' ? '笔记属性' : this.inspectorMode === 'backlinks' ? '反向链接' : this.inspectorMode === 'outgoing' ? '出链' : '文档大纲').fontSize(13).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+        Text(this.inspectorMode === 'properties' ? '笔记属性' : this.inspectorMode === 'backlinks' ? '反向链接' : this.inspectorMode === 'outgoing' ? '出链' : '文档大纲').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.palette.text_primary)
         Blank()
-        Text(`${this.headings.length}`).fontSize(11).fontColor($r('app.color.text_secondary'))
+        Text(`${this.headings.length}`).fontSize(11).fontColor(this.palette.text_secondary)
       }.width('100%')
       Scroll() {
         Column({ space: 4 }) {
@@ -945,25 +949,25 @@ export struct LexiWorkspaceEditor {
           if (this.inspectorMode === 'outline') {
           if (this.headings.length === 0) {
             Text('用 Markdown 标题梳理思路，大纲会出现在这里。')
-              .fontSize(12).lineHeight(21).fontColor($r('app.color.text_secondary')).width('100%')
+              .fontSize(12).lineHeight(21).fontColor(this.palette.text_secondary).width('100%')
           }
           ForEach(this.headings, (heading: OutlineHeading) => {
             Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
               Text(heading.title).fontSize(12).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-                .fontColor($r('app.color.text_secondary')).width('100%').textAlign(TextAlign.Start)
+                .fontColor(this.palette.text_secondary).width('100%').textAlign(TextAlign.Start)
             }
             .width('100%').constraintSize({ minHeight: 36 }).padding({ left: (heading.level - 1) * 10, right: 2, top: 7, bottom: 7 })
             .backgroundColor(Color.Transparent).borderRadius(6).onClick((): void => { this.jumpToHeading(heading); })
           }, (heading: OutlineHeading): string => heading.id)
           }
-          Divider().color($r('app.color.workspace_line')).margin({ top: 22, bottom: 16 })
-          Text('双向链接').fontSize(13).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')).width('100%')
+          Divider().color(this.palette.workspace_line).margin({ top: 22, bottom: 16 })
+          Text('双向链接').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.palette.text_primary).width('100%')
           Text(`${this.outgoing.length} 个出链 · ${this.backlinks.length} 个反向链接`)
-            .fontSize(11).fontColor($r('app.color.text_secondary')).width('100%').margin({ top: 6, bottom: 10 })
+            .fontSize(11).fontColor(this.palette.text_secondary).width('100%').margin({ top: 6, bottom: 10 })
           if (this.inspectorMode === 'outline' || this.inspectorMode === 'outgoing') {
           ForEach(this.outgoing, (link: NoteLink) => {
             Button(link.targetTitle, { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-              .fontSize(12).fontColor($r('app.color.brand_ink')).width('100%').height(34)
+              .fontSize(12).fontColor(this.palette.brand_ink).width('100%').height(34)
               .backgroundColor(Color.Transparent).padding(0)
               .onClick((): void => { this.openTarget(`${link.targetId || link.targetTitle}${link.anchor ? '#' + link.anchor : ''}`).catch((): void => {}); })
           }, (link: NoteLink): string => `${link.sourceId}-${link.targetTitle}`)
@@ -971,7 +975,7 @@ export struct LexiWorkspaceEditor {
           if (this.inspectorMode === 'outline' || this.inspectorMode === 'backlinks') {
           ForEach(this.backlinks, (link: NoteLink) => {
             Button(link.sourceTitle, { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-              .fontSize(12).fontColor($r('app.color.brand_ink')).width('100%').height(34)
+              .fontSize(12).fontColor(this.palette.brand_ink).width('100%').height(34)
               .backgroundColor(Color.Transparent).padding(0)
               .onClick((): void => { this.openTarget(link.sourceId).catch((): void => {}); })
           }, (link: NoteLink): string => `back-${link.sourceId}-${link.targetTitle}`)
@@ -980,8 +984,8 @@ export struct LexiWorkspaceEditor {
       }.width('100%').layoutWeight(1).scrollBar(BarState.Off).align(Alignment.Top)
     }
     .width(216).height('100%').padding({ left: 20, right: 20, top: 28, bottom: 24 })
-    .backgroundColor($r('app.color.workspace_inspector'))
-    .border({ width: { left: 0.5 }, color: $r('app.color.workspace_line') })
+    .backgroundColor(this.palette.workspace_inspector)
+    .border({ width: { left: 0.5 }, color: this.palette.workspace_line })
   }
 
   build() {
@@ -989,39 +993,38 @@ export struct LexiWorkspaceEditor {
       Row({ space: 6 }) {
         if (this.showTabHeaders) {
         LexiIcon({ name: 'folder', iconSize: 15 })
-        Text(this.note.notebook || '知识库').fontSize(12).fontColor($r('app.color.text_secondary'))
+        Text(this.note.notebook || '知识库').fontSize(12).fontColor(this.palette.text_secondary)
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text('/').fontSize(12).fontColor($r('app.color.text_secondary'))
-        Text(this.titleText || '无标题笔记').fontSize(12).fontColor($r('app.color.text_primary'))
+        Text('/').fontSize(12).fontColor(this.palette.text_secondary)
+        Text(this.titleText || '无标题笔记').fontSize(12).fontColor(this.palette.text_primary)
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
         } else {
           Blank().layoutWeight(1)
         }
         Button(this.editing ? '实时预览' : '源码', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
           .id('workspace-edit-toggle').fontSize(12).height(34).padding({ left: 14, right: 14 }).borderRadius(7)
-          .backgroundColor(this.editing ? $r('app.color.workspace_selection') : Color.Transparent)
-          .fontColor($r('app.color.brand_ink'))
+          .backgroundColor(this.editing ? this.palette.workspace_selection : Color.Transparent)
+          .fontColor(this.palette.brand_ink)
           .accessibilityText(this.editing ? '当前为整篇源码编辑，切换到实时预览' : '当前为实时预览，切换到整篇源码编辑')
           .onClick((): void => { this.toggleSourceMode(); })
         Button('工具', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
           .id(`workspace-tools-${this.noteId}`).height(34).fontSize(12).padding({ left: 12, right: 12 }).borderRadius(7)
-          .fontColor($r('app.color.brand_ink')).backgroundColor($r('app.color.workspace_selection'))
+          .fontColor(this.palette.brand_ink).backgroundColor(this.palette.workspace_selection)
           .enabled(this.loaded && !this.conflictResolving).onClick((): void => { this.openTools(); })
           .bindPopup(this.showToolsPopup, {
             builder: this.toolsPopup, placement: Placement.BottomRight, width: Math.min(312, Math.max(236, this.paneWidth - 32)),
-            popupColor: $r('app.color.surface'), enableArrow: true, autoCancel: true, focusable: true,
+            popupColor: this.palette.surface, enableArrow: true, autoCancel: true, focusable: true,
             keyboardAvoidMode: KeyboardAvoidMode.DEFAULT,
             onStateChange: (event: LexiWorkspacePopupState): void => { this.showToolsPopup = event.isVisible; }
           })
         Button('更多', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
           .id('workspace-document-more').height(34).fontSize(12).padding({ left: 10, right: 10 }).borderRadius(7)
-          .fontColor($r('app.color.text_secondary')).backgroundColor(Color.Transparent).bindMenu(this.documentMenu())
-        this.tool({ iconName: 'undo', label: '撤销正文编辑', action: (): void => { this.undo(); }, isEnabled: this.historyCount > 0 })
+          .fontColor(this.palette.text_secondary).backgroundColor(Color.Transparent).bindMenu(this.documentMenu())
         if (!this.externalInspector) {
         Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-          SymbolGlyph($r('sys.symbol.list_bullet')).fontSize(17).fontColor([$r('app.color.text_secondary')])
+          SymbolGlyph($r('sys.symbol.list_bullet')).fontSize(17).fontColor([this.palette.text_secondary])
         }.id('workspace-outline-toggle').width(36).height(36).padding(0).borderRadius(7)
-          .backgroundColor(this.inspectorOpen && this.paneWidth >= 680 ? $r('app.color.workspace_selection') : Color.Transparent)
+          .backgroundColor(this.inspectorOpen && this.paneWidth >= 680 ? this.palette.workspace_selection : Color.Transparent)
           .accessibilityText('展开或收起大纲').onClick((): void => {
             if (this.inspectorOpen && this.paneWidth >= 680) { this.inspectorOpen = false; }
             else {
@@ -1031,8 +1034,8 @@ export struct LexiWorkspaceEditor {
           })
         }
       }
-      .height(48).width('100%').padding({ left: 28, right: 16 })
-      .border({ width: { bottom: 0.5 }, color: $r('app.color.workspace_line') })
+      .id('workspace-editor-toolbar').height(48).width('100%').padding({ left: 28, right: 16 })
+      .border({ width: { bottom: 0.5 }, color: this.palette.workspace_line })
       if (this.spellingOpen) {
         Scroll() {
           Column({ space: 6 }) {
@@ -1067,7 +1070,7 @@ export struct LexiWorkspaceEditor {
         Scroll(this.documentScroller) {
           Column({ space: 18 }) {
             if (this.loadFailed) {
-              Text('文档暂时无法打开').fontSize(24).fontColor($r('app.color.text_primary'))
+              Text('文档暂时无法打开').fontSize(24).fontColor(this.palette.text_primary)
               Button('重新读取').onClick((): void => {
                 this.loading = this.load(); this.loading.catch((): void => { this.loadFailed = true; });
               })
@@ -1076,8 +1079,8 @@ export struct LexiWorkspaceEditor {
               TextArea({ text: this.titleText, placeholder: '无标题笔记' })
                 .id(`workspace-title-input-${this.noteId}-${this.continuationOwner}`).enabled(!this.conflictResolving && !this.locked)
                 .width('100%').constraintSize({ minHeight: 44 }).padding(0)
-                .fontSize(30).lineHeight(40).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary'))
-                .placeholderColor($r('app.color.text_secondary')).caretColor(this.noteAccent)
+                .fontSize(30).lineHeight(40).fontWeight(FontWeight.Bold).fontColor(this.palette.text_primary)
+                .placeholderColor(this.palette.text_secondary).caretColor(this.noteAccent)
                 .backgroundColor(Color.Transparent).borderRadius(0)
                 .onFocus((): void => { this.activateContinuation(true); })
                 .onChange((text: string): void => {
@@ -1087,11 +1090,11 @@ export struct LexiWorkspaceEditor {
               }
               Row({ space: 8 }) {
                 Text(this.note.noteType === 'study' ? '学习笔记' : this.note.noteType === 'quick' ? '快速笔记' : 'Markdown')
-                  .fontSize(11).fontColor($r('app.color.brand_ink'))
-                Text('·').fontSize(11).fontColor($r('app.color.text_secondary'))
-                Text(`${this.bodyText.length} 字符`).fontSize(11).fontColor($r('app.color.text_secondary'))
+                  .fontSize(11).fontColor(this.palette.brand_ink)
+                Text('·').fontSize(11).fontColor(this.palette.text_secondary)
+                Text(`${this.bodyText.length} 字符`).fontSize(11).fontColor(this.palette.text_secondary)
                 ForEach(this.note.tags.slice(0, 3), (tag: string) => {
-                  Text(`#${tag}`).fontSize(11).fontColor($r('app.color.brand_ink'))
+                  Text(`#${tag}`).fontSize(11).fontColor(this.palette.brand_ink)
                 }, (tag: string): string => tag)
               }.width('100%').margin({ bottom: 14 })
               if (this.folded) {
@@ -1108,8 +1111,8 @@ export struct LexiWorkspaceEditor {
               } else if (this.editing) {
                 TextArea({ text: this.bodyText, controller: this.bodyController, placeholder: '从一个想法开始。支持 Markdown、#标签与 [[双向链接]]。' })
                   .id(`workspace-body-input-${this.noteId}-${this.continuationOwner}`).enabled(!this.conflictResolving && !this.locked).width('100%').constraintSize({ minHeight: 460 })
-                  .fontSize(this.noteFontSize).lineHeight(this.noteFontSize * 1.75).fontColor($r('app.color.text_primary'))
-                  .placeholderColor($r('app.color.text_secondary')).caretColor(this.noteAccent)
+                  .fontSize(this.noteFontSize).lineHeight(this.noteFontSize * 1.75).fontColor(this.palette.text_primary)
+                  .placeholderColor(this.palette.text_secondary).caretColor(this.noteAccent)
                   .backgroundColor(Color.Transparent).borderRadius(0).padding(0)
                   .onFocus((): void => { this.activateContinuation(true); })
                   .onChange((text: string): void => { this.updateBody(text); })
@@ -1148,34 +1151,34 @@ export struct LexiWorkspaceEditor {
       Row({ space: this.paneWidth >= 600 ? 16 : 8 }) {
         Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
           Row({ space: 6 }) {
-            SymbolGlyph($r('sys.symbol.mic')).fontSize(15).fontColor([$r('app.color.brand_ink')])
-            Text('语音记录').fontSize(12).fontColor($r('app.color.brand_ink')).maxLines(1)
+            SymbolGlyph($r('sys.symbol.mic')).fontSize(15).fontColor([this.palette.brand_ink])
+            Text('语音记录').fontSize(12).fontColor(this.palette.brand_ink).maxLines(1)
           }
         }.id(`workspace-voice-record-${this.noteId}`).width(104).height(32).padding({ left: 8, right: 8 }).borderRadius(8)
-          .backgroundColor($r('app.color.soft_surface')).accessibilityText('语音记录，打开离线语音速记')
+          .backgroundColor(this.palette.soft_surface).accessibilityText('语音记录，打开离线语音速记')
           .enabled(this.loaded && !this.loadFailed && !this.conflictResolving)
           .onClick((): void => { this.requestVoiceCapture(); })
         if (this.editorViewStatus && this.paneWidth >= 600) {
           Button(this.reading ? '阅读视图' : this.editing ? 'Markdown 源码' : '实时预览',
             { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-            .id('workspace-view-status').height(32).fontSize(11).fontColor($r('app.color.text_secondary'))
+            .id('workspace-view-status').height(32).fontSize(11).fontColor(this.palette.text_secondary)
             .onClick((): void => { this.liveController.finishEditing(); this.reading = !this.reading; })
         }
         if (this.paneWidth >= 900) {
-          Text(`${this.backlinks.length} 个反向链接`).fontSize(11).fontColor($r('app.color.text_secondary')).maxLines(1)
+          Text(`${this.backlinks.length} 个反向链接`).fontSize(11).fontColor(this.palette.text_secondary).maxLines(1)
         }
         if (this.paneWidth >= 480) {
-          Text(`${this.bodyText.length} 字符`).fontSize(11).fontColor($r('app.color.text_secondary')).maxLines(1)
+          Text(`${this.bodyText.length} 字符`).fontSize(11).fontColor(this.palette.text_secondary).maxLines(1)
         }
-        Text(this.statusText).id('workspace-save-status').fontSize(11).fontColor($r('app.color.text_secondary'))
+        Text(this.statusText).id('workspace-save-status').fontSize(11).fontColor(this.palette.text_secondary)
           .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).textAlign(TextAlign.End)
           .onClick((): void => { this.flush().catch((): void => { this.statusText = '保存失败 · 点击重试'; }); })
       }
       .height(deviceInfo.deviceType === '2in1' ? 40 : 44).width('100%')
       .padding({ left: this.paneWidth >= 600 ? 24 : 12, right: this.paneWidth >= 600 ? 20 : 12,
         bottom: deviceInfo.deviceType === '2in1' ? 0 : 4 })
-      .border({ width: { top: 0.5 }, color: $r('app.color.workspace_line') })
-    }.id(`workspace-editor-${this.noteId}-${this.continuationOwner}`).width('100%').height('100%').backgroundColor($r('app.color.workspace_page'))
+      .border({ width: { top: 0.5 }, color: this.palette.workspace_line })
+    }.id(`workspace-editor-${this.noteId}-${this.continuationOwner}`).width('100%').height('100%').backgroundColor(this.palette.workspace_page)
       .onVisibleAreaChange([0], (visible: boolean, _ratio: number): void => {
         if (!visible) {
           this.continuationFocused = false;
@@ -1188,7 +1191,7 @@ export struct LexiWorkspaceEditor {
         preferType: this.windowViewportWidth >= 840 ? SheetType.CENTER : SheetType.BOTTOM,
         radius: this.windowViewportWidth >= 840 ? LengthMetrics.vp(24) : undefined,
         dragBar: this.windowViewportWidth < 840, showClose: true,
-        backgroundColor: $r('app.color.surface'),
+        backgroundColor: this.palette.surface,
         onDisappear: (): void => { this.captureDismissed(); }
       })
   }

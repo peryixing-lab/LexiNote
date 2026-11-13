@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { LexiMathBitmapHost } from '../components/LexiMathBitmapHost';
 import { common } from '@kit.AbilityKit';
 import { LexiAppearanceSettings } from '../core/LexiAppearanceSettings';
@@ -11,6 +12,7 @@ import { LexiSharableNoteSnapshot, LexiShareService } from '../core/LexiShareSer
 @Entry({ useSharedStorage: true })
 @Component
 struct DocumentWindow {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiMathBitmapNeeded') private mathBitmapNeeded: boolean = false;
   @LocalStorageProp('documentNoteId') private documentId: string = '';
   @StorageProp('lexiWorkspaceRevision') @Watch('refresh') private revision: number = 0;
@@ -63,8 +65,8 @@ struct DocumentWindow {
     Column() {
       Row({ space: 10 }) {
         Image($r('app.media.lexi_logo')).width(26).height(26)
-        Text('知萤 LexiNote').fontSize(15).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
-      }.width('100%').height(52).padding({ left: 18, right: 168 }).backgroundColor($r('app.color.workspace_tabs'))
+        Text('知萤 LexiNote').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.palette.text_primary)
+      }.width('100%').height(52).padding({ left: 18, right: 168 }).backgroundColor(this.palette.workspace_tabs)
       if (this.ready) {
         Column() {
           ForEach(this.tabs, (tab: LexiWorkspaceTab) => {
@@ -92,9 +94,9 @@ struct DocumentWindow {
           }, (tab: LexiWorkspaceTab): string => tab.noteId)
         }.width('100%').layoutWeight(1)
       } else {
-        Text('正在打开文档…').fontSize(14).fontColor($r('app.color.text_secondary')).layoutWeight(1)
+        Text('正在打开文档…').fontSize(14).fontColor(this.palette.text_secondary).layoutWeight(1)
       }
-    }.width('100%').height('100%').backgroundColor($r('app.color.workspace_page'))
+    }.width('100%').height('100%').backgroundColor(this.palette.workspace_page)
       .onAreaChange((_old: Area, current: Area): void => { this.windowWidth = Number(current.width); })
       .onKeyEventDispatch((event: KeyEvent): boolean => {
         LexiAppearanceSettings.trackModifierKey(event);

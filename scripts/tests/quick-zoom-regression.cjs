@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const ts = require(process.env.LEXI_TYPESCRIPT || '/Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor/node_modules/typescript');
+const { loadTheme } = require('./lib/theme-harness.cjs');
 
 const CTRL_LEFT = 2072;
 const CTRL_RIGHT = 2073;
@@ -11,6 +12,7 @@ const CTRL_RIGHT = 2073;
 function startSession(quickZoom = 'true') {
   const disk = new Map([['appearanceQuickZoom', quickZoom], ['appearanceFontSize', '16']]);
   const memory = new Map();
+  const { LexiTheme } = loadTheme(memory);
   const storage = {
     settingsOwner: () => 'test-workspace',
     async getSetting(key, fallback) { return disk.has(key) ? disk.get(key) : fallback; },
@@ -26,6 +28,7 @@ function startSession(quickZoom = 'true') {
     module,
     exports: module.exports,
     require: () => ({
+      LexiTheme,
       LexiStorageService: storage,
       KeyCode: { KEYCODE_CTRL_LEFT: CTRL_LEFT, KEYCODE_CTRL_RIGHT: CTRL_RIGHT }
     }),

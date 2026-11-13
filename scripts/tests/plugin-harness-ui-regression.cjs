@@ -141,7 +141,10 @@ async function run(mode) {
       .find((node) => node.getAttribute('aria-label') === '切换到 fake-reasoner');
     modelOption.dispatchEvent({ type: 'click' });
     await until(() => surface().querySelector('.harness-sub').textContent.includes('fake-reasoner'));
-    eq(host.calls.filter((call) => call.method === 'ai.configure').at(-1).params, { model: 'fake-reasoner' });
+    const switched = host.calls.filter((call) => call.method === 'ai.configure').at(-1).params;
+    eq(switched.model, 'fake-reasoner');
+    eq(switched.baseUrl, longBase);
+    eq(switched.apiKey, 'private-key');
     eq(surface().querySelectorAll('.harness-model-option')
       .find((node) => node.getAttribute('aria-label') === '切换到 fake-reasoner').getAttribute('aria-pressed'), 'true');
     ok(!surface().querySelector('.harness-models').textContent.includes('测试模型列表获取失败'));

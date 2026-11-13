@@ -1,9 +1,11 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { uiMaterial } from '@kit.ArkUI';
 import { LexiIcon } from './LexiIcon';
 import { LexiTitleBackdrop } from './LexiTitleBackdrop';
 
 @Component
 export struct LexiBackHeader {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiTopInset') titleTopInset: number = 0;
   @StorageProp('lexiViewportWidth') viewportWidth: number = 390;
   @StorageProp('lexiWindowButtonsInset') windowButtonsInset: number = 0;
@@ -14,20 +16,24 @@ export struct LexiBackHeader {
   onBack: () => void = () => {};
   onAction: () => void = () => {};
   @State private immersiveSupported: boolean = false;
-  private readonly backMaterial: uiMaterial.ImmersiveMaterial = new uiMaterial.ImmersiveMaterial({
-    style: uiMaterial.ImmersiveStyle.ULTRA_THIN,
-    materialColor: $r('app.color.title_chip_surface'),
-    interactive: true,
-    applyShadow: true,
-    lightEffect: { color: $r('app.color.dock_light') }
-  });
-  private readonly actionMaterial: uiMaterial.ImmersiveMaterial = new uiMaterial.ImmersiveMaterial({
-    style: uiMaterial.ImmersiveStyle.ULTRA_THIN,
-    materialColor: $r('app.color.title_chip_active'),
-    interactive: true,
-    applyShadow: true,
-    lightEffect: { color: $r('app.color.dock_light') }
-  });
+  private backMaterial(): uiMaterial.ImmersiveMaterial {
+    return new uiMaterial.ImmersiveMaterial({
+      style: uiMaterial.ImmersiveStyle.ULTRA_THIN,
+      materialColor: this.palette.title_chip_surface,
+      interactive: true,
+      applyShadow: true,
+      lightEffect: { color: this.palette.dock_light }
+    });
+  }
+  private actionMaterial(): uiMaterial.ImmersiveMaterial {
+    return new uiMaterial.ImmersiveMaterial({
+      style: uiMaterial.ImmersiveStyle.ULTRA_THIN,
+      materialColor: this.palette.title_chip_active,
+      interactive: true,
+      applyShadow: true,
+      lightEffect: { color: this.palette.dock_light }
+    });
+  }
 
   aboutToAppear(): void {
     try {
@@ -49,9 +55,9 @@ export struct LexiBackHeader {
         .height(40)
         .padding(0)
         .backgroundColor(this.immersiveSupported
-          ? (this.tintedBack ? $r('app.color.title_chip_surface') : Color.Transparent)
-          : $r('app.color.surface'))
-        .systemMaterial(this.immersiveSupported ? this.backMaterial : undefined)
+          ? (this.tintedBack ? this.palette.title_chip_surface : Color.Transparent)
+          : this.palette.surface)
+        .systemMaterial(this.immersiveSupported ? this.backMaterial() : undefined)
         .accessibilityText('返回')
         .onClick(() => {
           this.onBack();
@@ -63,13 +69,13 @@ export struct LexiBackHeader {
             .fontWeight(FontWeight.Bold)
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .fontColor($r('app.color.text_primary'))
+            .fontColor(this.palette.text_primary)
           if (this.subtitle.length > 0) {
             Text(this.subtitle)
               .fontSize(11)
               .maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
-              .fontColor($r('app.color.text_secondary'))
+              .fontColor(this.palette.text_secondary)
           }
         }
         .layoutWeight(1)
@@ -81,10 +87,10 @@ export struct LexiBackHeader {
             .constraintSize({ minWidth: 68 })
             .fontSize(12)
             .fontWeight(FontWeight.Medium)
-            .fontColor($r('app.color.brand'))
-            .backgroundColor(this.immersiveSupported ? Color.Transparent : $r('app.color.brand_soft'))
+            .fontColor(this.palette.brand)
+            .backgroundColor(this.immersiveSupported ? Color.Transparent : this.palette.brand_soft)
             .borderRadius(19)
-            .systemMaterial(this.immersiveSupported ? this.actionMaterial : undefined)
+            .systemMaterial(this.immersiveSupported ? this.actionMaterial() : undefined)
             .padding({ left: 14, right: 14 })
             .onClick(() => {
               this.onAction();

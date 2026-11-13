@@ -3,8 +3,9 @@ export class LexiWorkspacePreferences {
   static readonly keys: string[] = [
     'theme', 'language', 'defaultTier', 'vaultViewMode', 'graphShowTags', 'lastEditedNoteId', 'lastBackup',
     'editorDefaultView', 'editorDefaultMode', 'editorShowTitle', 'editorLimitWidth', 'editorViewStatus',
-    'appearanceAccent', 'appearanceFontSize', 'appearanceQuickZoom', 'appearanceSnippets',
-    'interfaceTabHeaders', 'interfaceRibbon', 'interfaceHiddenCommands', 'interfaceZoom', 'hotkeyOverrides', 'lastEditedMapId',
+    'appearanceAccent', 'appearanceThemeColors', 'appearanceFontSize', 'appearanceQuickZoom', 'appearanceSnippets',
+    'interfaceTabHeaders', 'interfaceRibbon', 'interfaceHiddenCommands', 'interfaceZoom', 'interfaceSidebarWidth',
+    'interfaceRightSidebarWidth', 'hotkeyOverrides', 'lastEditedMapId',
     'enabledPlugins'
   ];
 

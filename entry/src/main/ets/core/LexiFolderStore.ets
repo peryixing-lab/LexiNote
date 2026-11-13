@@ -184,22 +184,24 @@ export class LexiFolderStore {
         if (canIUse('SystemCapability.FileManagement.AppFileService.FolderAuthorization')) {
           await fileShare.activatePermission([LexiFolderStore.policy(permissionUri)]);
         }
-        LexiFolderStore.activated.add(permissionUri);
       } catch (error) {
         const code = (error as BusinessError).code;
-        if (code !== 201 && code !== 801 && code !== 401) {
+        if (code !== 201 && code !== 801 && code !== 401 && code !== 13900001) {
           throw new Error('文件夹授权已失效，请在工作区管理中重新授权。');
         }
-        LexiFolderStore.activated.add(permissionUri);
       }
     }
     const root = LexiFolderStore.path(binding.folderUri);
     try {
       const stat = await fs.stat(root);
       if (!stat.isDirectory()) { throw new Error('工作区文件夹不存在，请重新选择。'); }
+      LexiFolderStore.activated.add(permissionUri);
     } catch (error) {
       if ((error as Error).message === '工作区文件夹不存在，请重新选择。') { throw error as Error; }
-      if (LexiFolderStore.grantedFileUris.has(root)) { return root; }
+      if (LexiFolderStore.grantedFileUris.has(root)) {
+        LexiFolderStore.activated.add(permissionUri);
+        return root;
+      }
       throw new Error('文件夹授权已失效，请在工作区管理中重新授权。');
     }
     return root;
@@ -326,6 +328,11 @@ export class LexiFolderStore {
     return `思维导图/${id}.mindmap.json`;
   }
 
+  static canvasRelativePath(id: string): string {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) { throw new Error('白板文件标识无效'); }
+    return `白板/${id}.canvas.json`;
+  }
+
   static async writeMarkdownArchive(binding: LexiFolderBinding, title: string, text: string): Promise<void> {
     const root = await LexiFolderStore.activate(binding);
     const directory = `${root}/.lexinote/历史副本`;
@@ -353,6 +360,19 @@ export class LexiFolderStore {
     return path;
   }
 
+  static async writeCanvas(binding: LexiFolderBinding, board: CanvasBoard): Promise<string> {
+    const root = await LexiFolderStore.activate(binding);
+    const path = `${root}/${LexiFolderStore.canvasRelativePath(board.id)}`;
+    const directory = path.substring(0, path.lastIndexOf('/'));
+    LexiFolderStore.guardPath(root, path);
+    if (!fs.accessSync(directory)) { await fs.mkdir(directory); }
+    const text = JSON.stringify(board, null, 2);
+    if (!fs.accessSync(path) || await LexiFolderStore.readFileText(path) !== text) {
+      LexiFolderStore.writeAtomic(root, path, text);
+    }
+    return path;
+  }
+
   static async writeCatalog(binding: LexiFolderBinding, notes: NoteItem[], maps: MindMapDoc[], canvases: CanvasBoard[]): Promise<void> {
     const root = await LexiFolderStore.activate(binding);
     const directory = `${root}/.lexinote`;
@@ -370,8 +390,9 @@ export class LexiFolderStore {
     });
     catalog.mindMaps = maps;
     catalog.canvases = canvases;
-    // Keep editable mind-map files beside the Markdown, outside the app sandbox.
+    // Keep editable mind-map and canvas files beside the Markdown, outside the app sandbox.
     for (const doc of maps) { await LexiFolderStore.writeMindMap(binding, doc); }
+    for (const board of canvases) { await LexiFolderStore.writeCanvas(binding, board); }
     LexiFolderStore.writeAtomic(root, `${directory}/catalog.json`, JSON.stringify(catalog, null, 2));
   }
 
@@ -412,7 +433,41 @@ export class LexiFolderStore {
       snapshot.catalog = parsed;
     }
     await LexiFolderStore.walk(root, root, excludedRoots, snapshot.documents);
+    if (!hasCatalog) {
+      await LexiFolderStore.loadFolderMapsAndCanvases(root, snapshot.catalog);
+    }
     return snapshot;
+  }
+
+  private static async loadFolderMapsAndCanvases(root: string, catalog: LexiFolderCatalog): Promise<void> {
+    const mapDir = `${root}/思维导图`;
+    try {
+      if (fs.accessSync(mapDir) && (await fs.stat(mapDir)).isDirectory()) {
+        for (const name of (await fs.listFile(mapDir, { recursion: false })).sort()) {
+          if (!/\.mindmap\.json$/i.test(name)) { continue; }
+          try {
+            const parsed = JSON.parse(await LexiFolderStore.readFileText(`${mapDir}/${name}`)) as MindMapDoc;
+            if (parsed && parsed.id && !catalog.mindMaps.some((m: MindMapDoc): boolean => m.id === parsed.id)) {
+              catalog.mindMaps.push(parsed);
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+    const canvasDir = `${root}/白板`;
+    try {
+      if (fs.accessSync(canvasDir) && (await fs.stat(canvasDir)).isDirectory()) {
+        for (const name of (await fs.listFile(canvasDir, { recursion: false })).sort()) {
+          if (!/\.canvas\.json$/i.test(name)) { continue; }
+          try {
+            const parsed = JSON.parse(await LexiFolderStore.readFileText(`${canvasDir}/${name}`)) as CanvasBoard;
+            if (parsed && parsed.id && !catalog.canvases.some((c: CanvasBoard): boolean => c.id === parsed.id)) {
+              catalog.canvases.push(parsed);
+            }
+          } catch {}
+        }
+      }
+    } catch {}
   }
 
   private static async walk(root: string, directory: string, excluded: string[], documents: LexiFolderDocument[]): Promise<void> {

@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { LexiEditingActions } from '../core/LexiEditingActions';
 import { LexiHotkeySettings } from '../core/LexiHotkeySettings';
 import { LexiAppearanceSettings } from '../core/LexiAppearanceSettings';
@@ -61,9 +62,10 @@ class EditorSnapshot {
 
 @Component
 export struct NoteEditorPage {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiFontSize') private noteFontSize: number = 16;
   @StorageProp('lexiWheelZoomLock') private wheelZoomLock: boolean = false;
-  @StorageProp('lexiAccent') private noteAccent: string = '#6E44D9';
+  @StorageProp('lexiEffectiveAccent') private noteAccent: string = '#6E44D9';
   @StorageProp('lexiTopInset') titleTopInset: number = 0;
   @StorageProp('lexiBottomInset') bottomInset: number = 0;
   @StorageProp('lexiViewportWidth') windowViewportWidth: number = 390;
@@ -1100,7 +1102,7 @@ export struct NoteEditorPage {
   private popupAction(label: string, action: () => void, available: boolean = true) {
     Button(label, { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
       .width('32%').height(42).fontSize(12).padding(2).borderRadius(8).margin({ right: '1%', bottom: 6 })
-      .fontColor($r('app.color.brand_ink')).backgroundColor($r('app.color.soft_surface'))
+      .fontColor(this.palette.brand_ink).backgroundColor(this.palette.soft_surface)
       .enabled(available).onClick(action)
   }
 
@@ -1110,8 +1112,8 @@ export struct NoteEditorPage {
       ForEach([['simple', '简洁'], ['study', '学习'], ['pro', '专业']], (tier: string[]) => {
         Button(tier[1], { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
           .height(30).layoutWeight(1).fontSize(12).borderRadius(7)
-          .fontColor(this.editorTier === tier[0] ? $r('app.color.brand_ink') : $r('app.color.text_secondary'))
-          .backgroundColor(this.editorTier === tier[0] ? $r('app.color.brand_soft') : Color.Transparent)
+          .fontColor(this.editorTier === tier[0] ? this.palette.brand_ink : this.palette.text_secondary)
+          .backgroundColor(this.editorTier === tier[0] ? this.palette.brand_soft : Color.Transparent)
           .onClick((): void => { this.editorTier = tier[0]; this.scheduleSave(); })
       }, (tier: string[]): string => tier[0])
     }.width('100%').margin({ bottom: 8 })
@@ -1171,19 +1173,19 @@ export struct NoteEditorPage {
   private popupProperties() {
     Column({ space: 10 }) {
       TextInput({ text: this.notebookText, placeholder: this.templateMode ? '模板分类' : '所属笔记本' }).height(36).fontSize(13)
-        .fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.soft_surface'))
+        .fontColor(this.palette.text_primary).backgroundColor(this.palette.soft_surface)
         .onChange((text: string): void => { this.notebookText = text; this.scheduleSave(); })
       Flex({ wrap: FlexWrap.Wrap }) {
         ForEach(this.note.tags, (tag: string) => {
           Button(`#${tag} ×`, { buttonStyle: ButtonStyleMode.TEXTUAL }).height(30).fontSize(11)
-            .fontColor($r('app.color.brand_ink')).onClick((): void => {
+            .fontColor(this.palette.brand_ink).onClick((): void => {
               this.note.tags = this.note.tags.filter((existing: string): boolean => existing !== tag); this.scheduleSave();
             })
         }, (tag: string): string => tag)
       }.width('100%')
       Row({ space: 5 }) {
         TextInput({ text: this.newTagInput, placeholder: '标签，如 学习/算法' }).layoutWeight(1).height(34).fontSize(12)
-          .fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.soft_surface'))
+          .fontColor(this.palette.text_primary).backgroundColor(this.palette.soft_surface)
           .onChange((text: string): void => { this.newTagInput = text; })
         Button('添加', { buttonStyle: ButtonStyleMode.TEXTUAL }).height(34).fontSize(12).onClick((): void => {
           const tag = this.newTagInput.trim().replace(/^#/, '');
@@ -1192,18 +1194,18 @@ export struct NoteEditorPage {
       }.width('100%')
       ForEach(this.note.properties, (property: NoteProperty, propertyIndex: number) => {
         Row({ space: 6 }) {
-          Text(`${property.key}: ${property.propValue}`).fontSize(12).fontColor($r('app.color.text_primary')).layoutWeight(1)
+          Text(`${property.key}: ${property.propValue}`).fontSize(12).fontColor(this.palette.text_primary).layoutWeight(1)
           Button('删除', { buttonStyle: ButtonStyleMode.TEXTUAL }).height(30).fontSize(11).onClick((): void => {
             this.note.properties.splice(propertyIndex, 1); this.scheduleSave();
           })
         }.width('100%')
       }, (property: NoteProperty, propertyIndex: number): string => `${property.key}-${propertyIndex}`)
       TextInput({ text: this.newPropKey, placeholder: '属性名' }).height(34).fontSize(12)
-        .fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.soft_surface'))
+        .fontColor(this.palette.text_primary).backgroundColor(this.palette.soft_surface)
         .onChange((text: string): void => { this.newPropKey = text; })
       Row({ space: 5 }) {
         TextInput({ text: this.newPropVal, placeholder: '属性值' }).layoutWeight(1).height(34).fontSize(12)
-          .fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.soft_surface'))
+          .fontColor(this.palette.text_primary).backgroundColor(this.palette.soft_surface)
           .onChange((text: string): void => { this.newPropVal = text; })
         Button('添加', { buttonStyle: ButtonStyleMode.TEXTUAL }).height(34).fontSize(12).onClick((): void => {
           if (this.newPropKey.trim()) {
@@ -1219,11 +1221,11 @@ export struct NoteEditorPage {
   private popupLinks() {
     Column({ space: 7 }) {
       TextInput({ text: this.linkSearchText, placeholder: '搜索笔记，或输入新标题' }).height(36).fontSize(12)
-        .fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.soft_surface'))
+        .fontColor(this.palette.text_primary).backgroundColor(this.palette.soft_surface)
         .onChange((text: string): void => { this.linkSearchText = text; })
       ForEach(this.filteredLinkCandidates(), (candidate: NoteItem) => {
         Button(MarkdownEngine.displayTitle(candidate), { buttonStyle: ButtonStyleMode.TEXTUAL })
-          .width('100%').height(34).fontSize(12).fontColor($r('app.color.brand_ink'))
+          .width('100%').height(34).fontSize(12).fontColor(this.palette.brand_ink)
           .onClick((): void => { this.insertWikiLink(MarkdownEngine.displayTitle(candidate)); })
       }, (candidate: NoteItem): string => candidate.id)
       if (this.linkSearchText.trim()) {
@@ -1239,9 +1241,9 @@ export struct NoteEditorPage {
     Column() {
       if (this.outlineHeadings.length === 0) {
         Column({ space: 8 }) {
-          Text('还没有标题').fontSize(15).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+          Text('还没有标题').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.palette.text_primary)
           Text('用 # 一级标题、## 二级标题整理内容，大纲会出现在这里。').fontSize(12).lineHeight(20)
-            .fontColor($r('app.color.text_secondary')).textAlign(TextAlign.Center)
+            .fontColor(this.palette.text_secondary).textAlign(TextAlign.Center)
         }.width('100%').padding({ top: 28, bottom: 28 }).justifyContent(FlexAlign.Center)
       } else {
         Scroll() {
@@ -1249,9 +1251,9 @@ export struct NoteEditorPage {
             ForEach(this.outlineHeadings, (heading: OutlineHeading) => {
               Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
                 Row({ space: 8 }) {
-                  Text(`${heading.level}`).fontSize(10).fontColor($r('app.color.text_secondary'))
+                  Text(`${heading.level}`).fontSize(10).fontColor(this.palette.text_secondary)
                     .width(16).textAlign(TextAlign.Center)
-                  Text(heading.title).fontSize(14).fontColor($r('app.color.text_primary')).maxLines(2)
+                  Text(heading.title).fontSize(14).fontColor(this.palette.text_primary).maxLines(2)
                     .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
                 }.width('100%')
               }
@@ -1265,7 +1267,7 @@ export struct NoteEditorPage {
       }
       Button('转为思维导图', { type: ButtonType.Normal })
         .id('note-outline-mindmap').width('100%').height(42).fontSize(14).borderRadius(12).margin({ top: 10 })
-        .backgroundColor($r('app.color.brand_soft')).fontColor($r('app.color.brand_ink'))
+        .backgroundColor(this.palette.brand_soft).fontColor(this.palette.brand_ink)
         .onClick((): void => { this.showOutlineSheet = false; this.convertToMindMap(); })
     }.width('100%').height('100%').padding({ left: 16, right: 16, top: 4, bottom: 20 })
   }
@@ -1273,16 +1275,16 @@ export struct NoteEditorPage {
   @Builder
   private popupRelations() {
     Column({ space: 6 }) {
-      Text(`${this.outgoingLinks.length} 出链 · ${this.backlinks.length} 反向链接`).fontSize(12).fontColor($r('app.color.text_secondary'))
+      Text(`${this.outgoingLinks.length} 出链 · ${this.backlinks.length} 反向链接`).fontSize(12).fontColor(this.palette.text_secondary)
       ForEach(this.outgoingLinks, (link: NoteLink) => {
         Button(`↗ ${link.displayText || link.targetTitle}`, { buttonStyle: ButtonStyleMode.TEXTUAL }).width('100%').height(34).fontSize(12)
-          .fontColor($r('app.color.brand_ink')).onClick((): void => {
+          .fontColor(this.palette.brand_ink).onClick((): void => {
             this.showToolsPanel = false; this.openWikiLinkTarget(`${link.targetId || link.targetTitle}${link.anchor ? '#' + link.anchor : ''}`);
           })
       }, (link: NoteLink): string => `out-${link.targetId}-${link.targetTitle}-${link.anchor}`)
       ForEach(this.backlinks, (link: NoteLink) => {
         Button(`↙ ${link.sourceTitle}`, { buttonStyle: ButtonStyleMode.TEXTUAL }).width('100%').height(34).fontSize(12)
-          .fontColor($r('app.color.brand_ink')).onClick((): void => { this.showToolsPanel = false; this.openWikiLinkTarget(link.sourceId); })
+          .fontColor(this.palette.brand_ink).onClick((): void => { this.showToolsPanel = false; this.openWikiLinkTarget(link.sourceId); })
       }, (link: NoteLink): string => `back-${link.sourceId}-${link.targetTitle}-${link.anchor}`)
     }.width('100%')
   }
@@ -1295,27 +1297,27 @@ export struct NoteEditorPage {
           Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
             Row({ space: 3 }) {
               LexiIcon({ name: 'back', iconSize: 13 })
-              Text('返回').fontSize(12).fontColor($r('app.color.brand_ink'))
+              Text('返回').fontSize(12).fontColor(this.palette.brand_ink)
             }.width('100%').justifyContent(FlexAlign.Center)
           }.id('note-tools-back').width(62).height(32).padding(0).borderRadius(8)
             .accessibilityText('返回工具列表')
             .onClick((): void => { this.toolPage = 'panels'; })
         }
-        Text(this.toolPageTitle()).fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+        Text(this.toolPageTitle()).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.palette.text_primary)
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
         Button('关闭', { buttonStyle: ButtonStyleMode.TEXTUAL }).height(30).fontSize(11)
-          .fontColor($r('app.color.brand_ink'))
+          .fontColor(this.palette.brand_ink)
           .onClick((): void => { this.showToolsPanel = false; })
       }.width('100%')
       if (this.toolPage === 'format' || this.toolPage === 'panels') {
         Row({ space: 5 }) {
           Button('格式', { buttonStyle: ButtonStyleMode.TEXTUAL }).layoutWeight(1).height(30).fontSize(12)
-            .fontColor($r('app.color.brand_ink'))
-            .backgroundColor(this.toolPage === 'format' ? $r('app.color.brand_soft') : Color.Transparent)
+            .fontColor(this.palette.brand_ink)
+            .backgroundColor(this.toolPage === 'format' ? this.palette.brand_soft : Color.Transparent)
             .onClick((): void => { this.toolPage = 'format'; })
           Button('面板与视图', { buttonStyle: ButtonStyleMode.TEXTUAL }).layoutWeight(1).height(30).fontSize(12)
-            .fontColor($r('app.color.brand_ink'))
-            .backgroundColor(this.toolPage === 'panels' ? $r('app.color.brand_soft') : Color.Transparent)
+            .fontColor(this.palette.brand_ink)
+            .backgroundColor(this.toolPage === 'panels' ? this.palette.brand_soft : Color.Transparent)
             .onClick((): void => { this.toolPage = 'panels'; })
         }.width('100%')
       }
@@ -1329,7 +1331,7 @@ export struct NoteEditorPage {
         }.width('100%').alignItems(HorizontalAlign.Start)
       }.width('100%').layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Auto)
     }.id(`note-tools-popup-${this.note.id}-${this.continuationOwner}`).width(this.toolPopupWidth()).height(this.toolPopupHeight()).padding(12)
-      .backgroundColor($r('app.color.surface')).borderRadius(16)
+      .backgroundColor(this.palette.surface).borderRadius(16)
       .onDisAppear((): void => { this.insertPendingToolSnippet(); })
   }
 
@@ -1464,8 +1466,8 @@ export struct NoteEditorPage {
   private sourceBody() {
     TextArea({ text: this.contentText, controller: this.bodyController, placeholder: '全文 Markdown 源码' })
       .id(this.sourceInputId()).width('100%').constraintSize({ minHeight: this.viewMode === 'split' ? 260 : 400 })
-      .fontSize(this.noteFontSize).lineHeight(this.noteFontSize * 1.75).fontColor($r('app.color.text_primary'))
-      .placeholderColor($r('app.color.text_secondary')).caretColor(this.noteAccent)
+      .fontSize(this.noteFontSize).lineHeight(this.noteFontSize * 1.75).fontColor(this.palette.text_primary)
+      .placeholderColor(this.palette.text_secondary).caretColor(this.noteAccent)
       .backgroundColor(Color.Transparent).borderRadius(0).padding(0)
       .onChange((text: string): void => {
         if (text !== this.contentText) { this.pushHistory(); this.contentText = text; this.scheduleSave(); }
@@ -1488,7 +1490,7 @@ export struct NoteEditorPage {
       if (this.editorShowTitle || this.templateMode) {
       TextArea({ text: this.titleText, placeholder: this.templateMode ? '模板名称' : '标题（选填）' })
         .id('note-title-input').width('100%').constraintSize({ minHeight: 42 }).fontSize(25).lineHeight(34).fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_primary')).placeholderColor($r('app.color.text_secondary'))
+        .fontColor(this.palette.text_primary).placeholderColor(this.palette.text_secondary)
         .caretColor(this.noteAccent).borderRadius(0)
         .backgroundColor(Color.Transparent).padding({ left: 24, right: 24, top: 8, bottom: 4 })
         .onChange((text: string): void => {
@@ -1513,7 +1515,7 @@ export struct NoteEditorPage {
           } else if (this.viewMode === 'preview') { this.renderedBody(); }
           else {
             this.sourceBody()
-            if (this.viewMode === 'split') { Divider().color($r('app.color.divider')); this.renderedBody(); }
+            if (this.viewMode === 'split') { Divider().color(this.palette.divider); this.renderedBody(); }
           }
         }.width('100%').constraintSize({ maxWidth: this.editorLimitWidth ? 800 : 10000 })
           .padding({ left: 24, right: 24, top: 8, bottom: 80 }).alignItems(HorizontalAlign.Start)
@@ -1522,21 +1524,21 @@ export struct NoteEditorPage {
       this.inlineCompletion()
       Row({ space: 6 }) {
         Button('工具', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-          .id('note-tools-open').height(44).fontSize(14).fontColor($r('app.color.brand_ink'))
+          .id('note-tools-open').height(44).fontSize(14).fontColor(this.palette.brand_ink)
           .padding({ left: 8, right: 8 })
           .onClick((): void => { this.toolPage = 'format'; this.showToolsPanel = !this.showToolsPanel; })
           .bindPopup(this.showToolsPanel, {
             builder: this.compactToolsPopup, placement: Placement.TopLeft, width: this.toolPopupWidth(),
-            popupColor: $r('app.color.surface'), enableArrow: true, autoCancel: true, focusable: true,
+            popupColor: this.palette.surface, enableArrow: true, autoCancel: true, focusable: true,
             keyboardAvoidMode: KeyboardAvoidMode.DEFAULT,
             onStateChange: (event: LexiNotePopupState): void => { this.showToolsPanel = event.isVisible; }
           })
         if (!this.templateMode) {
           Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
             Row({ space: 4 }) {
-              SymbolGlyph($r('sys.symbol.mic')).fontSize(16).fontColor([$r('app.color.brand_ink')])
+              SymbolGlyph($r('sys.symbol.mic')).fontSize(16).fontColor([this.palette.brand_ink])
                 .accessibilityLevel('no')
-              Text('语音记录').fontSize(14).fontColor($r('app.color.brand_ink')).maxLines(1)
+              Text('语音记录').fontSize(14).fontColor(this.palette.brand_ink).maxLines(1)
             }
           }.id('note-voice-record').height(44).padding({ left: 8, right: 8 }).borderRadius(10)
             .accessibilityText('语音记录，打开离线语音记录面板')
@@ -1545,9 +1547,9 @@ export struct NoteEditorPage {
           // The outline moved out of the tools popup and onto the writing bar next to voice.
           Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
             Row({ space: 4 }) {
-              SymbolGlyph($r('sys.symbol.list_bullet')).fontSize(16).fontColor([$r('app.color.brand_ink')])
+              SymbolGlyph($r('sys.symbol.list_bullet')).fontSize(16).fontColor([this.palette.brand_ink])
                 .accessibilityLevel('no')
-              Text('大纲').fontSize(14).fontColor($r('app.color.brand_ink')).maxLines(1)
+              Text('大纲').fontSize(14).fontColor(this.palette.brand_ink).maxLines(1)
             }
           }.id('note-outline').height(44).padding({ left: 6, right: 6 }).borderRadius(10)
             .accessibilityText('大纲，查看并跳转到文档标题')
@@ -1555,7 +1557,7 @@ export struct NoteEditorPage {
             .onClick((): void => { this.openOutlineSheet(); })
         }
         if (!this.externalFileMode || this.viewportWidth >= 440) {
-          Text(`${this.contentText.length} 字`).fontSize(11).fontColor($r('app.color.text_secondary'))
+          Text(`${this.contentText.length} 字`).fontSize(11).fontColor(this.palette.text_secondary)
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
         } else {
           Blank().layoutWeight(1)
@@ -1563,28 +1565,28 @@ export struct NoteEditorPage {
         if (this.editorViewStatus && this.viewportWidth >= 480) {
           Button(this.viewMode === 'live' ? '实时预览' : this.viewMode === 'preview' ? '阅读视图' : '源码',
             { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-            .id('note-view-status').fontSize(11).fontColor($r('app.color.text_secondary'))
+            .id('note-view-status').fontSize(11).fontColor(this.palette.text_secondary)
             .onClick((): void => {
               this.liveController.finishEditing();
               this.selectViewMode(this.viewMode === 'preview' ? (this.editorDefaultMode === 'source' ? 'edit' : 'live') : 'preview');
             })
         }
         Button(this.viewMode === 'preview' ? '继续编辑' : '阅读', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-          .id('note-preview-toggle').height(44).fontSize(14).fontColor($r('app.color.brand_ink'))
+          .id('note-preview-toggle').height(44).fontSize(14).fontColor(this.palette.brand_ink)
           .padding({ left: 8, right: 8 })
           .onClick((): void => { this.liveController.finishEditing(); this.selectViewMode(this.viewMode === 'preview' ? 'live' : 'preview'); })
         if (this.externalFileMode) {
           Button('保存', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-            .id('note-external-save').height(44).fontSize(14).fontColor($r('app.color.brand_ink'))
+            .id('note-external-save').height(44).fontSize(14).fontColor(this.palette.brand_ink)
             .padding({ left: 8, right: 8 })
             .onClick((): void => { this.promptSaveExternalFile(false); })
         }
       }.width('100%').height(48).padding({ left: 12, right: 12 })
-        .border({ width: { top: 0.5 }, color: $r('app.color.divider') })
+        .border({ width: { top: 0.5 }, color: this.palette.divider })
     }.id(`note-writing-surface-${this.note.id}-${this.continuationOwner}`)
       .onAxisEvent((event: AxisEvent): void => { LexiAppearanceSettings.handleAxis(event); }).width('100%').constraintSize({ maxWidth: this.editorLimitWidth ? 1040 : 10000 }).height('100%')
       .padding({ bottom: this.windowViewportWidth < 840 ? this.bottomInset : 4 })
-      .backgroundColor($r('app.color.surface'))
+      .backgroundColor(this.palette.surface)
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
   }
 
@@ -1599,7 +1601,7 @@ export struct NoteEditorPage {
             preferType: SheetType.BOTTOM,
             radius: LengthMetrics.vp(24), dragBar: true, showClose: true,
             title: { title: '大纲' },
-            backgroundColor: $r('app.color.surface'),
+            backgroundColor: this.palette.surface,
             onDisappear: (): void => { this.outlineSheetClosed(); }
           })
       }.width('100%').height('100%')
@@ -1609,7 +1611,7 @@ export struct NoteEditorPage {
     .onHidden((): void => { this.editorHidden(); })
     .bindSheet($$this.showAssistantPanel, this.assistantSheet, {
       height: SheetSize.LARGE, dragBar: true, showClose: true, title: { title: '语音与本地整理' },
-      backgroundColor: $r('app.color.surface'), onDisappear: (): void => { this.assistantDisappeared(); }
+      backgroundColor: this.palette.surface, onDisappear: (): void => { this.assistantDisappeared(); }
     })
     .onKeyEventDispatch((event: KeyEvent): boolean => this.handleShortcut(event))
     .onBackPressed((): boolean => {
@@ -1627,7 +1629,7 @@ export struct NoteEditorPage {
         barStyle: BarStyle.STANDARD
       }
     )
-    .backgroundColor($r('app.color.background'))
+    .backgroundColor(this.palette.background)
     .onAreaChange((_old: Area, current: Area) => {
       this.viewportWidth = Number(current.width);
     })

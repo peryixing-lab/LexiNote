@@ -36,7 +36,7 @@ const service = { flushPendingWrites: async () => {}, getVaults: async () => [{ 
   getMindMaps: async () => [], getCanvases: async () => [], getSetting: async () => 'b' };
 const parent = subject(scopes + section(indexSource, '  private async refresh()', '  private async rebuildGraph()') +
   section(indexSource, '  private activateTab(', '  private tabTitle('), service);
-Object.assign(parent, { refreshSequence: 0, projects: [{ id: 'p' }], activeProjectId: 'p',
+Object.assign(parent, { refreshSequence: 0, settingsVaultId: 'v', projects: [{ id: 'p' }], activeProjectId: 'p',
   notes: [{ ...a, projectId: 'p' }, { ...b, projectId: 'other' }], maps: [{ id: 'map-p', projectId: 'p', trashedAt: 0 }, { id: 'map-other', projectId: 'other', trashedAt: 0 }],
   canvases: [{ id: 'board-p', projectId: 'p' }, { id: 'board-other', projectId: 'other' }], rebuildGraph() {}, syncDesktopCards() {} });
 assert.equal(parent.activeNotes().length, 1); assert.equal(parent.projectMaps().length, 1); assert.equal(parent.projectCanvases().length, 1);

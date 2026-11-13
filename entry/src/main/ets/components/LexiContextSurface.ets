@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { vibrator } from '@kit.SensorServiceKit';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { LexiContextAction, LexiContextBridge, LexiContextTarget } from '../core/LexiContextModels';
@@ -7,6 +8,7 @@ function emptyContextContent() {}
 
 @Component
 export struct LexiContextSurface {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiViewportWidth') private viewportWidth: number = 390;
   @State private pressActive: boolean = false;
   @State private phoneMenuVisible: boolean = false;
@@ -48,10 +50,10 @@ export struct LexiContextSurface {
     Menu() {
       ForEach(this.secondary(), (action: LexiContextAction) => {
         MenuItem({ content: action.label }).id(`context-${action.id}`).height(48).borderRadius(0).contentFont({ size: 15 })
-          .contentFontColor($r('app.color.text_primary')).border({ width: { bottom: 0.5 }, color: $r('app.color.divider') })
+          .contentFontColor(this.palette.text_primary).border({ width: { bottom: 0.5 }, color: this.palette.divider })
           .onClick((): void => { this.run(action.id); })
       }, (action: LexiContextAction): string => action.id)
-    }.width(240).borderRadius(24).backgroundColor($r('app.color.surface'))
+    }.width(240).borderRadius(24).backgroundColor(this.palette.surface)
   }
   @Builder
   private menu() {
@@ -63,7 +65,7 @@ export struct LexiContextSurface {
               ForEach(LexiContextBridge.actions(this.target, true).filter((action: LexiContextAction): boolean => action.group === group),
                 (action: LexiContextAction) => {
                   MenuItem({ content: action.label }).id(`context-${action.id}`)
-                    .contentFontColor(action.id === 'delete' ? $r('app.color.error') : $r('app.color.text_primary'))
+                    .contentFontColor(action.id === 'delete' ? this.palette.error : this.palette.text_primary)
                     .onClick((): void => { this.run(action.id); })
                 }, (action: LexiContextAction): string => action.id)
             }
@@ -73,23 +75,23 @@ export struct LexiContextSurface {
         ForEach(LexiContextBridge.actions(this.target, false).filter((action: LexiContextAction): boolean => this.primary(action)),
           (action: LexiContextAction) => {
             MenuItem({ content: action.label }).id(`context-${action.id}`).height(48).borderRadius(0).contentFont({ size: 15 })
-              .contentFontColor($r('app.color.text_primary')).border({ width: { bottom: 0.5 }, color: $r('app.color.divider') })
+              .contentFontColor(this.palette.text_primary).border({ width: { bottom: 0.5 }, color: this.palette.divider })
               .onClick((): void => { this.run(action.id); })
           }, (action: LexiContextAction): string => action.id)
         if (this.secondary().length > 0) {
         MenuItem({ content: '更多操作', endIcon: $r('app.media.ic_chevron_muted'), builder: this.moreMenu }).id('context-more').height(48).borderRadius(0).contentFont({ size: 15 })
-          .contentFontColor($r('app.color.text_primary')).border({ width: { bottom: 0.5 }, color: $r('app.color.divider') })
+          .contentFontColor(this.palette.text_primary).border({ width: { bottom: 0.5 }, color: this.palette.divider })
         }
         if (!this.file()) {
           MenuItem({ content: '重命名' }).id('context-rename').height(48).borderRadius(0).contentFont({ size: 15 })
-            .contentFontColor($r('app.color.text_primary')).border({ width: { bottom: 0.5 }, color: $r('app.color.divider') })
+            .contentFontColor(this.palette.text_primary).border({ width: { bottom: 0.5 }, color: this.palette.divider })
             .onClick((): void => { this.run('rename'); })
         }
         MenuItem({ content: LexiContextBridge.actions(this.target, false).find((action: LexiContextAction): boolean => action.id === 'delete')?.label ?? '删除…' })
-          .id('context-delete').height(48).borderRadius(0).contentFont({ size: 15 }).contentFontColor($r('app.color.error'))
+          .id('context-delete').height(48).borderRadius(0).contentFont({ size: 15 }).contentFontColor(this.palette.error)
           .onClick((): void => { this.run('delete'); })
       }
-    }.width(this.desktop() ? 220 : 230).borderRadius(this.desktop() ? 14 : 24).backgroundColor($r('app.color.surface'))
+    }.width(this.desktop() ? 220 : 230).borderRadius(this.desktop() ? 14 : 24).backgroundColor(this.palette.surface)
       .onDisAppear((): void => { this.pressActive = false; })
   }
   build() {
@@ -100,7 +102,7 @@ export struct LexiContextSurface {
           Column() { this.content(); }.width('100%')
           Button('⋯', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
             .id(`context-trigger-${this.target.kind}-${this.target.id}`).width(44).height(44).padding(0).fontSize(22)
-            .fontColor($r('app.color.text_secondary')).backgroundColor(Color.Transparent).borderRadius(12)
+            .fontColor(this.palette.text_secondary).backgroundColor(Color.Transparent).borderRadius(12)
             .margin({ top: this.tabletCard ? 6 : 0, right: this.tabletCard ? 6 : 0 })
             .accessibilityText(this.file() ? '文件操作' : '工作区或文件夹操作').bindMenu(this.menu)
         }.width('100%').constraintSize({ minHeight: 44 }).bindContextMenu(this.menu, ResponseType.RightClick)

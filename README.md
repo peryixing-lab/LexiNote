@@ -1,8 +1,27 @@
 # 知萤 LexiNote
 
-知萤是一款面向 HarmonyOS 的本地笔记应用，使用 ArkTS 和 ArkUI 构建。它把 Markdown 写作、知识连接与可视化整理放在同一个工作空间中，适配手机、平板和二合一设备。
+知萤是一款本地优先的 Markdown 笔记与知识整理应用，提供 HarmonyOS、macOS 和 Windows 版本。三个平台共享写作、知识连接与可视化整理的产品方向，具体功能及系统集成以各平台说明为准。
 
-## 功能
+## 下载与平台源码
+
+[下载 LexiNote 2.0.1](https://github.com/peryixing-lab/LexiNote/releases/tag/v2.0.1)。安装包只在 GitHub Releases 中提供。
+
+- **HarmonyOS**：ArkTS / ArkUI，适配手机、平板与二合一设备；源码保留在仓库根目录的 `AppScope/`、`entry/` 等路径。附件为 Release 模式的未签名 HAP，安装前需自行签名。
+- **macOS**：[原生 SwiftUI / AppKit 源码与构建说明](macOS/README.md)，面向 Apple Silicon，要求 macOS 14+；提供 ARM64 DMG，采用 ad-hoc 签名，未做 Apple 公证。
+- **Windows**：[Electron / React / TypeScript 源码与构建说明](Windows/README.md)，提供 x64、ARM64 和 32 位 x86 的 NSIS 安装文件；安装包未做代码签名。
+
+桌面版的插件宿主仍为实验性能力；鸿蒙服务卡片、分享剪藏、跨设备接续和生态联动以鸿蒙版为准。
+
+## 2.0.1 更新
+
+- 新增 macOS 原生版和 Windows 桌面版源码及安装包，三个平台统一使用 2.0.1 版本号。
+- HarmonyOS 新增主题选择与自定义配色，调整设置、命令面板和工作区界面，补齐内置命令的英文名称。
+- 增加设置与插件配置的导入导出，完善工作区偏好与本地存储相关操作。
+- 更新 **Harness 智能体 1.5.0**：多模型配置、会话与历史管理；API Key 由宿主隔离保存，插件无法读回。
+
+完整说明与安装文件见 [2.0.1 Release](https://github.com/peryixing-lab/LexiNote/releases/tag/v2.0.1)。
+
+## HarmonyOS 功能
 
 - **记录与写作**：快速记录、Markdown 编辑和预览、LaTeX 公式、代码块、每日笔记与模板。
 - **组织知识**：知识库、工作区和文件夹、标签与搜索，支持双向链接、反向链接和关系图谱。
@@ -25,7 +44,7 @@
 
 ## 插件（实验性）
 
-知萤 2.0.0 提供一套**实验性**插件体系：一套共享内核之上，同时提供知萤自有插件 API 与
+知萤 2.0.1 提供一套**实验性**插件体系：一套共享内核之上，同时提供知萤自有插件 API 与
 Obsidian API 兼容层。
 
 - 入口：**设置 → 插件**。用户自行下载插件，通过「从本地安装 ZIP…」导入；应用不附带 Harness 安装包或专属安装入口。
@@ -37,7 +56,7 @@ Obsidian API 兼容层。
   未实现的能力返回明确的 `E_UNSUPPORTED_API`，不会假装成功。
 - 安全边界尚未完成专项验证，**目前只应安装你自己编写或已审查的插件**；`isDesktopOnly` 的插件会被拒绝。
 
-**Harness 智能体 1.4.0**：[下载插件 ZIP](https://github.com/peryixing-lab/LexiNote/releases/download/v2.0.0/harness-lexinote-harness.zip)，然后在「设置 → 插件」中从本地安装。插件借鉴了 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 和 [dsh-token-usage](https://github.com/LaoYueHanNi/dsh-token-usage) 项目。多服务商配置会将 API Key 保存在插件的本地工作区数据中，未加密。
+**Harness 智能体 1.5.0**：[下载最新插件 ZIP](https://github.com/peryixing-lab/LexiNote/releases/download/v2.0.1/harness-lexinote-harness.zip)，然后在「设置 → 插件」中从本地安装。插件借鉴了 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 和 [dsh-token-usage](https://github.com/LaoYueHanNi/dsh-token-usage) 项目。多服务商配置的 API Key 只写入宿主并按插件隔离保存（应用沙箱内，未额外加密），插件读不回，也不再写入插件本地数据；卸载插件会清除这些密钥。
 
 开发原生插件请阅读 [LexiNote 原生插件制作规范](docs/native-plugin-authoring.md)，其中包含包结构、清单、
 SDK API、错误码、模板与验收清单。Obsidian 兼容范围见 [兼容性说明](docs/obsidian-compatibility.md)。
@@ -82,7 +101,9 @@ SDK API、错误码、模板与验收清单。Obsidian 兼容范围见 [兼容�
 ## 项目结构
 
 ```text
-AppScope/                    应用元信息与图标
+macOS/                       macOS 原生应用、资源、文档和构建脚本
+Windows/                     Windows 应用、资源、测试和构建配置
+AppScope/                    HarmonyOS 应用元信息与图标
 entry/src/main/ets/          ArkUI 页面、组件与核心逻辑
 entry/src/main/resources/    应用资源
 entry/src/test/              单元测试

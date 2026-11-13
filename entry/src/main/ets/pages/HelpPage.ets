@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { LexiI18n } from '../core/LexiI18n';
 import { LexiBackHeader } from '../components/LexiBackHeader';
 
@@ -8,6 +9,7 @@ export function helpPageBuilder() {
 
 @Component
 export struct HelpPage {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiLanguage') private interfaceLanguage: string = LexiI18n.language();
 
   private tr(source: string, args: string[] = []): string {
@@ -25,11 +27,11 @@ export struct HelpPage {
       Text(this.tr(title))
         .fontSize(17)
         .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_primary'))
+        .fontColor(this.palette.text_primary)
       Text(this.tr(desc))
         .fontSize(13)
         .lineHeight(21)
-        .fontColor($r('app.color.text_secondary'))
+        .fontColor(this.palette.text_secondary)
       ForEach(
         bullets,
         (line: string) => {
@@ -37,11 +39,11 @@ export struct HelpPage {
             Text('•')
               .fontSize(14)
               .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.brand'))
+              .fontColor(this.palette.brand)
             Text(this.tr(line))
               .fontSize(13)
               .lineHeight(20)
-              .fontColor($r('app.color.text_primary'))
+              .fontColor(this.palette.text_primary)
               .layoutWeight(1)
           }
           .width('100%')
@@ -52,7 +54,7 @@ export struct HelpPage {
     }
     .width('100%')
     .padding(20)
-    .backgroundColor($r('app.color.surface'))
+    .backgroundColor(this.palette.surface)
     .borderRadius(24)
     .alignItems(HorizontalAlign.Start)
   }
@@ -202,7 +204,7 @@ export struct HelpPage {
         scrollEffectOptions: { scrollEffectType: ScrollEffectType.GRADUAL_BLUR }
       }
     )
-    .backgroundColor($r('app.color.background'))
+    .backgroundColor(this.palette.background)
     .onReady((ctx: NavDestinationContext) => {
       this.pathStack = ctx.pathStack;
     })

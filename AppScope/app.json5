@@ -2,9 +2,9 @@
   "app": {
     "bundleName": "com.lovexjy.lexinote",
     "vendor": "example",
-    "versionCode": 2006120820,
-    "versionName": "2.0.0",
-    "buildVersion": "15",
+    "versionCode": 2006120821,
+    "versionName": "2.0.1",
+    "buildVersion": "16",
     "icon": "$media:layered_image",
     "label": "$string:app_name"
   }

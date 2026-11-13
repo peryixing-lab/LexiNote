@@ -30,7 +30,7 @@ function chat(params) {
   const initial = JSON.parse(await PluginAiService.status());
   eq(initial.configured, false, 'model is unbound by default');
   ok(!Object.prototype.hasOwnProperty.call(initial, 'apiKey'), 'status never contains apiKey');
-  await rejects(chat({ messages: [{ role: 'user', content: 'hi' }] }), PluginErrorCode.MODEL_UNAVAILABLE,
+  await rejects(chat({ messages: [{ role: 'user', content: 'hi' }] }), PluginErrorCode.MISSING_CREDENTIAL,
     'chat without a key fails explicitly');
   console.log('PASS an unbound model refuses to chat and never exposes a key');
 
@@ -40,7 +40,7 @@ function chat(params) {
   await rejects(PluginAiService.configure(JSON.stringify({ baseUrl: 'ftp://example.test' })),
     PluginErrorCode.INVALID_ARGUMENT, 'non-http base URL');
   await rejects(PluginAiService.configure(JSON.stringify({ provider: 'openai-compatible', model: 'm' })),
-    PluginErrorCode.INVALID_ARGUMENT, 'first binding requires a key');
+    PluginErrorCode.MISSING_CREDENTIAL, 'first binding requires a key');
   const bound = JSON.parse(await PluginAiService.configure(JSON.stringify({
     provider: 'openai-compatible',
     baseUrl: 'https://api.deepseek.com/',
@@ -198,7 +198,7 @@ function chat(params) {
   // 8. Clearing the binding removes the key.
   const cleared = JSON.parse(await PluginAiService.configure(JSON.stringify({ clear: true })));
   eq(cleared.configured, false, 'clear resets the binding');
-  await rejects(chat({ messages: [{ role: 'user', content: 'hi' }] }), PluginErrorCode.MODEL_UNAVAILABLE,
+  await rejects(chat({ messages: [{ role: 'user', content: 'hi' }] }), PluginErrorCode.MISSING_CREDENTIAL,
     'chat refuses again');
   console.log('PASS clearing the binding revokes model access');
 

@@ -1,5 +1,7 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 @Component
 export struct LexiLaunchScreen {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @Prop startupStep: number = 0;
   @Prop errorMessage: string = '';
   @Prop reduceMotion: boolean = false;
@@ -39,19 +41,19 @@ export struct LexiLaunchScreen {
         .width(this.brandSize() * 260 / 268)
         .height(this.brandSize() * 260 / 268)
         .borderRadius(this.brandSize() / 2)
-        .border({ width: 1, color: $r('app.color.divider') })
+        .border({ width: 1, color: this.palette.divider })
         .opacity(0.65)
       Column()
         .width(this.brandSize() * 216 / 268)
         .height(this.brandSize() * 216 / 268)
         .borderRadius(this.brandSize() / 2)
-        .backgroundColor($r('app.color.brand_soft'))
+        .backgroundColor(this.palette.brand_soft)
         .opacity(0.36)
       Column()
         .width(this.brandSize() * 172 / 268)
         .height(this.brandSize() * 172 / 268)
         .borderRadius(this.brandSize() / 2)
-        .backgroundColor($r('app.color.brand_soft'))
+        .backgroundColor(this.palette.brand_soft)
         .opacity(0.55)
       Image($r('app.media.lexi_logo'))
         .width(this.brandSize() * 124 / 268)
@@ -71,7 +73,7 @@ export struct LexiLaunchScreen {
       .width(this.startupStep === index ? 24 : 12)
       .height(4)
       .borderRadius(2)
-      .backgroundColor(index <= this.startupStep ? $r('app.color.brand') : $r('app.color.divider'))
+      .backgroundColor(index <= this.startupStep ? this.palette.brand : this.palette.divider)
       .animation({ duration: this.reduceMotion ? 0 : 160, curve: Curve.EaseOut })
       .accessibilityLevel('no')
   }
@@ -84,7 +86,7 @@ export struct LexiLaunchScreen {
           Text('知萤 LexiNote')
             .fontSize(this.compact() ? 26 : 30)
             .fontWeight(FontWeight.Bold)
-            .fontColor($r('app.color.text_primary'))
+            .fontColor(this.palette.text_primary)
             .letterSpacing(0.2)
             .margin({ top: 8 })
 
@@ -93,12 +95,12 @@ export struct LexiLaunchScreen {
               Text('知识库暂时未能打开')
                 .fontSize(14)
                 .fontWeight(FontWeight.Medium)
-                .fontColor($r('app.color.text_primary'))
+                .fontColor(this.palette.text_primary)
                 .textAlign(TextAlign.Center)
               Text(this.errorMessage)
                 .fontSize(12)
                 .lineHeight(20)
-                .fontColor($r('app.color.text_secondary'))
+                .fontColor(this.palette.text_secondary)
                 .textAlign(TextAlign.Center)
                 .constraintSize({ maxWidth: 288 })
               Button('重新打开', { type: ButtonType.Capsule })
@@ -106,8 +108,8 @@ export struct LexiLaunchScreen {
                 .padding({ left: 28, right: 28 })
                 .fontSize(14)
                 .fontWeight(FontWeight.Medium)
-                .backgroundColor($r('app.color.brand'))
-                .fontColor($r('app.color.inverse_text'))
+                .backgroundColor(this.palette.brand)
+                .fontColor(this.palette.inverse_text)
                 .onClick(() => {
                   this.onRetry();
                 })
@@ -121,7 +123,7 @@ export struct LexiLaunchScreen {
               .accessibilityLevel('no')
               Text(this.stepLabel())
                 .fontSize(12)
-                .fontColor($r('app.color.text_secondary'))
+                .fontColor(this.palette.text_secondary)
                 .textAlign(TextAlign.Center)
                 .accessibilityText(this.stepLabel())
             }
@@ -141,7 +143,7 @@ export struct LexiLaunchScreen {
     .width('100%')
     .height('100%')
     .padding({ left: 24, right: 24, top: this.compact() ? 16 : 24, bottom: (this.compact() ? 16 : 24) + this.bottomInset })
-    .backgroundColor($r('app.color.background'))
+    .backgroundColor(this.palette.background)
     .onAreaChange((_old: Area, current: Area) => {
       this.launchWidth = Number(current.width);
       this.launchHeight = Number(current.height);

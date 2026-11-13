@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { common } from '@kit.AbilityKit';
 import { LexiBackHeader } from '../components/LexiBackHeader';
 import { LexiIcon } from '../components/LexiIcon';
@@ -12,6 +13,7 @@ export function trashPageBuilder() {
 
 @Component
 export struct TrashPage {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiTopInset') titleTopInset: number = 0;
   @StorageProp('lexiBottomInset') bottomInset: number = 0;
   @StorageProp('lexiViewportWidth') viewportWidth: number = 390;
@@ -56,8 +58,8 @@ export struct TrashPage {
         title: notes.length === 1 ? '永久删除这篇笔记？' : '清空回收站？',
         message: notes.length === 1 ? `「${MarkdownEngine.displayTitle(notes[0])}」将被永久删除，此操作无法撤销。` :
           `${notes.length} 篇笔记将被永久删除，此操作无法撤销。`,
-        buttons: [{ text: '取消', color: $r('app.color.text_secondary') },
-          { text: '永久删除', color: $r('app.color.error') }]
+        buttons: [{ text: '取消', color: this.palette.text_secondary },
+          { text: '永久删除', color: this.palette.error }]
       });
       if (choice.index !== 1) { return; }
       for (const note of notes) { await LexiStorageService.deleteNotePermanently(note.id); }
@@ -80,37 +82,37 @@ export struct TrashPage {
       Scroll() {
         Column({ space: 14 }) {
           Text('删除的笔记会保留在这里，可恢复或永久删除。')
-            .fontSize(13).lineHeight(22).fontColor($r('app.color.text_secondary')).width('100%')
+            .fontSize(13).lineHeight(22).fontColor(this.palette.text_secondary).width('100%')
           if (this.loadError) {
             Button(this.loadError).id('trash-retry').onClick((): void => { this.refresh(); })
           } else if (this.deletedNotes.length === 0) {
             Column({ space: 12 }) {
               LexiIcon({ name: 'trash', iconSize: 36, muted: true })
-              Text('回收站是空的').fontSize(18).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+              Text('回收站是空的').fontSize(18).fontWeight(FontWeight.Medium).fontColor(this.palette.text_primary)
             }.width('100%').padding({ top: 72, bottom: 72 })
           } else {
             ForEach(this.deletedNotes, (note: NoteItem) => {
               Column({ space: 12 }) {
                 Text(MarkdownEngine.displayTitle(note)).fontSize(17).fontWeight(FontWeight.Medium)
-                  .fontColor($r('app.color.text_primary')).width('100%').maxLines(2)
+                  .fontColor(this.palette.text_primary).width('100%').maxLines(2)
                 Text(MarkdownEngine.extractSnippet(note)).fontSize(13).lineHeight(21)
-                  .fontColor($r('app.color.text_secondary')).width('100%').maxLines(3)
+                  .fontColor(this.palette.text_secondary).width('100%').maxLines(3)
                 Row({ space: 12 }) {
                   Button('恢复', { buttonStyle: ButtonStyleMode.TEXTUAL }).id(`trash-restore-${note.id}`)
-                    .height(44).fontColor($r('app.color.brand')).enabled(!this.working)
+                    .height(44).fontColor(this.palette.brand).enabled(!this.working)
                     .onClick((): void => { this.restore(note); })
                   Button('永久删除', { buttonStyle: ButtonStyleMode.TEXTUAL }).id(`trash-delete-${note.id}`)
-                    .height(44).fontColor($r('app.color.error')).enabled(!this.working)
+                    .height(44).fontColor(this.palette.error).enabled(!this.working)
                     .onClick((): void => { this.remove([note]); })
                 }.width('100%')
-              }.width('100%').padding(20).borderRadius(20).backgroundColor($r('app.color.surface'))
+              }.width('100%').padding(20).borderRadius(20).backgroundColor(this.palette.surface)
             }, (note: NoteItem): string => `${note.id}-${note.trashedAt}`)
           }
         }.width('100%').constraintSize({ maxWidth: 960 }).padding({ left: 24, right: 24, top: 20, bottom: 24 + this.bottomInset })
       }.width('100%').height('100%').align(Alignment.Top).scrollBar(BarState.Off)
     }.hideBackButton(true)
       .title({ builder: (): void => { this.titleBar(); }, height: 56 + (this.viewportWidth < 840 ? this.titleTopInset : 0) })
-      .backgroundColor($r('app.color.background'))
+      .backgroundColor(this.palette.background)
       .onReady((context: NavDestinationContext): void => { this.pathStack = context.pathStack; })
       .onShown((): void => { this.refresh(); })
   }

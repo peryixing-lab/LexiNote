@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { MarkdownBlock, NoteItem, NoteLink, OutlineHeading } from '../core/LexiModels';
 import { LexiIcon } from './LexiIcon';
 import { MarkdownEngine, LexiMarkdownInlineSpan } from '../core/MarkdownEngine';
@@ -11,6 +12,7 @@ import { LexiMathView } from './LexiMathView';
 
 @Component
 export struct LexiOutlinePanel {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @Prop headings: OutlineHeading[] = [];
   onConvertToMindMap: () => void = () => {};
 
@@ -20,11 +22,11 @@ export struct LexiOutlinePanel {
         Text('文档结构大纲')
           .fontSize(14)
           .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_primary'))
+          .fontColor(this.palette.text_primary)
         Blank()
         Button('转为思维导图 →', { buttonStyle: ButtonStyleMode.TEXTUAL })
           .fontSize(12)
-          .fontColor($r('app.color.brand'))
+          .fontColor(this.palette.brand)
           .onClick(() => {
             this.onConvertToMindMap();
           })
@@ -34,7 +36,7 @@ export struct LexiOutlinePanel {
       if (this.headings.length === 0) {
         Text('在正文中使用 # / ## / ### 添加标题即可自动生成结构大纲。')
           .fontSize(12)
-          .fontColor($r('app.color.text_secondary'))
+          .fontColor(this.palette.text_secondary)
       } else {
         ForEach(
           this.headings,
@@ -43,13 +45,13 @@ export struct LexiOutlinePanel {
               Text(`H${h.level}`)
                 .fontSize(10)
                 .fontWeight(FontWeight.Bold)
-                .fontColor($r('app.color.brand'))
+                .fontColor(this.palette.brand)
                 .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-                .backgroundColor($r('app.color.brand_soft'))
+                .backgroundColor(this.palette.brand_soft)
                 .borderRadius(6)
               Text(h.title)
                 .fontSize(13)
-                .fontColor($r('app.color.text_primary'))
+                .fontColor(this.palette.text_primary)
                 .maxLines(1)
             }
             .width('100%')
@@ -61,13 +63,14 @@ export struct LexiOutlinePanel {
     }
     .width('100%')
     .padding(16)
-    .backgroundColor($r('app.color.surface'))
+    .backgroundColor(this.palette.surface)
     .borderRadius(18)
   }
 }
 
 @Component
 export struct LexiRelationsPanel {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @Prop outgoingLinks: NoteLink[] = [];
   @Prop backlinks: NoteLink[] = [];
   onOpenTarget: (targetIdOrTitle: string) => void = (_target: string): void => {};
@@ -79,7 +82,7 @@ export struct LexiRelationsPanel {
         Text('知识关联与反向引用')
           .fontSize(15)
           .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_primary'))
+          .fontColor(this.palette.text_primary)
         Blank()
       }
       .width('100%')
@@ -87,12 +90,12 @@ export struct LexiRelationsPanel {
       Text(`正向链接 (${this.outgoingLinks.length})`)
         .fontSize(12)
         .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_secondary'))
+        .fontColor(this.palette.text_secondary)
         .width('100%')
       if (this.outgoingLinks.length === 0) {
         Text('暂无正向链接')
           .fontSize(12)
-          .fontColor($r('app.color.text_secondary'))
+          .fontColor(this.palette.text_secondary)
           .width('100%')
       } else {
         Flex({ wrap: FlexWrap.Wrap }) {
@@ -105,8 +108,8 @@ export struct LexiRelationsPanel {
                 .padding({ left: 12, right: 12 })
                 .fontSize(12)
                 .borderRadius(10)
-                .backgroundColor($r('app.color.brand_soft'))
-                .fontColor($r('app.color.brand'))
+                .backgroundColor(this.palette.brand_soft)
+                .fontColor(this.palette.brand)
                 .onClick(() => {
                   this.onOpenTarget((link.targetId || link.targetTitle) + (link.anchor ? `#${link.anchor}` : ''));
                 })
@@ -117,17 +120,17 @@ export struct LexiRelationsPanel {
         .width('100%')
       }
 
-      Divider().color($r('app.color.divider'))
+      Divider().color(this.palette.divider)
 
       Text(`反向引用 (${this.backlinks.length})`)
         .fontSize(12)
         .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_secondary'))
+        .fontColor(this.palette.text_secondary)
         .width('100%')
       if (this.backlinks.length === 0) {
         Text('暂无反向引用')
           .fontSize(12)
-          .fontColor($r('app.color.text_secondary'))
+          .fontColor(this.palette.text_secondary)
           .width('100%')
       } else {
         ForEach(
@@ -139,23 +142,23 @@ export struct LexiRelationsPanel {
                 Text(backlink.sourceTitle)
                   .fontSize(13)
                   .fontWeight(FontWeight.Medium)
-                  .fontColor($r('app.color.text_primary'))
+                  .fontColor(this.palette.text_primary)
                 Text(`通过 [[${backlink.targetTitle}]] 引用了本笔记`)
                   .fontSize(11)
-                  .fontColor($r('app.color.text_secondary'))
+                  .fontColor(this.palette.text_secondary)
               }
               .layoutWeight(1)
               .alignItems(HorizontalAlign.Start)
               Button('跳转', { buttonStyle: ButtonStyleMode.TEXTUAL })
                 .fontSize(12)
-                .fontColor($r('app.color.brand'))
+                .fontColor(this.palette.brand)
                 .onClick(() => {
                   this.onOpenTarget(backlink.sourceId);
                 })
             }
             .width('100%')
             .padding(12)
-            .backgroundColor($r('app.color.soft_surface'))
+            .backgroundColor(this.palette.soft_surface)
             .borderRadius(14)
           },
           (backlink: NoteLink): string => `${backlink.sourceId}<-${backlink.targetTitle}`
@@ -164,7 +167,7 @@ export struct LexiRelationsPanel {
     }
     .width('100%')
     .padding(16)
-    .backgroundColor($r('app.color.surface'))
+    .backgroundColor(this.palette.surface)
     .borderRadius(18)
   }
 }
@@ -184,8 +187,9 @@ class LexiPreviewTableRow {
 
 @Component
 struct LexiPreviewInlineText {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiFontSize') private noteFontSize: number = 16;
-  @StorageProp('lexiAccent') private noteAccent: string = '#6E44D9';
+  @StorageProp('lexiEffectiveAccent') private noteAccent: string = '#6E44D9';
   @Prop sourceText: string = '';
   @Prop textSize: number = 16;
   @Prop textLeading: number = 27;
@@ -242,7 +246,7 @@ struct LexiPreviewInlineText {
     if (segment.target === 'green') { return '#404ADE80'; }
     if (segment.target === 'blue') { return '#4060A5FA'; }
     if (segment.target === 'purple') { return '#40C084FC'; }
-    return $r('app.color.brand_soft');
+    return this.palette.brand_soft;
   }
 
   private containsMath(): boolean {
@@ -264,8 +268,8 @@ struct LexiPreviewInlineText {
               .fontWeight(this.strong || segment.kind === 'bold' ? FontWeight.Bold : FontWeight.Regular)
               .fontStyle(segment.kind === 'italic' ? FontStyle.Italic : FontStyle.Normal)
               .fontFamily(this.raw || segment.kind === 'code' ? 'monospace' : 'HarmonyOS Sans')
-              .fontColor(segment.kind === 'link' || segment.kind === 'url' ? this.noteAccent : this.muted || this.checked ? $r('app.color.text_secondary') : $r('app.color.text_primary'))
-              .textBackgroundStyle({ color: segment.kind === 'highlight' ? this.highlightColor(segment) : segment.kind === 'code' ? $r('app.color.soft_surface') : Color.Transparent, radius: 3 })
+              .fontColor(segment.kind === 'link' || segment.kind === 'url' ? this.noteAccent : this.muted || this.checked ? this.palette.text_secondary : this.palette.text_primary)
+              .textBackgroundStyle({ color: segment.kind === 'highlight' ? this.highlightColor(segment) : segment.kind === 'code' ? this.palette.soft_surface : Color.Transparent, radius: 3 })
               .decoration({ type: segment.kind === 'strike' || this.checked ? TextDecorationType.LineThrough : segment.kind === 'link' || segment.kind === 'url' ? TextDecorationType.Underline : TextDecorationType.None })
               .onClick((): void => { this.activate(segment); })
           }, (segment: LexiMarkdownInlineSpan): string => segment.id)
@@ -282,6 +286,7 @@ struct LexiPreviewInlineText {
 
 @Component
 struct LexiPreviewCodeBlock {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiFontSize') private noteFontSize: number = 16;
   @Prop @Watch('refreshTokens') codeSource: string = '';
   @Prop @Watch('refreshTokens') fencedLanguage: string = '';
@@ -304,9 +309,9 @@ struct LexiPreviewCodeBlock {
     Column({ space: 8 }) {
       Row() {
         Text(this.languageLabel).fontSize(11).fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.brand_ink')).layoutWeight(1)
+          .fontColor(this.palette.brand_ink).layoutWeight(1)
         Button('复制代码', { buttonStyle: ButtonStyleMode.TEXTUAL }).fontSize(11).height(28)
-          .fontColor($r('app.color.brand_ink')).onClick(this.onCopyCode)
+          .fontColor(this.palette.brand_ink).onClick(this.onCopyCode)
       }.width('100%')
       Text() {
         ForEach(this.codeTokens, (token: LexiCodeToken) => {
@@ -323,8 +328,9 @@ struct LexiPreviewCodeBlock {
 
 @Component
 export struct LexiMarkdownPreview {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiFontSize') private noteFontSize: number = 16;
-  @StorageProp('lexiAccent') private noteAccent: string = '#6E44D9';
+  @StorageProp('lexiEffectiveAccent') private noteAccent: string = '#6E44D9';
   @Prop frameless: boolean = false;
   @Prop anchorPrefix: string = 'markdown-block';
   @Prop blocks: MarkdownBlock[] = [];
@@ -395,8 +401,8 @@ export struct LexiMarkdownPreview {
           ForEach(this.outgoingLinks, (link: NoteLink) => {
             Button(`🔗 ${link.displayText || link.targetTitle}`, { type: ButtonType.Normal })
               .height(30).margin({ right: 6, bottom: 6 }).padding({ left: 10, right: 10 })
-              .fontSize(11).borderRadius(9).backgroundColor($r('app.color.brand_soft'))
-              .fontColor($r('app.color.brand'))
+              .fontSize(11).borderRadius(9).backgroundColor(this.palette.brand_soft)
+              .fontColor(this.palette.brand)
               .onClick((): void => { this.onOpenTarget(`${link.targetId || link.targetTitle}${link.anchor ? '#' + link.anchor : ''}`); })
           }, (link: NoteLink): string => `chip-${link.targetTitle}-${link.anchor}`)
         }.width('100%')
@@ -404,7 +410,7 @@ export struct LexiMarkdownPreview {
       ForEach(this.blocks, (block: MarkdownBlock) => {
         Column() {
           if (block.kind === 'hr') {
-            Divider().color($r('app.color.divider')).strokeWidth(1).margin({ top: 10, bottom: 10 })
+            Divider().color(this.palette.divider).strokeWidth(1).margin({ top: 10, bottom: 10 })
           } else if (block.kind === 'table') {
             Scroll() {
               Column() {
@@ -418,8 +424,8 @@ export struct LexiMarkdownPreview {
                 onInteractiveAction: (): void => { this.lastInteractiveAt = Date.now(); } })
                       }
                       .width(156).padding(12).constraintSize({ minHeight: 46 })
-                      .border({ width: 0.5, color: $r('app.color.divider') })
-                      .backgroundColor(tableRow.header ? $r('app.color.brand_soft') : tableRow.stripe ? $r('app.color.soft_surface') : $r('app.color.surface'))
+                      .border({ width: 0.5, color: this.palette.divider })
+                      .backgroundColor(tableRow.header ? this.palette.brand_soft : tableRow.stripe ? this.palette.soft_surface : this.palette.surface)
                     }, (cell: LexiPreviewTableCell): string => cell.id)
                   }.alignItems(VerticalAlign.Top)
                 }, (tableRow: LexiPreviewTableRow): string => tableRow.id)
@@ -435,24 +441,24 @@ export struct LexiMarkdownPreview {
                     this.failedImages = this.failedImages.concat(this.imageSource(block));
                   })
               } else {
-                Text('图片暂时无法显示').fontSize(13).fontColor($r('app.color.text_secondary')).padding(18)
+                Text('图片暂时无法显示').fontSize(13).fontColor(this.palette.text_secondary).padding(18)
               }
               if (block.text) {
-                Text(block.text).fontSize(12).fontColor($r('app.color.text_secondary'))
+                Text(block.text).fontSize(12).fontColor(this.palette.text_secondary)
               }
-            }.width('100%').padding(8).backgroundColor($r('app.color.soft_surface')).borderRadius(12)
+            }.width('100%').padding(8).backgroundColor(this.palette.soft_surface).borderRadius(12)
           } else if (block.kind === 'embed') {
             Column({ space: 9 }) {
               Row() {
-                Text(`↗ ${block.text}`).fontSize(13).fontWeight(FontWeight.Bold).fontColor($r('app.color.brand_ink')).layoutWeight(1)
-                Text('引用笔记').fontSize(10).fontColor($r('app.color.text_secondary'))
+                Text(`↗ ${block.text}`).fontSize(13).fontWeight(FontWeight.Bold).fontColor(this.palette.brand_ink).layoutWeight(1)
+                Text('引用笔记').fontSize(10).fontColor(this.palette.text_secondary)
               }.width('100%')
               LexiPreviewInlineText({ sourceText: this.embeddedText(block), textSize: 14, textLeading: 23,
                 onOpenTarget: this.onOpenTarget,
                 onEditText: (): void => { if (this.editable) { this.onEditBlock(block.lineIndex); } },
                 onInteractiveAction: (): void => { this.lastInteractiveAt = Date.now(); } })
-            }.width('100%').padding(16).backgroundColor($r('app.color.soft_surface'))
-              .border({ width: 1, color: $r('app.color.divider') }).borderRadius(12)
+            }.width('100%').padding(16).backgroundColor(this.palette.soft_surface)
+              .border({ width: 1, color: this.palette.divider }).borderRadius(12)
               .onClick((): void => { this.lastInteractiveAt = Date.now(); this.onOpenTarget(block.meta); })
           } else if (block.kind === 'h1' || block.kind === 'h2' || block.kind === 'h3') {
             LexiPreviewInlineText({ sourceText: block.text, textSize: block.kind === 'h1' ? 24 : block.kind === 'h2' ? 20 : 17,
@@ -474,7 +480,7 @@ export struct LexiMarkdownPreview {
           } else if (block.kind === 'bullet' || block.kind === 'ordered') {
             Row({ space: 9 }) {
               Text(block.kind === 'ordered' ? `${block.meta}.` : '•').fontSize(15)
-                .fontWeight(FontWeight.Medium).fontColor($r('app.color.brand')).padding({ top: 2 })
+                .fontWeight(FontWeight.Medium).fontColor(this.palette.brand).padding({ top: 2 })
               Column() {
                 LexiPreviewInlineText({ sourceText: block.text, textSize: this.frameless ? 16 : 14,
                   textLeading: 26, onOpenTarget: this.onOpenTarget,
@@ -485,13 +491,13 @@ export struct LexiMarkdownPreview {
           } else if (block.kind === 'quote' || block.kind === 'callout') {
             Column({ space: 6 }) {
               if (block.kind === 'callout') {
-                Text(`✦ ${block.meta || 'NOTE'}`).fontSize(11).fontWeight(FontWeight.Bold).fontColor($r('app.color.brand'))
+                Text(`✦ ${block.meta || 'NOTE'}`).fontSize(11).fontWeight(FontWeight.Bold).fontColor(this.palette.brand)
               }
               LexiPreviewInlineText({ sourceText: block.text, textSize: 14, textLeading: 23,
                 muted: block.kind === 'quote', onOpenTarget: this.onOpenTarget,
                 onEditText: (): void => { if (this.editable) { this.onEditBlock(block.lineIndex); } },
                 onInteractiveAction: (): void => { this.lastInteractiveAt = Date.now(); } })
-            }.width('100%').padding(14).backgroundColor($r('app.color.brand_soft')).borderRadius(12)
+            }.width('100%').padding(14).backgroundColor(this.palette.brand_soft).borderRadius(12)
               .alignItems(HorizontalAlign.Start)
           } else if (block.kind === 'code' || block.kind === 'formula') {
             Column({ space: 8 }) {
@@ -506,7 +512,7 @@ export struct LexiMarkdownPreview {
                   onEditText: (): void => { if (this.editable) { this.onEditBlock(block.lineIndex); } },
                   onInteractiveAction: (): void => { this.lastInteractiveAt = Date.now(); } })
               }
-            }.width('100%').padding(14).backgroundColor($r('app.color.soft_surface')).borderRadius(12)
+            }.width('100%').padding(14).backgroundColor(this.palette.soft_surface).borderRadius(12)
           } else {
             LexiPreviewInlineText({ sourceText: block.text, textSize: this.frameless ? 16 : 14,
               textLeading: this.frameless ? 28 : 23, onOpenTarget: this.onOpenTarget,
@@ -522,7 +528,7 @@ export struct LexiMarkdownPreview {
       }, (block: MarkdownBlock): string => `${block.id}-${block.kind}-${block.text}-${block.meta}-${block.checked}`)
     }
     .width('100%').padding(this.frameless ? 0 : 18)
-    .backgroundColor(this.frameless ? Color.Transparent : $r('app.color.surface'))
+    .backgroundColor(this.frameless ? Color.Transparent : this.palette.surface)
     .borderRadius(this.frameless ? 0 : 22).alignItems(HorizontalAlign.Start)
   }
 }

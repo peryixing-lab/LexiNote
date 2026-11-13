@@ -57,7 +57,7 @@ export const LEXI_COMMANDS: LexiCommand[] = [
   new LexiCommand('dark', '使用深色外观'),
   new LexiCommand('system', '跟随系统外观'),
   new LexiCommand('export-md', '导出工作区 Markdown'),
-  new LexiCommand('backup', '导出完整备份'),
+  new LexiCommand('backup', '导出工作区压缩包'),
   new LexiCommand('import', '导入文件'),
   new LexiCommand('settings', '打开设置'),
   new LexiCommand('export-pdf', '导出为 PDF'),

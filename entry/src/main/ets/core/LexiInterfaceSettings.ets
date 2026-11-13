@@ -13,10 +13,14 @@ export class LexiInterfaceSettings {
     const ribbon = await LexiStorageService.getSetting('interfaceRibbon', 'true');
     const hidden = await LexiStorageService.getSetting('interfaceHiddenCommands', '[]');
     const zoom = Number(await LexiStorageService.getSetting('interfaceZoom', '100'));
+    const sidebarWidth = Number(await LexiStorageService.getSetting('interfaceSidebarWidth', '244'));
+    const rightSidebarWidth = Number(await LexiStorageService.getSetting('interfaceRightSidebarWidth', '280'));
     AppStorage.setOrCreate('lexiTabHeaders', titles !== 'false');
     AppStorage.setOrCreate('lexiShowRibbon', ribbon !== 'false');
     AppStorage.setOrCreate('lexiHiddenRibbonCommands', JSON.stringify(LexiInterfaceSettings.parseHidden(hidden)));
     AppStorage.setOrCreate('lexiInterfaceZoom', LexiInterfaceSettings.clampZoom(zoom));
+    AppStorage.setOrCreate('lexiSidebarWidth', LexiInterfaceSettings.clampSidebarWidth(sidebarWidth));
+    AppStorage.setOrCreate('lexiRightSidebarWidth', LexiInterfaceSettings.clampRightSidebarWidth(rightSidebarWidth));
     LexiInterfaceSettings.loaded = true;
     LexiInterfaceSettings.applyZoom(AppStorage.get<number>('lexiInterfaceZoom') || 100);
   }
@@ -30,6 +34,21 @@ export class LexiInterfaceSettings {
   static detachStage(): void { LexiInterfaceSettings.stage = undefined; }
   static clampZoom(amount: number): number {
     return Number.isFinite(amount) ? Math.max(75, Math.min(150, Math.round(amount))) : 100;
+  }
+  static clampSidebarWidth(amount: number): number {
+    return Number.isFinite(amount) ? Math.max(200, Math.min(480, amount)) : 244;
+  }
+  static sidebarWidthForWindow(amount: number, workspaceWidth: number, ribbonWidth: number, inspectorWidth: number): number {
+    const limit = Math.max(200, workspaceWidth - ribbonWidth - inspectorWidth - 420);
+    return Math.min(LexiInterfaceSettings.clampSidebarWidth(amount), limit);
+  }
+  static clampRightSidebarWidth(amount: number): number {
+    return Number.isFinite(amount) ? Math.max(232, Math.min(560, amount)) : 280;
+  }
+  static rightSidebarWidthForWindow(amount: number, workspaceWidth: number, ribbonWidth: number, sidebarOpen: boolean): number {
+    // Reserve the library's minimum width without depending on its computed width.
+    const limit = Math.max(232, workspaceWidth - ribbonWidth - (sidebarOpen ? 200 : 0) - 420);
+    return Math.min(LexiInterfaceSettings.clampRightSidebarWidth(amount), limit);
   }
   static parseHidden(raw: string): string[] {
     try {
@@ -54,6 +73,18 @@ export class LexiInterfaceSettings {
     const owner = LexiStorageService.settingsOwner();
     await LexiInterfaceSettings.save('interfaceRibbon', String(on), owner);
     if (LexiStorageService.settingsOwner() === owner) { AppStorage.setOrCreate('lexiShowRibbon', on); }
+  }
+  static async setSidebarWidth(amount: number): Promise<void> {
+    const owner = LexiStorageService.settingsOwner();
+    const next = LexiInterfaceSettings.clampSidebarWidth(amount);
+    AppStorage.setOrCreate('lexiSidebarWidth', next);
+    await LexiInterfaceSettings.save('interfaceSidebarWidth', String(next), owner);
+  }
+  static async setRightSidebarWidth(amount: number): Promise<void> {
+    const owner = LexiStorageService.settingsOwner();
+    const next = LexiInterfaceSettings.clampRightSidebarWidth(amount);
+    AppStorage.setOrCreate('lexiRightSidebarWidth', next);
+    await LexiInterfaceSettings.save('interfaceRightSidebarWidth', String(next), owner);
   }
   static async setCommandVisible(id: string, visible: boolean): Promise<void> {
     const owner = LexiStorageService.settingsOwner();

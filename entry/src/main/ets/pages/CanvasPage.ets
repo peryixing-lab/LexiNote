@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { image } from '@kit.ImageKit';
 import { LexiExportService } from '../core/LexiExportService';
 import { LexiHotkeySettings } from '../core/LexiHotkeySettings';
@@ -23,6 +24,7 @@ export function canvasEditorBuilder() {
 
 @Component
 export struct CanvasPage {
+  @StorageProp('lexiThemePalette') @Watch('drawBoard') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiTopInset') titleTopInset: number = 0;
   @StorageProp('lexiBottomInset') bottomInset: number = 0;
   @StorageProp('lexiViewportWidth') viewportWidth: number = 390;
@@ -220,14 +222,14 @@ export struct CanvasPage {
     this.ctx2d.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
 
     // Dot grid
-    this.ctx2d.fillStyle = 'rgba(182, 156, 255, 0.16)';
+    this.ctx2d.fillStyle = this.palette.divider;
     for (let x = 20; x < this.canvasWidth; x += 28) {
       for (let y = 20; y < this.canvasHeight; y += 28) {
         this.ctx2d.fillRect(x, y, 2, 2);
       }
     }
     if (this.board.cards.length === 0) {
-      this.ctx2d.fillStyle = '#C5B8E3';
+      this.ctx2d.fillStyle = this.palette.text_secondary;
       this.ctx2d.font = '14vp sans-serif'; this.ctx2d.textAlign = 'center';
       this.ctx2d.fillText('点击上方「新增卡片」开始', this.canvasWidth / 2, this.canvasHeight / 2);
     }
@@ -262,7 +264,7 @@ export struct CanvasPage {
       const ex = toCard.x + cardW / 2;
       const ey = toCard.y + cardH / 2;
       this.ctx2d.beginPath();
-      this.ctx2d.strokeStyle = '#9A7BFF';
+      this.ctx2d.strokeStyle = this.palette.brand;
       this.ctx2d.lineWidth = 2;
       this.ctx2d.moveTo(sx, sy);
       this.ctx2d.lineTo(ex, ey);
@@ -271,7 +273,7 @@ export struct CanvasPage {
       if (e.label.length > 0) {
         const mx = (sx + ex) / 2;
         const my = (sy + ey) / 2;
-        this.ctx2d.fillStyle = '#E0D0FF';
+        this.ctx2d.fillStyle = this.palette.brand;
         this.ctx2d.font = '10vp sans-serif';
         this.ctx2d.textAlign = 'center';
         this.ctx2d.fillText(e.label, mx, my - 6);
@@ -284,23 +286,23 @@ export struct CanvasPage {
       const selected = c.id === this.selectedCardId;
       this.ctx2d.beginPath();
       this.ctx2d.roundRect(c.x, c.y, cardW, cardH, 14);
-      this.ctx2d.fillStyle = selected ? '#3B2B63' : '#261D3F';
+      this.ctx2d.fillStyle = selected ? this.palette.workspace_selection : this.palette.surface;
       this.ctx2d.fill();
       this.ctx2d.lineWidth = selected ? 2.4 : 1.2;
-      this.ctx2d.strokeStyle = selected ? '#D8C7FF' : '#7C52E6';
+      this.ctx2d.strokeStyle = selected ? this.palette.brand : this.palette.divider;
       this.ctx2d.stroke();
 
-      this.ctx2d.fillStyle = '#F5F0FF';
+      this.ctx2d.fillStyle = this.palette.text_primary;
       this.ctx2d.font = 'bold 12vp sans-serif';
       this.ctx2d.textAlign = 'left';
       this.ctx2d.fillText(c.title.slice(0, 10), c.x + 12, c.y + 22);
 
-      this.ctx2d.fillStyle = '#C5B8E3';
+      this.ctx2d.fillStyle = this.palette.text_secondary;
       this.ctx2d.font = '10vp sans-serif';
       this.ctx2d.fillText(c.content.slice(0, 13) + (c.content.length > 13 ? '…' : ''), c.x + 12, c.y + 42);
 
       if (c.noteRefTitle.length > 0) {
-        this.ctx2d.fillStyle = '#B69CFF';
+        this.ctx2d.fillStyle = this.palette.brand;
         this.ctx2d.font = '10vp sans-serif';
         this.ctx2d.fillText(`🔗 ${c.noteRefTitle.slice(0, 9)}`, c.x + 12, c.y + 60);
       }
@@ -384,7 +386,7 @@ export struct CanvasPage {
               .height(40)
               .fontSize(15)
               .fontWeight(FontWeight.Bold)
-              .backgroundColor($r('app.color.surface'))
+              .backgroundColor(this.palette.surface)
               .borderRadius(14)
               .onChange((v: string) => {
                 this.board.title = v;
@@ -397,15 +399,15 @@ export struct CanvasPage {
               .fontSize(12)
               .fontWeight(FontWeight.Medium)
               .borderRadius(14)
-              .backgroundColor($r('app.color.brand'))
-              .fontColor($r('app.color.inverse_text'))
+              .backgroundColor(this.palette.brand)
+              .fontColor(this.palette.inverse_text)
               .onClick(() => {
                 this.addCard();
               })
             Button('导出图片', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
               .height(40).fontSize(12).onClick((): void => { this.exportImage().catch((error: Error): void => { this.toast(error.message); }); })
             Button('适应画布', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-              .id('canvas-fit').height(40).fontSize(12).fontColor($r('app.color.brand_ink'))
+              .id('canvas-fit').height(40).fontSize(12).fontColor(this.palette.brand_ink)
               .onClick((): void => { this.viewFitted = false; this.drawBoard(); })
           }
           .width('100%')
@@ -415,7 +417,7 @@ export struct CanvasPage {
             .accessibilityText(`白板画布，${this.board.cards.length} 张卡片。拖动卡片调整位置，拖动空白平移。`)
             .width('100%')
             .height(350)
-            .backgroundColor($r('app.color.canvas_surface'))
+            .backgroundColor(this.palette.canvas_surface)
             .borderRadius(24)
             .onReady(() => {
               this.canvasReady = true;
@@ -444,7 +446,7 @@ export struct CanvasPage {
                 Text('卡片编辑')
                   .fontSize(14)
                   .fontWeight(FontWeight.Bold)
-                  .fontColor($r('app.color.text_primary'))
+                  .fontColor(this.palette.text_primary)
                 Blank()
                 Row({ space: 4 }) {
                   Button('←', { type: ButtonType.Normal })
@@ -453,8 +455,8 @@ export struct CanvasPage {
                     .height(30)
                     .fontSize(12)
                     .borderRadius(8)
-                    .backgroundColor($r('app.color.soft_surface'))
-                    .fontColor($r('app.color.text_primary'))
+                    .backgroundColor(this.palette.soft_surface)
+                    .fontColor(this.palette.text_primary)
                     .onClick(() => {
                       this.nudgeSelected(-24, 0);
                     })
@@ -464,8 +466,8 @@ export struct CanvasPage {
                     .height(30)
                     .fontSize(12)
                     .borderRadius(8)
-                    .backgroundColor($r('app.color.soft_surface'))
-                    .fontColor($r('app.color.text_primary'))
+                    .backgroundColor(this.palette.soft_surface)
+                    .fontColor(this.palette.text_primary)
                     .onClick(() => {
                       this.nudgeSelected(0, -20);
                     })
@@ -475,8 +477,8 @@ export struct CanvasPage {
                     .height(30)
                     .fontSize(12)
                     .borderRadius(8)
-                    .backgroundColor($r('app.color.soft_surface'))
-                    .fontColor($r('app.color.text_primary'))
+                    .backgroundColor(this.palette.soft_surface)
+                    .fontColor(this.palette.text_primary)
                     .onClick(() => {
                       this.nudgeSelected(0, 20);
                     })
@@ -486,8 +488,8 @@ export struct CanvasPage {
                     .height(30)
                     .fontSize(12)
                     .borderRadius(8)
-                    .backgroundColor($r('app.color.soft_surface'))
-                    .fontColor($r('app.color.text_primary'))
+                    .backgroundColor(this.palette.soft_surface)
+                    .fontColor(this.palette.text_primary)
                     .onClick(() => {
                       this.nudgeSelected(24, 0);
                     })
@@ -499,7 +501,7 @@ export struct CanvasPage {
                 .width('100%')
                 .height(38)
                 .fontSize(14)
-                .backgroundColor($r('app.color.soft_surface'))
+                .backgroundColor(this.palette.soft_surface)
                 .borderRadius(12)
                 .onChange((val: string) => {
                   this.cardTitle = val;
@@ -514,7 +516,7 @@ export struct CanvasPage {
                 .width('100%')
                 .height(74)
                 .fontSize(13)
-                .backgroundColor($r('app.color.soft_surface'))
+                .backgroundColor(this.palette.soft_surface)
                 .borderRadius(12)
                 .onChange((val: string) => {
                   this.cardContent = val;
@@ -527,7 +529,7 @@ export struct CanvasPage {
 
               Text('点击其他卡片建立/解除连线：')
                 .fontSize(12)
-                .fontColor($r('app.color.text_secondary'))
+                .fontColor(this.palette.text_secondary)
                 .width('100%')
 
               Flex({ wrap: FlexWrap.Wrap }) {
@@ -539,8 +541,8 @@ export struct CanvasPage {
                       .margin({ right: 6, bottom: 6 })
                       .fontSize(11)
                       .borderRadius(9)
-                      .backgroundColor($r('app.color.brand_soft'))
-                      .fontColor($r('app.color.brand'))
+                      .backgroundColor(this.palette.brand_soft)
+                      .fontColor(this.palette.brand)
                       .onClick(() => {
                         this.toggleConnectionWith(other.id);
                       })
@@ -552,7 +554,7 @@ export struct CanvasPage {
 
               Text('引用知识库笔记：')
                 .fontSize(12)
-                .fontColor($r('app.color.text_secondary'))
+                .fontColor(this.palette.text_secondary)
                 .width('100%')
 
               Flex({ wrap: FlexWrap.Wrap }) {
@@ -562,8 +564,8 @@ export struct CanvasPage {
                     .margin({ right: 6, bottom: 6 })
                     .fontSize(11)
                     .borderRadius(9)
-                    .backgroundColor($r('app.color.brand'))
-                    .fontColor($r('app.color.inverse_text'))
+                    .backgroundColor(this.palette.brand)
+                    .fontColor(this.palette.inverse_text)
                     .onClick(() => {
                       const param = new NoteEditorRouteParam();
                       param.noteId = this.currentCard()?.noteRefId || '';
@@ -578,8 +580,8 @@ export struct CanvasPage {
                       .margin({ right: 6, bottom: 6 })
                       .fontSize(11)
                       .borderRadius(9)
-                      .backgroundColor($r('app.color.soft_surface'))
-                      .fontColor($r('app.color.text_primary'))
+                      .backgroundColor(this.palette.soft_surface)
+                      .fontColor(this.palette.text_primary)
                       .onClick(() => {
                         const c = this.currentCard();
                         if (c) {
@@ -597,7 +599,7 @@ export struct CanvasPage {
             }
             .width('100%')
             .padding(16)
-            .backgroundColor($r('app.color.surface'))
+            .backgroundColor(this.palette.surface)
             .borderRadius(22)
           }
         }
@@ -632,7 +634,7 @@ export struct CanvasPage {
         scrollEffectOptions: { scrollEffectType: ScrollEffectType.GRADUAL_BLUR }
       }
     )
-    .backgroundColor($r('app.color.background'))
+    .backgroundColor(this.palette.background)
     .onReady((ctx: NavDestinationContext) => {
       this.pathStack = ctx.pathStack;
       const param = ctx.pathInfo.param as CanvasRouteParam | undefined;

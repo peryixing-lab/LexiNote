@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { common } from '@kit.AbilityKit';
 import { LexiIcon } from './LexiIcon';
 import { NoteItem } from '../core/LexiModels';
@@ -10,6 +11,7 @@ import { LexiStorageService } from '../core/LexiStorageService';
  */
 @Component
 export struct LexiTrashPanel {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiBottomInset') private bottomInset: number = 0;
   @State private deletedNotes: NoteItem[] = [];
   @State private working: boolean = false;
@@ -59,8 +61,8 @@ export struct LexiTrashPanel {
         title: notes.length === 1 ? '永久删除这篇笔记？' : '清空回收站？',
         message: notes.length === 1 ? `「${MarkdownEngine.displayTitle(notes[0])}」将被永久删除，此操作无法撤销。` :
           `${notes.length} 篇笔记将被永久删除，此操作无法撤销。`,
-        buttons: [{ text: '取消', color: $r('app.color.text_secondary') },
-          { text: '永久删除', color: $r('app.color.error') }]
+        buttons: [{ text: '取消', color: this.palette.text_secondary },
+          { text: '永久删除', color: this.palette.error }]
       });
       if (choice.index !== 1) { return; }
       for (const note of notes) { await LexiStorageService.deleteNotePermanently(note.id); }
@@ -85,10 +87,10 @@ export struct LexiTrashPanel {
         Text('回收站')
           .fontSize(18)
           .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_primary'))
+          .fontColor(this.palette.text_primary)
         Text(`${this.deletedNotes.length} 篇已删除笔记`)
           .fontSize(11)
-          .fontColor($r('app.color.text_secondary'))
+          .fontColor(this.palette.text_secondary)
       }
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
@@ -98,8 +100,8 @@ export struct LexiTrashPanel {
           .id('trash-window-empty')
           .height(38)
           .fontSize(12)
-          .fontColor($r('app.color.brand'))
-          .backgroundColor($r('app.color.brand_soft'))
+          .fontColor(this.palette.brand)
+          .backgroundColor(this.palette.brand_soft)
           .borderRadius(19)
           .padding({ left: 16, right: 16 })
           .onClick((): void => { this.remove(this.deletedNotes.slice()); })
@@ -108,7 +110,7 @@ export struct LexiTrashPanel {
         Button({ type: ButtonType.Circle, buttonStyle: ButtonStyleMode.TEXTUAL }) {
           SymbolGlyph($r('sys.symbol.xmark'))
             .fontSize(16)
-            .fontColor([$r('app.color.text_secondary')])
+            .fontColor([this.palette.text_secondary])
         }
         .id('trash-window-close')
         .width(34)
@@ -121,15 +123,15 @@ export struct LexiTrashPanel {
     }
     .width('100%')
     .padding({ left: 24, right: 18, top: 18, bottom: 14 })
-    .backgroundColor($r('app.color.workspace_sidebar'))
-    .border({ width: { bottom: 0.5 }, color: $r('app.color.workspace_line') })
+    .backgroundColor(this.palette.workspace_sidebar)
+    .border({ width: { bottom: 0.5 }, color: this.palette.workspace_line })
   }
 
   @Builder
   private emptyState() {
     Column({ space: 12 }) {
       LexiIcon({ name: 'trash', iconSize: 36, muted: true })
-      Text('回收站是空的').fontSize(18).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+      Text('回收站是空的').fontSize(18).fontWeight(FontWeight.Medium).fontColor(this.palette.text_primary)
     }
     .width('100%')
     .padding({ top: 72, bottom: 72 })
@@ -141,7 +143,7 @@ export struct LexiTrashPanel {
       Scroll() {
         Column({ space: 14 }) {
           Text('删除的笔记会保留在这里，可恢复或永久删除。')
-            .fontSize(13).lineHeight(22).fontColor($r('app.color.text_secondary')).width('100%')
+            .fontSize(13).lineHeight(22).fontColor(this.palette.text_secondary).width('100%')
           if (this.loadError) {
             Button(this.loadError).id('trash-window-retry').onClick((): void => { this.refresh(); })
           } else if (this.deletedNotes.length === 0) {
@@ -150,18 +152,18 @@ export struct LexiTrashPanel {
             ForEach(this.deletedNotes, (note: NoteItem) => {
               Column({ space: 12 }) {
                 Text(MarkdownEngine.displayTitle(note)).fontSize(17).fontWeight(FontWeight.Medium)
-                  .fontColor($r('app.color.text_primary')).width('100%').maxLines(2)
+                  .fontColor(this.palette.text_primary).width('100%').maxLines(2)
                 Text(MarkdownEngine.extractSnippet(note)).fontSize(13).lineHeight(21)
-                  .fontColor($r('app.color.text_secondary')).width('100%').maxLines(3)
+                  .fontColor(this.palette.text_secondary).width('100%').maxLines(3)
                 Row({ space: 12 }) {
                   Button('恢复', { buttonStyle: ButtonStyleMode.TEXTUAL }).id(`trash-window-restore-${note.id}`)
-                    .height(44).fontColor($r('app.color.brand')).enabled(!this.working)
+                    .height(44).fontColor(this.palette.brand).enabled(!this.working)
                     .onClick((): void => { this.restore(note); })
                   Button('永久删除', { buttonStyle: ButtonStyleMode.TEXTUAL }).id(`trash-window-delete-${note.id}`)
-                    .height(44).fontColor($r('app.color.error')).enabled(!this.working)
+                    .height(44).fontColor(this.palette.error).enabled(!this.working)
                     .onClick((): void => { this.remove([note]); })
                 }.width('100%')
-              }.width('100%').padding(20).borderRadius(20).backgroundColor($r('app.color.surface'))
+              }.width('100%').padding(20).borderRadius(20).backgroundColor(this.palette.surface)
             }, (note: NoteItem): string => `${note.id}-${note.trashedAt}`)
           }
         }
@@ -176,6 +178,6 @@ export struct LexiTrashPanel {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor($r('app.color.workspace_page'))
+    .backgroundColor(this.palette.workspace_page)
   }
 }

@@ -1,5 +1,6 @@
 import { KeyCode } from '@kit.InputKit';
 import { LexiStorageService } from './LexiStorageService';
+import { LexiTheme } from './LexiTheme';
 
 export class LexiCssSnippet {
   id: string = '';
@@ -10,25 +11,32 @@ export class LexiCssSnippet {
 
 /** Shared appearance state. CSS is applied only in the ArkWeb note workspace. */
 export class LexiAppearanceSettings {
-  static readonly DEFAULT_ACCENT: string = '#6E44D9';
+  static readonly DEFAULT_ACCENT: string = LexiTheme.DEFAULT_ACCENT;
   /** Scrollers watch this flag: while it is true the wheel is zooming, so the page must not scroll. */
   static readonly WHEEL_ZOOM_LOCK_KEY: string = 'lexiWheelZoomLock';
   private static readonly ZOOM_BURST_MS: number = 400;
   private static readonly CTRL_WATCHDOG_MS: number = 6000;
   private static fontWriteQueue: Promise<void> = Promise.resolve();
+  private static accentWriteQueue: Promise<void> = Promise.resolve();
   private static fontRevision: number = 0;
   private static savedFontSize: number = 16;
   private static ctrlHeld: boolean = false;
   private static zoomBurstDeadline: number = 0;
   private static zoomBurstTimer: number = -1;
   private static ctrlWatchdogTimer: number = -1;
-  static async flush(): Promise<void> { await LexiAppearanceSettings.fontWriteQueue; }
+  static async flush(): Promise<void> {
+    await LexiAppearanceSettings.fontWriteQueue;
+    await LexiAppearanceSettings.accentWriteQueue;
+  }
   static async load(): Promise<void> {
     const accent = await LexiStorageService.getSetting('appearanceAccent', LexiAppearanceSettings.DEFAULT_ACCENT);
+    const colors = LexiTheme.colors(await LexiStorageService.getSetting('appearanceThemeColors', ''), accent);
     const size = Number(await LexiStorageService.getSetting('appearanceFontSize', '16'));
     const quick = await LexiStorageService.getSetting('appearanceQuickZoom', 'false') === 'true';
     const snippets = await LexiStorageService.getSetting('appearanceSnippets', '[]');
-    AppStorage.setOrCreate('lexiAccent', LexiAppearanceSettings.validAccent(accent) ? accent : LexiAppearanceSettings.DEFAULT_ACCENT);
+    AppStorage.setOrCreate('lexiAccent', colors.accent);
+    AppStorage.setOrCreate('lexiThemeColors', JSON.stringify(colors));
+    LexiTheme.refresh();
     LexiAppearanceSettings.savedFontSize = LexiAppearanceSettings.clampSize(size);
     AppStorage.setOrCreate('lexiFontSize', LexiAppearanceSettings.savedFontSize);
     AppStorage.setOrCreate('lexiQuickZoom', quick);
@@ -49,9 +57,49 @@ export class LexiAppearanceSettings {
   }
   static async setAccent(color: string): Promise<void> {
     if (!LexiAppearanceSettings.validAccent(color)) { return; }
+    await LexiAppearanceSettings.writeColors('preset', 'accent', color.toUpperCase());
+  }
+  static async setOriginalColors(): Promise<void> {
+    await LexiAppearanceSettings.writeColors('original', '', '');
+  }
+  static async setCustomColor(kind: string, color: string): Promise<void> {
+    if ((kind !== 'accent' && kind !== 'background' && kind !== 'foreground') || !LexiTheme.validAccent(color)) {
+      throw new Error('请输入 6 位十六进制颜色，如 #6E44D9');
+    }
+    await LexiAppearanceSettings.writeColors('custom', kind, color.toUpperCase());
+  }
+  private static async writeColors(mode: string, kind: string, color: string): Promise<void> {
     const owner = LexiStorageService.settingsOwner();
-    await LexiStorageService.setSetting('appearanceAccent', color, owner);
-    if (LexiStorageService.settingsOwner() === owner) { AppStorage.setOrCreate('lexiAccent', color); }
+    const dark = AppStorage.get<number>('lexiColorMode') === 1;
+    const write = LexiAppearanceSettings.accentWriteQueue.then(async (): Promise<void> => {
+      let colors = LexiTheme.colors(await LexiStorageService.getSetting('appearanceThemeColors', '', owner),
+        await LexiStorageService.getSetting('appearanceAccent', LexiAppearanceSettings.DEFAULT_ACCENT, owner));
+      if (mode === 'original') { colors = LexiTheme.colors(); }
+      else if (mode === 'preset') { colors = LexiTheme.colors('', color); colors.mode = 'preset'; }
+      else {
+        if (colors.mode !== 'custom' || !colors.background || !colors.foreground) {
+          const current = LexiTheme.resolvePalette(colors, dark);
+          colors.background = current.background;
+          colors.foreground = current.text_primary;
+        }
+        colors.mode = 'custom';
+        if (kind === 'accent') { colors.accent = color; }
+        else if (kind === 'background') { colors.background = color; }
+        else { colors.foreground = color; }
+        if (LexiTheme.contrast(colors.background, colors.foreground) < 4.5) {
+          throw new Error('前景色与背景色对比度不足，请调整颜色');
+        }
+      }
+      const raw = JSON.stringify(colors);
+      await LexiStorageService.setSetting('appearanceThemeColors', raw, owner);
+      if (LexiStorageService.settingsOwner() === owner) {
+        AppStorage.setOrCreate('lexiAccent', colors.accent);
+        AppStorage.setOrCreate('lexiThemeColors', raw);
+        LexiTheme.refresh();
+      }
+    });
+    LexiAppearanceSettings.accentWriteQueue = write.catch((): void => {});
+    await write;
   }
   static async setFontSize(size: number): Promise<void> {
     const owner = LexiStorageService.settingsOwner();

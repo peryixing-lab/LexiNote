@@ -1,4 +1,5 @@
 import { LexiI18n } from '../core/LexiI18n';
+import { LexiTheme } from '../core/LexiTheme';
 import { LexiInterfaceSettings } from '../core/LexiInterfaceSettings';
 import { AbilityConstant, Configuration, ConfigurationConstant, UIAbility, Want, wantConstant } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -40,6 +41,8 @@ export default class EntryAbility extends UIAbility {
     };
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    AppStorage.setOrCreate('lexiColorMode', this.context.config.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK ? 1 : 0);
+    LexiTheme.refresh();
     try {
       this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
     } catch (err) {
@@ -96,6 +99,7 @@ export default class EntryAbility extends UIAbility {
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
     this.mainWindow = windowStage.getMainWindowSync();
+    LexiTheme.bindWindow(this.mainWindow);
     this.context.setMissionContinueState(AbilityConstant.ContinueState.INACTIVE).catch((): void => {});
     try {
       const props = this.mainWindow.getWindowProperties();
@@ -231,13 +235,14 @@ export default class EntryAbility extends UIAbility {
   }
 
   private updateBars(configuration: Configuration): void {
+    const dark = configuration.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
+    AppStorage.setOrCreate('lexiColorMode', dark ? 1 : 0);
+    LexiTheme.refresh();
     if (!this.mainWindow) {
       return;
     }
-    const dark = configuration.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
-    AppStorage.setOrCreate('lexiColorMode', dark ? 1 : 0);
-    const background = dark ? '#12131B' : '#F6F4FB';
-    const foreground = dark ? '#F5F3FB' : '#231B36';
+    const background = LexiTheme.current().background;
+    const foreground = LexiTheme.current().text_primary;
     try {
       this.mainWindow.setWindowBackgroundColor(background);
     } catch {
@@ -254,6 +259,7 @@ export default class EntryAbility extends UIAbility {
   }
 
   onWindowStageDestroy(): void {
+    LexiTheme.bindWindow(undefined);
     LexiInterfaceSettings.detachStage();
     LexiShareService.unregisterWindow('EntryAbility');
     this.restorePcTitleBar();

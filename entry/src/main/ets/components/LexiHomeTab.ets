@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { LexiI18n } from '../core/LexiI18n';
 import {
   NoteItem,
@@ -9,6 +10,7 @@ import { LexiHeroHeading, LexiNoteCard } from './LexiNoteCard';
 
 @Component
 struct LexiHomeMetric {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiLanguage') private interfaceLanguage: string = LexiI18n.language();
 
   private tr(source: string, args: string[] = []): string {
@@ -20,15 +22,16 @@ struct LexiHomeMetric {
 
   build() {
     Column({ space: 4 }) {
-      Text(`${this.metricValue}`).fontSize(20).fontWeight(FontWeight.Bold).fontColor($r('app.color.brand'))
-      Text(this.labelText).fontSize(12).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_secondary'))
-    }.layoutWeight(1).padding(12).backgroundColor($r('app.color.surface')).borderRadius(18)
+      Text(`${this.metricValue}`).fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.palette.brand)
+      Text(this.labelText).fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.palette.text_secondary)
+    }.layoutWeight(1).padding(12).backgroundColor(this.palette.surface).borderRadius(18)
       .alignItems(HorizontalAlign.Start)
   }
 }
 
 @Component
 export struct LexiHomeTab {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiLanguage') private interfaceLanguage: string = LexiI18n.language();
 
   private tr(source: string, args: string[] = []): string {
@@ -168,21 +171,21 @@ export struct LexiHomeTab {
       // Keep quick capture compact so recent notes are visible on the home screen.
       Row({ space: 8 }) {
         Button(this.tr('今日笔记'), { type: ButtonType.Normal }).id('home-daily-note').layoutWeight(1.2).height(44)
-          .fontSize(13).borderRadius(16).backgroundColor($r('app.color.brand')).fontColor($r('app.color.inverse_text'))
+          .fontSize(13).borderRadius(16).backgroundColor(this.palette.brand).fontColor(this.palette.inverse_text)
           .padding({ left: 4, right: 4 })
           .onClick(this.onOpenDaily)
         Button(this.tr('从模板新建'), { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
           .id('home-templates').layoutWeight(1.2).height(44).fontSize(13).borderRadius(16)
-          .backgroundColor($r('app.color.surface')).fontColor($r('app.color.brand_ink')).onClick(this.onOpenTemplates)
+          .backgroundColor(this.palette.surface).fontColor(this.palette.brand_ink).onClick(this.onOpenTemplates)
         // Phones have no workspace rail: the plugin surface opens from here, in a sheet.
         Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
           Row({ space: 4 }) {
-            Image($r('app.media.ic_sidebar_plugin')).width(15).height(15).draggable(false)
-            Text(this.tr('插件')).fontSize(13).fontColor($r('app.color.brand_ink')).maxLines(1)
+            Image($r('app.media.ic_sidebar_plugin')).supportSvg2(true).colorFilter(this.palette.text_secondary).width(15).height(15).draggable(false)
+            Text(this.tr('插件')).fontSize(13).fontColor(this.palette.brand_ink).maxLines(1)
           }
         }
         .id('home-plugins').layoutWeight(0.8).height(44).borderRadius(16)
-        .backgroundColor($r('app.color.surface')).accessibilityText(this.tr('插件'))
+        .backgroundColor(this.palette.surface).accessibilityText(this.tr('插件'))
         .onClick(this.onOpenPlugins)
       }.width('100%')
       Column({ space: 10 }) {
@@ -192,13 +195,13 @@ export struct LexiHomeTab {
             Text(this.tr('随手记'))
               .fontSize(14)
               .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.text_primary'))
+              .fontColor(this.palette.text_primary)
           }
           Blank()
           Button(this.tr('完整编辑 →'), { buttonStyle: ButtonStyleMode.TEXTUAL })
             .height(28)
             .fontSize(12)
-            .fontColor($r('app.color.brand'))
+            .fontColor(this.palette.brand)
             .onClick(() => {
               this.onExpandQuick();
             })
@@ -213,10 +216,10 @@ export struct LexiHomeTab {
           .width('100%')
           .height(this.isWide ? 88 : 112)
           .fontSize(14)
-          .fontColor($r('app.color.text_primary'))
-          .placeholderColor($r('app.color.text_secondary'))
-          .caretColor($r('app.color.brand'))
-          .backgroundColor($r('app.color.soft_surface'))
+          .fontColor(this.palette.text_primary)
+          .placeholderColor(this.palette.text_secondary)
+          .caretColor(this.palette.brand)
+          .backgroundColor(this.palette.soft_surface)
           .borderRadius(16)
           .onChange((val: string) => {
             this.onQuickTextChange(val);
@@ -231,8 +234,8 @@ export struct LexiHomeTab {
             .fontSize(13)
             .fontWeight(FontWeight.Medium)
             .borderRadius(12)
-            .backgroundColor($r('app.color.brand'))
-            .fontColor($r('app.color.inverse_text'))
+            .backgroundColor(this.palette.brand)
+            .fontColor(this.palette.inverse_text)
             .onClick(() => {
               this.onSaveQuick();
             })
@@ -241,7 +244,7 @@ export struct LexiHomeTab {
       }
       .width('100%')
       .padding(18)
-      .backgroundColor($r('app.color.surface'))
+      .backgroundColor(this.palette.surface)
       .borderRadius(24)
 
       if (this.activeList.length > 0 || this.mapCount > 0 || this.canvasCount > 0) {
@@ -258,7 +261,7 @@ export struct LexiHomeTab {
           Text(this.tr('置顶'))
             .fontSize(15)
             .fontWeight(FontWeight.Bold)
-            .fontColor($r('app.color.text_primary'))
+            .fontColor(this.palette.text_primary)
             .width('100%')
           ForEach(
             this.pinnedList,
@@ -274,10 +277,10 @@ export struct LexiHomeTab {
       if (this.activeList.length > 0) {
         Column({ space: 10 }) {
           Row() {
-            Text(this.tr('最近笔记')).fontSize(15).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary'))
+            Text(this.tr('最近笔记')).fontSize(15).fontWeight(FontWeight.Bold).fontColor(this.palette.text_primary)
             Blank()
             Button(this.tr('全部笔记 →'), { buttonStyle: ButtonStyleMode.TEXTUAL })
-              .fontSize(12).fontColor($r('app.color.brand')).onClick((): void => { this.onViewAllNotes(); })
+              .fontSize(12).fontColor(this.palette.brand).onClick((): void => { this.onViewAllNotes(); })
           }.width('100%')
           ForEach(this.recentList, (note: NoteItem) => { this.renderNoteCard(note); },
             (note: NoteItem): string => `recent-${note.id}-${note.updatedAt}`)

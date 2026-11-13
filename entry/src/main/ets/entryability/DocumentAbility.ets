@@ -1,4 +1,5 @@
-import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
+import { AbilityConstant, Configuration, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
+import { LexiTheme } from '../core/LexiTheme';
 import { window } from '@kit.ArkUI';
 import { LexiOfflineSpeech } from '../core/LexiOfflineSpeech';
 import { LexiShareService } from '../core/LexiShareService';
@@ -22,7 +23,12 @@ export default class DocumentAbility extends UIAbility {
     LexiShareService.registerWindow(this.windowKey, this.context, this.mainWindow);
   }
   onCreate(want: Want, _launchParam: AbilityConstant.LaunchParam): void {
+    this.onConfigurationUpdate(this.context.config);
     this.documentId = (want.parameters?.noteId as string) || '';
+  }
+  onConfigurationUpdate(configuration: Configuration): void {
+    AppStorage.setOrCreate('lexiColorMode', configuration.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK ? 1 : 0);
+    LexiTheme.refresh();
   }
   onWindowStageCreate(stage: window.WindowStage): void {
     this.loadWindow(stage).catch((): void => { this.context.terminateSelf(); });
@@ -46,12 +52,14 @@ export default class DocumentAbility extends UIAbility {
     stage.loadContent('pages/DocumentWindow', storage).then((): void => {
       const main = stage.getMainWindowSync();
       this.mainWindow = main;
+      LexiTheme.bindWindow(main);
       LexiInterfaceSettings.attachStage(stage);
       main.setWindowDecorHeight(52); main.setWindowDecorVisible(false);
       LexiShareService.registerWindow(this.windowKey, this.context, this.mainWindow);
     }).catch((): void => { this.context.terminateSelf(); });
   }
   onWindowStageDestroy(): void {
+    LexiTheme.bindWindow(undefined);
     LexiInterfaceSettings.detachStage();
     LexiShareService.unregisterWindow(this.windowKey);
     this.mainWindow = undefined;

@@ -1,5 +1,6 @@
 import { LexiCollectionBackup } from './LexiModels';
 import { common } from '@kit.AbilityKit';
+import { zlib } from '@kit.BasicServicesKit';
 import { preferences, relationalStore } from '@kit.ArkData';
 import { fileIo as fs, fileUri, picker } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
@@ -28,6 +29,27 @@ import { LexiStorageLock } from './LexiStorageLock';
 import { LexiWorkspacePreferences } from './LexiWorkspacePreferences';
 
 const STORAGE_ACCESS_PROMPT_STATE: string = 'storageAccessPrompt:v1';
+
+class LexiSettingBackupEntry {
+  key: string = '';
+  value: string = '';
+  constructor(key: string = '', value: string = '') { this.key = key; this.value = value; }
+}
+
+class LexiVaultPluginBackupEntry {
+  vaultId: string = '';
+  pluginIds: string[] = [];
+  constructor(vaultId: string = '', pluginIds: string[] = []) { this.vaultId = vaultId; this.pluginIds = pluginIds; }
+}
+
+class LexiSettingsPluginsBackup {
+  format: string = 'LexiNote.SettingsPlugins';
+  version: number = 1;
+  exportedAt: number = 0;
+  settings: LexiSettingBackupEntry[] = [];
+  installedPlugins: string = '[]';
+  enabledPlugins: LexiVaultPluginBackupEntry[] = [];
+}
 
 export class LexiCapturedNoteSaveResult {
   note: NoteItem = new NoteItem();
@@ -2041,6 +2063,227 @@ export class LexiStorageService {
     const merged = sections.join('\n\n\n');
     const fileName = `知萤_知识库导出_${new Date().toISOString().slice(0, 10)}.md`;
     return LexiStorageService.saveViaDocumentPicker(context, fileName, merged);
+  }
+
+  static async exportSettingsAndPlugins(context: common.Context): Promise<string> {
+    const payload = new LexiSettingsPluginsBackup();
+    payload.exportedAt = Date.now();
+    const settingKeys: string[] = [
+      'theme', 'themeColors', 'language', 'defaultTier', 'vaultViewMode', 'graphShowTags',
+      'workspaceOpenMode', 'editorDefaultView', 'editorDefaultMode', 'editorShowTitle',
+      'editorLimitWidth', 'editorViewStatus', 'noteFontSize', 'quickZoom', 'cssSnippets',
+      'tabHeaders', 'showRibbon', 'hiddenRibbonCommands', 'interfaceZoom', 'hotkeyOverrides'
+    ];
+    for (const key of settingKeys) {
+      const value = await LexiStorageService.getSetting(key, '');
+      if (value.length > 0) { payload.settings.push(new LexiSettingBackupEntry(key, value)); }
+    }
+    payload.installedPlugins = await LexiStorageService.getRawValue('plugins:installed:v1', '[]');
+    const vaults = await LexiStorageService.getVaults(true);
+    for (const vault of vaults) {
+      payload.enabledPlugins.push(new LexiVaultPluginBackupEntry(vault.id, await LexiStorageService.getEnabledPlugins(vault.id)));
+    }
+    const fileName = `知萤_设置与插件_${new Date().toISOString().slice(0, 10)}.json`;
+    return LexiStorageService.saveViaDocumentPicker(context, fileName, JSON.stringify(payload, null, 2));
+  }
+
+  static async importSettingsAndPlugins(context: common.Context): Promise<string> {
+    const docPicker = new picker.DocumentViewPicker(context);
+    const uris = await docPicker.select({
+      fileSuffixFilters: ['设置与插件备份|.json'],
+      maxSelectNumber: 1
+    });
+    if (!uris || uris.length === 0) { throw new Error('未选择文件'); }
+    const srcFile = await fs.open(uris[0], fs.OpenMode.READ_ONLY);
+    let content = '';
+    try {
+      const stat = await fs.stat(srcFile.fd);
+      if (stat.size > 8 * 1024 * 1024) { throw new Error('配置文件上限为 8 MB'); }
+      const buf = new ArrayBuffer(stat.size);
+      await fs.read(srcFile.fd, buf);
+      content = new util.TextDecoder('utf-8').decodeToString(new Uint8Array(buf)).replace(/^\uFEFF/, '');
+    } finally {
+      await fs.close(srcFile);
+    }
+    const parsed = JSON.parse(content) as LexiSettingsPluginsBackup;
+    if (!parsed || parsed.format !== 'LexiNote.SettingsPlugins') {
+      throw new Error('不是有效的知萤设置与插件备份文件');
+    }
+    let appliedSettings = 0;
+    const entries = Array.isArray(parsed.settings) ? parsed.settings : [];
+    for (const entry of entries) {
+      if (entry && typeof entry.key === 'string' && typeof entry.value === 'string') {
+        await LexiStorageService.setSetting(entry.key, entry.value);
+        appliedSettings++;
+      }
+    }
+    if (typeof parsed.installedPlugins === 'string' && parsed.installedPlugins.length > 0) {
+      const existingRaw = await LexiStorageService.getRawValue('plugins:installed:v1', '[]');
+      if (existingRaw === '[]') {
+        await LexiStorageService.setRawValue('plugins:installed:v1', parsed.installedPlugins);
+      }
+    }
+    const vaultEntries = Array.isArray(parsed.enabledPlugins) ? parsed.enabledPlugins : [];
+    for (const item of vaultEntries) {
+      if (item && typeof item.vaultId === 'string' && Array.isArray(item.pluginIds)) {
+        await LexiStorageService.setSetting('enabledPlugins', JSON.stringify(item.pluginIds), item.vaultId);
+      }
+    }
+    if (LexiStorageService.appContext) {
+      await LexiStorageService.refreshSettings(LexiStorageService.appContext);
+    }
+    return `已导入 ${appliedSettings} 项设置与插件配置`;
+  }
+
+  private static removeDirRecursive(dirPath: string): void {
+    try {
+      if (!fs.accessSync(dirPath)) { return; }
+      const entries = fs.listFileSync(dirPath, { recursion: false });
+      for (const name of entries) {
+        const full = `${dirPath}/${name}`;
+        try {
+          if (fs.statSync(full).isDirectory()) { LexiStorageService.removeDirRecursive(full); }
+          else { fs.unlinkSync(full); }
+        } catch {}
+      }
+      fs.rmdirSync(dirPath);
+    } catch {}
+  }
+
+  static async exportWorkspaceZip(context: common.Context, vaultId: string): Promise<string> {
+    const notes = (await LexiStorageService.getNotes(vaultId)).filter((n: NoteItem): boolean => n.trashedAt === 0);
+    const maps = await LexiStorageService.getMindMaps(vaultId);
+    const canvases = await LexiStorageService.getCanvases(vaultId);
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+    const stagingDir = `${context.cacheDir}/zip-export-${stamp}`;
+    const zipPath = `${context.cacheDir}/zip-export-${stamp}.zip`;
+    fs.mkdirSync(stagingDir, true);
+    try {
+      const usedPaths = new Set<string>();
+      for (const note of notes) {
+        const folderPart = note.notebook && note.notebook !== '默认' ? `${LexiFolderPolicy.fileName(note.notebook)}/` : '';
+        const stem = LexiFolderPolicy.fileName(note.title || note.id);
+        let rel = `${folderPart}${stem}.md`;
+        let suffix = 1;
+        while (usedPaths.has(rel)) { rel = `${folderPart}${stem}-${suffix++}.md`; }
+        usedPaths.add(rel);
+        const full = `${stagingDir}/${rel}`;
+        const parent = full.substring(0, full.lastIndexOf('/'));
+        if (!fs.accessSync(parent)) { fs.mkdirSync(parent, true); }
+        LexiStorageService.writeTextAtomic(full, LexiFrontmatter.serialize(note));
+      }
+      if (maps.length > 0) {
+        fs.mkdirSync(`${stagingDir}/思维导图`, true);
+        for (const doc of maps) {
+          LexiStorageService.writeTextAtomic(`${stagingDir}/思维导图/${doc.id}.mindmap.json`, JSON.stringify(doc, null, 2));
+        }
+      }
+      if (canvases.length > 0) {
+        fs.mkdirSync(`${stagingDir}/白板`, true);
+        for (const board of canvases) {
+          LexiStorageService.writeTextAtomic(`${stagingDir}/白板/${board.id}.canvas.json`, JSON.stringify(board, null, 2));
+        }
+      }
+      await zlib.compressFile(stagingDir, zipPath, {});
+      const stat = fs.statSync(zipPath);
+      const file = fs.openSync(zipPath, fs.OpenMode.READ_ONLY);
+      const bytes = new ArrayBuffer(stat.size);
+      try { fs.readSync(file.fd, bytes); }
+      finally { fs.closeSync(file); }
+      const fileName = `知萤_工作区归档_${new Date().toISOString().slice(0, 10)}.zip`;
+      return await LexiStorageService.saveBytesViaDocumentPicker(context, fileName, bytes);
+    } finally {
+      LexiStorageService.removeDirRecursive(stagingDir);
+      try { if (fs.accessSync(zipPath)) { fs.unlinkSync(zipPath); } } catch {}
+    }
+  }
+
+  private static copyExtractedTree(srcDir: string, root: string, destDir: string): number {
+    let count = 0;
+    const entries = fs.listFileSync(srcDir, { recursion: false });
+    for (const name of entries) {
+      if (name === '__MACOSX' || name === '.DS_Store' || name.startsWith('._')) { continue; }
+      const srcPath = `${srcDir}/${name}`;
+      const stat = fs.lstatSync(srcPath);
+      if (stat.isSymbolicLink()) { continue; }
+      const targetPath = `${destDir}/${name}`;
+      if (!LexiFolderPolicy.within(root, targetPath)) { throw new Error('压缩包包含越界路径，已拒绝写入'); }
+      if (stat.isDirectory()) {
+        if (!fs.accessSync(targetPath)) { fs.mkdirSync(targetPath, true); }
+        count += LexiStorageService.copyExtractedTree(srcPath, root, targetPath);
+      } else if (stat.isFile()) {
+        const srcFile = fs.openSync(srcPath, fs.OpenMode.READ_ONLY);
+        const buf = new ArrayBuffer(stat.size);
+        try { fs.readSync(srcFile.fd, buf); }
+        finally { fs.closeSync(srcFile); }
+        const dstFile = fs.openSync(targetPath, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+        try { fs.writeSync(dstFile.fd, buf); }
+        finally { fs.closeSync(dstFile); }
+        count++;
+      }
+    }
+    return count;
+  }
+
+  static async importWorkspaceZip(context: common.UIAbilityContext): Promise<string> {
+    const docPicker = new picker.DocumentViewPicker(context);
+    const uris = await docPicker.select({
+      fileSuffixFilters: ['工作区压缩包|.zip'],
+      maxSelectNumber: 1
+    });
+    if (!uris || uris.length === 0) { throw new Error('未选择压缩包'); }
+    const folderUri = await LexiFolderStore.choose(context);
+    if (!folderUri) { throw new Error('未选择目标文件夹'); }
+    const binding = new LexiFolderBinding();
+    binding.folderUri = folderUri;
+    binding.permissionUri = folderUri;
+    const targetRoot = await LexiFolderStore.activate(binding);
+
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+    const localZip = `${context.cacheDir}/zip-import-${stamp}.zip`;
+    const extractDir = `${context.cacheDir}/zip-extract-${stamp}`;
+    fs.mkdirSync(extractDir, true);
+    try {
+      const srcFile = await fs.open(uris[0], fs.OpenMode.READ_ONLY);
+      try {
+        const stat = await fs.stat(srcFile.fd);
+        if (stat.size > 128 * 1024 * 1024) { throw new Error('压缩包大小不能超过 128 MB'); }
+        const buf = new ArrayBuffer(stat.size);
+        await fs.read(srcFile.fd, buf);
+        const dst = fs.openSync(localZip, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+        try { fs.writeSync(dst.fd, buf); }
+        finally { fs.closeSync(dst); }
+      } finally {
+        await fs.close(srcFile);
+      }
+      await zlib.decompressFile(localZip, extractDir);
+      const fileCount = LexiStorageService.copyExtractedTree(extractDir, targetRoot, targetRoot);
+      const folderName = LexiFolderStore.folderName(folderUri);
+      await LexiStorageService.createFolderWorkspace(folderName, folderUri, false, folderUri);
+      return `已解压 ${fileCount} 个文件到「${folderName}」并打开工作区`;
+    } finally {
+      LexiStorageService.removeDirRecursive(extractDir);
+      try { if (fs.accessSync(localZip)) { fs.unlinkSync(localZip); } } catch {}
+    }
+  }
+
+  static async saveBytesViaDocumentPicker(
+    context: common.Context,
+    fileName: string,
+    bytes: ArrayBuffer
+  ): Promise<string> {
+    const docPicker = new picker.DocumentViewPicker(context);
+    const uris = await docPicker.save({ newFileNames: [fileName] });
+    if (!uris || uris.length === 0) {
+      throw new Error('已取消保存');
+    }
+    const targetFile = await fs.open(uris[0], fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+    try {
+      await fs.write(targetFile.fd, bytes);
+    } finally {
+      await fs.close(targetFile);
+    }
+    return uris[0];
   }
 
   static async saveViaDocumentPicker(

@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { LexiSettingsWindow } from '../components/LexiSettingsWindow';
 import { LexiSettingsActions } from '../core/LexiSettingsActions';
 import { PluginRuntimeHost } from '../plugin/runtime/PluginRuntimeHost';
@@ -16,6 +17,7 @@ export function settingsPageBuilder() {
  */
 @Component
 export struct SettingsPage {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiSettingsInitialCategory') private initialCategory: string = 'about';
   @StorageProp('lexiSettingsWorkspaceName') private workspaceName: string = '';
   @StorageProp('lexiSettingsStorageLocation') private storageLocation: string = 'internal';
@@ -23,7 +25,6 @@ export struct SettingsPage {
   @StorageProp('lexiSettingsDefaultTier') private defaultTier: string = 'simple';
   @StorageProp('lexiSettingsBusy') private busy: boolean = false;
   @StorageProp('lexiSettingsDataStatus') private dataStatus: string = '';
-  @StorageProp('lexiSettingsLastBackup') private lastBackup: string = '';
   @StorageProp('lexiPluginRuntimeNeeded') private pluginRuntimeNeeded: boolean = false;
   private pathStack: NavPathStack = new NavPathStack();
 
@@ -39,10 +40,12 @@ export struct SettingsPage {
           defaultTier: this.defaultTier,
           busy: this.busy,
           dataStatus: this.dataStatus,
-          lastBackup: this.lastBackup,
           onSelectTheme: (value: string): void => { LexiSettingsActions.selectTheme(value); },
           onSelectTier: (value: string): void => { LexiSettingsActions.selectTier(value); },
-          onExportBackup: (): void => { LexiSettingsActions.exportBackup(); },
+          onExportSettingsPlugins: (): void => { LexiSettingsActions.exportSettingsPlugins(); },
+          onImportSettingsPlugins: (): void => { LexiSettingsActions.importSettingsPlugins(); },
+          onExportWorkspaceZip: (): void => { LexiSettingsActions.exportWorkspaceZip(); },
+          onImportWorkspaceZip: (): void => { LexiSettingsActions.importWorkspaceZip(); },
           onExportMarkdown: (): void => { LexiSettingsActions.exportMarkdown(); },
           onImportFiles: (): void => { LexiSettingsActions.importFiles(); },
           onRebuildIndex: (): void => { LexiSettingsActions.rebuildIndex(); },
@@ -58,7 +61,7 @@ export struct SettingsPage {
       }.width('100%').height('100%')
     }
     .hideTitleBar(true)
-    .backgroundColor($r('app.color.workspace_page'))
+    .backgroundColor(this.palette.background)
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
     .onReady((context: NavDestinationContext): void => {
       this.pathStack = context.pathStack;

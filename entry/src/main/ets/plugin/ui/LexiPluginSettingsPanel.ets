@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../../core/LexiTheme';
 import { PluginCapability, PluginInstallResult, PluginRecord, PluginState } from '../model/PluginModels';
 import { PluginManager } from '../core/PluginManager';
 
@@ -32,6 +33,7 @@ class PluginRow {
  */
 @Component
 export struct LexiPluginSettingsPanel {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiPluginRevision') @Watch('reload') private pluginRevision: number = 0;
   @StorageProp('lexiAbilityForeground') @Watch('refreshInstalled') private abilityForeground: boolean = true;
   @State private rows: PluginRow[] = [];
@@ -39,6 +41,9 @@ export struct LexiPluginSettingsPanel {
   @State private runtimeLabel: string = '未就绪';
   @State private busy: boolean = false;
   @State private permissionUiRevision: number = 0;
+  // Host-provided surface colours so plugin cards match the surrounding settings cards.
+  @Prop cardBackground: string = '';
+  @Prop insetBackground: string = '';
   private permissionPromptOpen: boolean = false;
 
   aboutToAppear(): void {
@@ -173,8 +178,8 @@ export struct LexiPluginSettingsPanel {
         title: `授予「${row.name}」全部权限？`,
         message: `将允许此插件使用它声明的全部能力：${abilities}。\n\n若包含知识库或编辑器写入能力，插件可以修改、删除笔记或替换编辑器内容。请只为你信任的插件开启。\n\n授权仅适用于此插件。正在运行的插件会重新启动，使权限生效。`,
         buttons: [
-          { text: '取消', color: $r('app.color.text_secondary') },
-          { text: '确认授予', color: $r('app.color.error') }
+          { text: '取消', color: this.palette.text_secondary },
+          { text: '确认授予', color: this.palette.error }
         ]
       });
       confirmed = choice.index === 1;
@@ -200,6 +205,10 @@ export struct LexiPluginSettingsPanel {
     this.reload();
   }
 
+  private cardColor(): string { return this.cardBackground || this.palette.soft_surface; }
+
+  private insetColor(): string { return this.insetBackground || this.palette.surface; }
+
   private rowKey(row: PluginRow): string {
     const grants = row.capabilities.map((capability: PluginCapabilityRow): string => `${capability.name}:${capability.granted}`).join(',');
     return `${row.id}-${row.state}-${row.lastError}-${row.expanded}-${grants}-${this.permissionUiRevision}`;
@@ -221,9 +230,9 @@ export struct LexiPluginSettingsPanel {
       .height(30)
       .padding({ left: 12, right: 12 })
       .fontSize(12)
-      .fontColor($r('app.color.text_primary'))
-      .backgroundColor($r('app.color.soft_surface'))
-      .borderRadius(6)
+      .fontColor(this.palette.text_primary)
+      .backgroundColor(this.insetColor())
+      .borderRadius(15)
       .enabled(enabled && !this.busy)
       .opacity(enabled && !this.busy ? 1 : 0.45)
       .onClick((): void => { action(); })
@@ -233,11 +242,11 @@ export struct LexiPluginSettingsPanel {
   private capabilityRow(row: PluginRow, capability: PluginCapabilityRow) {
     Row({ space: 8 }) {
       Toggle({ type: ToggleType.Switch, isOn: capability.granted })
-        .selectedColor($r('app.color.brand'))
+        .selectedColor(this.palette.brand)
         .onChange((): void => { this.toggleCapability(row, capability); })
       Text(capability.label)
         .fontSize(12)
-        .fontColor(capability.granted ? $r('app.color.text_primary') : $r('app.color.text_secondary'))
+        .fontColor(capability.granted ? this.palette.text_primary : this.palette.text_secondary)
         .layoutWeight(1)
     }
     .width('100%')
@@ -251,38 +260,38 @@ export struct LexiPluginSettingsPanel {
       Row({ space: 10 }) {
         Text(row.stateLabel)
           .fontSize(11)
-          .fontColor(row.enabled ? $r('app.color.success') : (row.state === PluginState.FAILED && !row.permissionReady
-            ? $r('app.color.error') : $r('app.color.text_secondary')))
+          .fontColor(row.enabled ? this.palette.success : (row.state === PluginState.FAILED && !row.permissionReady
+            ? this.palette.error : this.palette.text_secondary))
           .padding({ left: 8, right: 8, top: 3, bottom: 3 })
-          .backgroundColor($r('app.color.surface'))
+          .backgroundColor(this.insetColor())
           .borderRadius(10)
           .constraintSize({ minWidth: 52 })
           .textAlign(TextAlign.Center)
         Column({ space: 2 }) {
-          Text(row.name).fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+          Text(row.name).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.palette.text_primary)
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
           Text(`${row.id} · v${row.version} · ${row.kindLabel}`)
-            .fontSize(11).fontColor($r('app.color.text_secondary'))
+            .fontSize(11).fontColor(this.palette.text_secondary)
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
       }.width('100%')
 
       Row({ space: 12 }) {
         Toggle({ type: ToggleType.Switch, isOn: row.allGranted })
-          .id(`plugin-all-permissions-${row.id}`).selectedColor($r('app.color.brand'))
+          .id(`plugin-all-permissions-${row.id}`).selectedColor(this.palette.brand)
           .enabled(!this.busy && row.capabilities.length > 0 && (row.canEnable || row.enabled))
           .accessibilityText(`${row.name}：授予全部权限`)
           .onChange((allow: boolean): void => { this.toggleAllPermissions(row, allow); })
         Column({ space: 3 }) {
-          Text('授予全部权限').fontSize(12).fontColor($r('app.color.text_primary'))
+          Text('授予全部权限').fontSize(12).fontColor(this.palette.text_primary)
           Text('仅对当前插件生效；关闭将撤回全部权限并停用。')
-            .fontSize(11).fontColor($r('app.color.text_secondary')).width('100%')
+            .fontSize(11).fontColor(this.palette.text_secondary).width('100%')
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
       }.width('100%').padding({ top: 8, bottom: 8 })
 
       if (row.lastError.length > 0) {
         Text(row.permissionReady ? '权限已授予，点击启用重新加载插件。' : row.lastError).fontSize(11)
-          .fontColor(row.permissionReady ? $r('app.color.text_secondary') : $r('app.color.error'))
+          .fontColor(row.permissionReady ? this.palette.text_secondary : this.palette.error)
           .width('100%').maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis })
       }
 
@@ -303,20 +312,20 @@ export struct LexiPluginSettingsPanel {
       if (row.expanded) {
         Column({ space: 2 }) {
           Text('能力授权（取消勾选立即生效）')
-            .fontSize(11).fontColor($r('app.color.text_secondary')).width('100%')
+            .fontSize(11).fontColor(this.palette.text_secondary).width('100%')
           ForEach(row.capabilities, (capability: PluginCapabilityRow) => {
             this.capabilityRow(row, capability)
           }, (capability: PluginCapabilityRow): string => `${row.id}-${capability.name}`)
           if (row.capabilities.length === 0) {
-            Text('该插件未声明任何能力').fontSize(11).fontColor($r('app.color.text_secondary')).width('100%')
+            Text('该插件未声明任何能力').fontSize(11).fontColor(this.palette.text_secondary).width('100%')
           }
           Text('诊断日志')
-            .fontSize(11).fontColor($r('app.color.text_secondary')).width('100%').margin({ top: 8 })
+            .fontSize(11).fontColor(this.palette.text_secondary).width('100%').margin({ top: 8 })
           if (row.diagnostics.length === 0) {
-            Text('暂无日志').fontSize(11).fontColor($r('app.color.text_secondary')).width('100%')
+            Text('暂无日志').fontSize(11).fontColor(this.palette.text_secondary).width('100%')
           } else {
             ForEach(row.diagnostics, (line: string, index: number) => {
-              Text(line).fontSize(10).fontColor($r('app.color.text_secondary'))
+              Text(line).fontSize(10).fontColor(this.palette.text_secondary)
                 .width('100%').maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
             }, (line: string, index: number): string => `${row.id}-log-${index}`)
           }
@@ -324,26 +333,26 @@ export struct LexiPluginSettingsPanel {
       }
     }
     .width('100%')
-    .padding(12)
-    .borderRadius(10)
-    .backgroundColor($r('app.color.soft_surface'))
+    .padding(14)
+    .borderRadius(14)
+    .backgroundColor(this.cardColor())
     .alignItems(HorizontalAlign.Start)
   }
 
   build() {
     Column({ space: 12 }) {
-      Text('插件').fontSize(18).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+      Text('插件').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.palette.text_primary)
         .width('100%')
       Text('兼容 LexiNote 协议和 Obsidian 协议。')
-        .id('plugin-protocol-support').fontSize(13).fontColor($r('app.color.text_primary')).width('100%')
+        .id('plugin-protocol-support').fontSize(13).fontColor(this.palette.text_primary).width('100%')
       Text('已安装插件在所有工作区中可见，启用和停用状态由各工作区独立保存。')
-        .id('plugin-workspace-policy').fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
+        .id('plugin-workspace-policy').fontSize(12).fontColor(this.palette.text_secondary).width('100%')
       Text('实验性插件支持：仅安装你自己编写或已审查的插件。Obsidian 兼容层只覆盖已测试的 API 子集，未实现的能力会返回明确错误。')
-        .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
+        .fontSize(12).fontColor(this.palette.text_secondary).width('100%')
 
       Row({ space: 8 }) {
-        Text(`运行时：${this.runtimeLabel}`).fontSize(12).fontColor($r('app.color.text_secondary'))
-        Text(`已安装 ${this.rows.length} 个`).fontSize(12).fontColor($r('app.color.text_secondary'))
+        Text(`运行时：${this.runtimeLabel}`).fontSize(12).fontColor(this.palette.text_secondary)
+        Text(`已安装 ${this.rows.length} 个`).fontSize(12).fontColor(this.palette.text_secondary)
         Blank()
         this.actionButton('从本地安装 ZIP…', true, () => {
           this.run(async (): Promise<void> => {
@@ -355,14 +364,14 @@ export struct LexiPluginSettingsPanel {
 
       if (this.status.length > 0) {
         Text(this.status)
-          .fontSize(11).fontColor($r('app.color.warning'))
+          .fontSize(11).fontColor(this.palette.warning)
           .width('100%').maxLines(4)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
       }
 
       if (this.rows.length === 0) {
         Text('尚未安装插件。请自行下载插件，再通过「从本地安装 ZIP…」导入。')
-          .fontSize(13).fontColor($r('app.color.text_secondary')).width('100%').padding({ top: 12 })
+          .fontSize(13).fontColor(this.palette.text_secondary).width('100%').padding({ top: 12 })
       } else {
         ForEach(this.rows, (row: PluginRow) => {
           this.pluginCard(row)
@@ -372,10 +381,10 @@ export struct LexiPluginSettingsPanel {
       if (this.rows.some((row: PluginRow): boolean => row.capabilities.some((capability: PluginCapabilityRow): boolean =>
         capability.name === PluginCapability.AI_INFERENCE))) {
         Text('模型能力说明：插件只提交消息与工具定义，HTTP 请求、API Key 与超时都由知萤宿主管理；插件仍然拿不到网络，也读不回 Key。只为你信任的插件开启。')
-          .fontSize(11).fontColor($r('app.color.text_secondary')).width('100%').margin({ top: 8 })
+          .fontSize(11).fontColor(this.palette.text_secondary).width('100%').margin({ top: 8 })
       }
       Text('安全说明：插件只能通过受控 RPC 访问当前授权的知识库；不支持 Node.js/Electron 模块、绝对路径或网络能力。禁用插件会立即释放其事件、命令与运行时资源。')
-        .fontSize(11).fontColor($r('app.color.text_secondary')).width('100%').margin({ top: 8 })
+        .fontSize(11).fontColor(this.palette.text_secondary).width('100%').margin({ top: 8 })
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)

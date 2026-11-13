@@ -24,6 +24,7 @@ import { PluginPermissionService } from './PluginPermissionService';
 import { PluginRegistry } from './PluginRegistry';
 import { PluginResourceTracker } from './PluginResourceTracker';
 import { PluginInstallService } from '../runtime/PluginInstallService';
+import { PluginAiService } from '../ai/PluginAiService';
 import { PluginRpcDispatcher, PluginHostUi, PluginSession } from '../runtime/PluginRpcDispatcher';
 import { PluginRuntimeController } from '../runtime/PluginRuntimeHost';
 import { PluginRuntimeState } from '../runtime/PluginRuntimeMessages';
@@ -250,6 +251,11 @@ export class PluginManager {
       boot.stylesCss = PluginInstallService.readFileText(`${record.directory}/styles.css`);
     } catch (error) { boot.stylesCss = ''; }
     boot.dataJson = await PluginDataStore.snapshot(record.id, session.vaultId);
+    if (record.id === 'lexinote.harness') {
+      // Legacy 1.4 stored provider keys here. Keep them out of the page's boot mirror; the
+      // plugin reads the record through the storage RPC and migrates it on activation.
+      boot.dataJson = PluginAiService.stripLegacyProviderData(boot.dataJson);
+    }
     boot.settingsJson = await PluginDataStore.get(record.id, 'plugin-data', session.vaultId);
     if (boot.settingsJson.length === 0) { boot.settingsJson = 'null'; }
     try {
@@ -440,6 +446,12 @@ export class PluginManager {
     PluginCommandRegistry.unregisterPlugin(pluginId);
     PluginResourceTracker.releaseAll(pluginId);
     await PluginPermissionService.clearAll(pluginId);
+    // A credential outlives the plugin that wrote it unless this host clears it. Do that
+    // even when the user keeps other settings: an uninstalled plugin must not leave a key
+    // that a later plugin could spend.
+    try { await PluginAiService.clear(pluginId); } catch (error) {
+      PluginManager.note(pluginId, `模型密钥清理失败：${PluginErrors.messageOf(error)}`);
+    }
     if (!keepData) { await PluginDataStore.clear(pluginId); }
     PluginManager.diagnostics.delete(pluginId);
     PluginManager.note(pluginId, keepData ? '已卸载（保留插件设置）' : '已卸载');

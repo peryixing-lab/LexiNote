@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { LexiI18n } from '../core/LexiI18n';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { NoteItem } from '../core/LexiModels';
@@ -8,6 +9,7 @@ import { LexiIcon } from './LexiIcon';
 
 @Component
 export struct LexiFilterChip {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @Prop selected: boolean = false;
   @Prop label: string = '';
   action: () => void = () => {};
@@ -18,8 +20,8 @@ export struct LexiFilterChip {
       .padding({ left: 15, right: 15 })
       .fontSize(12)
       .borderRadius(13)
-      .backgroundColor(this.selected ? $r('app.color.brand') : $r('app.color.surface'))
-      .fontColor(this.selected ? $r('app.color.inverse_text') : $r('app.color.text_secondary'))
+      .backgroundColor(this.selected ? this.palette.brand : this.palette.surface)
+      .fontColor(this.selected ? this.palette.inverse_text : this.palette.text_secondary)
       .accessibilitySelected(this.selected)
       .onClick(() => {
         this.action();
@@ -29,6 +31,7 @@ export struct LexiFilterChip {
 
 @Component
 export struct LexiHeroHeading {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @Prop headingId: string = '';
   @Prop title: string = '';
   @Prop subtitle: string = '';
@@ -40,12 +43,12 @@ export struct LexiHeroHeading {
       Text(this.title)
         .fontSize(this.isWide ? 30 : 26)
         .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_primary'))
+        .fontColor(this.palette.text_primary)
       if (this.subtitle.length > 0) {
         Text(this.subtitle)
           .fontSize(13)
           .lineHeight(20)
-          .fontColor($r('app.color.text_secondary'))
+          .fontColor(this.palette.text_secondary)
       }
     }
     .id(this.headingId)
@@ -59,6 +62,7 @@ export struct LexiHeroHeading {
 
 @Component
 export struct LexiNoteCard {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiLanguage') private interfaceLanguage: string = LexiI18n.language();
 
   private tr(source: string, args: string[] = []): string {
@@ -129,14 +133,14 @@ export struct LexiNoteCard {
         Text(this.typeLabel(this.note.noteType))
           .fontSize(11)
           .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.brand'))
+          .fontColor(this.palette.brand)
           .padding({ left: 8, right: 8, top: 3, bottom: 3 })
-          .backgroundColor($r('app.color.brand_soft'))
+          .backgroundColor(this.palette.brand_soft)
           .borderRadius(8)
 
         Text(this.note.notebook)
           .fontSize(11)
-          .fontColor($r('app.color.text_secondary'))
+          .fontColor(this.palette.text_secondary)
           .maxLines(1)
 
         Blank()
@@ -149,7 +153,7 @@ export struct LexiNoteCard {
         }
         Text(this.dateLabel(this.note.updatedAt))
           .fontSize(11)
-          .fontColor($r('app.color.text_secondary'))
+          .fontColor(this.palette.text_secondary)
 
         if (deviceInfo.deviceType === 'tablet' && this.note.trashedAt === 0) { Blank().width(28); } else {
         Button('⋯', { buttonStyle: ButtonStyleMode.TEXTUAL })
@@ -157,7 +161,7 @@ export struct LexiNoteCard {
           .height(26)
           .padding(0)
           .fontSize(14)
-          .fontColor($r('app.color.text_secondary'))
+          .fontColor(this.palette.text_secondary)
           .bindMenu(this.buildMenu())
         }
       }
@@ -166,7 +170,7 @@ export struct LexiNoteCard {
       Text(MarkdownEngine.displayTitle(this.note))
         .fontSize(16)
         .fontWeight(FontWeight.Bold)
-        .fontColor($r('app.color.text_primary'))
+        .fontColor(this.palette.text_primary)
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .width('100%')
@@ -177,14 +181,14 @@ export struct LexiNoteCard {
             .fontWeight(span.kind === 'bold' ? FontWeight.Bold : FontWeight.Regular)
             .fontStyle(span.kind === 'italic' ? FontStyle.Italic : FontStyle.Normal)
             .fontFamily(span.kind === 'code' ? 'monospace' : 'HarmonyOS Sans')
-            .fontColor(span.kind === 'link' || span.kind === 'url' ? $r('app.color.brand_ink') : $r('app.color.text_secondary'))
-            .textBackgroundStyle({ color: span.kind === 'highlight' ? $r('app.color.brand_soft') : Color.Transparent, radius: 3 })
+            .fontColor(span.kind === 'link' || span.kind === 'url' ? this.palette.brand_ink : this.palette.text_secondary)
+            .textBackgroundStyle({ color: span.kind === 'highlight' ? this.palette.brand_soft : Color.Transparent, radius: 3 })
             .decoration({ type: span.kind === 'strike' ? TextDecorationType.LineThrough : TextDecorationType.None })
         }, (span: LexiMarkdownInlineSpan): string => span.id)
       }
         .fontSize(14)
         .lineHeight(22)
-        .fontColor($r('app.color.text_secondary'))
+        .fontColor(this.palette.text_secondary)
         .maxLines(2)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .width('100%')
@@ -195,9 +199,9 @@ export struct LexiNoteCard {
           (tag: string) => {
             Text(`#${tag}`)
               .fontSize(11)
-              .fontColor($r('app.color.brand_ink'))
+              .fontColor(this.palette.brand_ink)
               .padding({ left: 8, right: 8, top: 3, bottom: 3 })
-              .backgroundColor($r('app.color.soft_surface'))
+              .backgroundColor(this.palette.soft_surface)
               .borderRadius(7)
               .onClick(() => {
                 this.onFilterTag(tag);
@@ -211,7 +215,7 @@ export struct LexiNoteCard {
         if (this.outgoingCount > 0 || this.backlinkCount > 0) {
           Text(this.tr('🔗 {0} 出 · {1} 反', [this.outgoingCount.toString(), this.backlinkCount.toString()]))
             .fontSize(11)
-            .fontColor($r('app.color.brand'))
+            .fontColor(this.palette.brand)
         }
       }
       .width('100%')
@@ -223,8 +227,8 @@ export struct LexiNoteCard {
             .height(34)
             .fontSize(12)
             .borderRadius(10)
-            .backgroundColor($r('app.color.brand_soft'))
-            .fontColor($r('app.color.brand'))
+            .backgroundColor(this.palette.brand_soft)
+            .fontColor(this.palette.brand)
             .onClick(() => {
               this.onRestore(this.note);
             })
@@ -233,8 +237,8 @@ export struct LexiNoteCard {
             .height(34)
             .fontSize(12)
             .borderRadius(10)
-            .backgroundColor($r('app.color.soft_surface'))
-            .fontColor($r('app.color.error'))
+            .backgroundColor(this.palette.soft_surface)
+            .fontColor(this.palette.error)
             .onClick(() => {
               this.onDeleteForever(this.note);
             })
@@ -244,7 +248,7 @@ export struct LexiNoteCard {
     }
     .width('100%')
     .padding(16)
-    .backgroundColor($r('app.color.surface'))
+    .backgroundColor(this.palette.surface)
     .borderRadius(20)
     .alignItems(HorizontalAlign.Start)
     .onClick(() => {

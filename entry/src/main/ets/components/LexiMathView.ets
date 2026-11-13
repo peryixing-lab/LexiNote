@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { common } from '@kit.AbilityKit';
 import { LexiMarkdownInlineSpan, MarkdownEngine } from '../core/MarkdownEngine';
 import { LexiMathBitmapCache, LexiMathBitmapResult } from '../core/LexiMathBitmapCache';
@@ -11,6 +12,7 @@ class LexiMathVisualSpan {
 /** Renders native text and cached formula bitmaps; the shared renderer runs separately. */
 @Component
 export struct LexiMathView {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @Prop @Watch('refreshMath') sourceText: string = '';
   @Prop @Watch('refreshMath') displayMode: boolean = false;
   @Prop textSize: number = 16;
@@ -122,10 +124,10 @@ export struct LexiMathView {
                 .fontWeight(this.strong || item.segment.kind === 'bold' ? FontWeight.Bold : FontWeight.Regular)
                 .fontStyle(item.segment.kind === 'italic' ? FontStyle.Italic : FontStyle.Normal)
                 .fontFamily(item.segment.kind === 'code' ? 'monospace' : 'HarmonyOS Sans')
-                .fontColor(item.segment.kind === 'link' || item.segment.kind === 'url' ? $r('app.color.brand_ink') :
-                  (this.muted || this.checked ? $r('app.color.text_secondary') : $r('app.color.text_primary')))
-                .textBackgroundStyle({ color: item.segment.kind === 'highlight' ? $r('app.color.brand_soft') :
-                  item.segment.kind === 'code' ? $r('app.color.soft_surface') : Color.Transparent, radius: 3 })
+                .fontColor(item.segment.kind === 'link' || item.segment.kind === 'url' ? this.palette.brand_ink :
+                  (this.muted || this.checked ? this.palette.text_secondary : this.palette.text_primary))
+                .textBackgroundStyle({ color: item.segment.kind === 'highlight' ? this.palette.brand_soft :
+                  item.segment.kind === 'code' ? this.palette.soft_surface : Color.Transparent, radius: 3 })
                 .decoration({ type: item.segment.kind === 'strike' || this.checked ? TextDecorationType.LineThrough :
                   item.segment.kind === 'link' || item.segment.kind === 'url' ? TextDecorationType.Underline : TextDecorationType.None })
                 .onClick((): void => { this.activate(item.segment); })

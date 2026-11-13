@@ -640,6 +640,9 @@ function createContext(options) {
       assertActive();
       const source = isPlainObject(options) ? options : {};
       const params = {};
+      if (typeof source.action === 'string') { params.action = source.action; }
+      if (typeof source.profileId === 'string') { params.profileId = source.profileId; }
+      if (typeof source.name === 'string') { params.name = source.name; }
       if (typeof source.provider === 'string') { params.provider = source.provider; }
       if (typeof source.baseUrl === 'string') { params.baseUrl = source.baseUrl; }
       if (typeof source.model === 'string') { params.model = source.model; }
@@ -650,6 +653,8 @@ function createContext(options) {
       if (typeof source.temperature === 'number' && isFinite(source.temperature)) {
         params.temperature = source.temperature;
       }
+      if (source.select === false) { params.select = false; }
+      if (source.remove === true) { params.remove = true; }
       if (source.clear === true) { params.clear = true; }
       return rpc('ai.configure', params, 30000);
     },

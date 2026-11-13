@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { LexiHotkeySettings } from '../core/LexiHotkeySettings';
 import { LexiHotkeyRecorder } from '../core/LexiHotkeyRecorder';
 import { LexiShortcutRouter } from '../core/LexiShortcutRouter';
@@ -65,6 +66,7 @@ import {
 @Entry
 @Component
 struct Index {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiLanguage') private interfaceLanguage: string = LexiI18n.language();
 
   private tr(source: string, args: string[] = []): string {
@@ -153,7 +155,6 @@ struct Index {
   @StorageLink('lexiSettingsDefaultTier') defaultTier: string = 'simple';
   @StorageLink('lexiSettingsBusy') busy: boolean = false;
   @StorageLink('lexiSettingsDataStatus') dataStatus: string = '';
-  @StorageLink('lexiSettingsLastBackup') lastBackup: string = '';
 
   private fullGraph: GraphData = new GraphData();
   private graphBuildSequence: number = 0;
@@ -166,23 +167,29 @@ struct Index {
   private tabsController: TabsController = new TabsController();
   private readonly titleBarHeight: number = 56;
   // Native scroll masks use this token; match the page instead of the default gray/black tint.
-  private readonly titleTheme: CustomTheme = {
-    colors: { compBackgroundGray: $r('app.color.background') }
-  };
-  private titleActiveChipMaterial: uiMaterial.ImmersiveMaterial = new uiMaterial.ImmersiveMaterial({
-    style: uiMaterial.ImmersiveStyle.ULTRA_THIN,
-    materialColor: $r('app.color.title_chip_active'),
-    interactive: true,
-    applyShadow: true,
-    lightEffect: { color: $r('app.color.dock_light') }
-  });
-  private dockMaterial: uiMaterial.ImmersiveMaterial = new uiMaterial.ImmersiveMaterial({
-    style: uiMaterial.ImmersiveStyle.THIN,
-    materialColor: $r('app.color.dock_surface'),
-    interactive: true,
-    applyShadow: true,
-    lightEffect: { color: $r('app.color.dock_light') }
-  });
+  private titleTheme(): CustomTheme {
+    return {
+      colors: { compBackgroundGray: this.palette.background }
+    };
+  }
+  private titleActiveChipMaterial(): uiMaterial.ImmersiveMaterial {
+    return new uiMaterial.ImmersiveMaterial({
+      style: uiMaterial.ImmersiveStyle.ULTRA_THIN,
+      materialColor: this.palette.title_chip_active,
+      interactive: true,
+      applyShadow: true,
+      lightEffect: { color: this.palette.dock_light }
+    });
+  }
+  private dockMaterial(): uiMaterial.ImmersiveMaterial {
+    return new uiMaterial.ImmersiveMaterial({
+      style: uiMaterial.ImmersiveStyle.THIN,
+      materialColor: this.palette.dock_surface,
+      interactive: true,
+      applyShadow: true,
+      lightEffect: { color: this.palette.dock_light }
+    });
+  }
   private readonly tabSpring: curves.ICurve = curves.springMotion(0.30, 0.82);
   private pathStack: NavPathStack = new NavPathStack();
   private readonly motionListener: (enabled: boolean) => void = (enabled: boolean): void => {
@@ -222,7 +229,10 @@ struct Index {
   private bindSettingsActions(): void {
     LexiSettingsActions.selectTheme = (value: string): void => { this.setTheme(value); };
     LexiSettingsActions.selectTier = (value: string): void => { this.setDefaultTier(value); };
-    LexiSettingsActions.exportBackup = (): void => { this.exportBackup(); };
+    LexiSettingsActions.exportSettingsPlugins = (): void => { this.exportSettingsPlugins(); };
+    LexiSettingsActions.importSettingsPlugins = (): void => { this.importSettingsPlugins(); };
+    LexiSettingsActions.exportWorkspaceZip = (): void => { this.exportWorkspaceZip(); };
+    LexiSettingsActions.importWorkspaceZip = (): void => { this.importWorkspaceZip(); };
     LexiSettingsActions.exportMarkdown = (): void => { this.exportMarkdown(); };
     LexiSettingsActions.importFiles = (): void => { this.importFiles(); };
     LexiSettingsActions.rebuildIndex = (): void => { this.rebuildIndex(); };
@@ -287,8 +297,8 @@ struct Index {
         message: this.tr('笔记目前保存在应用内部。你可以授权文档目录，方便在文件管理器中访问和备份；不授权也能继续使用。') +
           '\n\n' + this.tr('可随时在“设置 → 关于”中重新授权文档目录。') +
           (LexiFolderStore.canChooseStorageFolder() ? '' : '\n' + this.tr('此设备使用系统提供的应用文档目录，无需手动选择文件夹。')),
-        buttons: [{ text: this.tr('继续内部保存'), color: $r('app.color.text_secondary') },
-          { text: this.tr('授权文档目录'), color: $r('app.color.brand') }]
+        buttons: [{ text: this.tr('继续内部保存'), color: this.palette.text_secondary },
+          { text: this.tr('授权文档目录'), color: this.palette.brand }]
       });
       if (choice.index === 1) { await this.authorizeStorageFolder(); }
       else { this.toast(this.tr('将继续保存在应用内部；可在“设置 → 关于”中重新授权，卸载应用前请导出备份。')); }
@@ -625,7 +635,6 @@ struct Index {
     this.theme = await LexiStorageService.getSetting('theme', 'system');
     this.applyTheme(this.theme);
     this.defaultTier = await LexiStorageService.getSetting('defaultTier', 'simple');
-    this.lastBackup = await LexiStorageService.getSetting('lastBackup', '');
     this.graphShowTags = await LexiStorageService.getSetting('graphShowTags', 'false') === 'true';
     this.viewMode = await LexiStorageService.getSetting('vaultViewMode', 'list');
     this.storageLocation = await LexiStorageService.storageLocationStatus();
@@ -867,7 +876,7 @@ struct Index {
       this.toast('已添加到独立模板库，可从模板入口编辑和复用');
     } else if (['light', 'dark', 'system'].includes(command)) { await this.setTheme(command); }
     else if (command === 'export-md') { await this.exportMarkdown(); }
-    else if (command === 'backup') { await this.exportBackup(); }
+    else if (command === 'backup') { await this.exportWorkspaceZip(); }
     else if (command === 'import') { await this.importFiles(); }
   }
 
@@ -1145,7 +1154,7 @@ struct Index {
     const choice = await this.getUIContext().getPromptAction().showDialog({
       title: '永久删除这篇笔记？',
       message: `「${MarkdownEngine.displayTitle(note)}」的 Markdown 文件将被移除，指向它的 [[链接]] 会显示为未解析。此操作无法撤销。`,
-      buttons: [{ text: '取消', color: $r('app.color.text_secondary') }, { text: '永久删除', color: $r('app.color.error') }]
+      buttons: [{ text: '取消', color: this.palette.text_secondary }, { text: '永久删除', color: this.palette.error }]
     });
     if (choice.index !== 1) { return; }
     try { await LexiStorageService.deleteNotePermanently(note.id); await this.refresh(); this.toast('已永久删除'); }
@@ -1157,7 +1166,7 @@ struct Index {
     const choice = await this.getUIContext().getPromptAction().showDialog({
       title: '清空回收站？',
       message: `${trashed.length} 篇笔记将被永久删除，此操作无法撤销。`,
-      buttons: [{ text: '取消', color: $r('app.color.text_secondary') }, { text: '清空', color: $r('app.color.error') }]
+      buttons: [{ text: '取消', color: this.palette.text_secondary }, { text: '清空', color: this.palette.error }]
     });
     if (choice.index !== 1) { return; }
     try {
@@ -1220,17 +1229,48 @@ struct Index {
       this.applyGraphScope();
     }
   }
-  private async exportBackup(): Promise<void> {
+  private async exportSettingsPlugins(): Promise<void> {
     this.busy = true;
-    this.dataStatus = '正在打包笔记、导图与白板…';
     try {
-      await LexiStorageService.exportFullBackup(this.context());
-      this.lastBackup = `${new Date().toLocaleString()} · ${this.activeNotes().length} 篇笔记`;
-      await LexiStorageService.setSetting('lastBackup', this.lastBackup);
-      this.dataStatus = '完整备份已导出，同时在本机保留一份副本。';
-      this.toast('完整备份已导出');
+      await LexiStorageService.exportSettingsAndPlugins(this.context());
+      this.dataStatus = '设置与插件合集已导出为 JSON。';
+      this.toast('设置与插件已导出');
     } catch (error) {
-      this.dataStatus = (error as Error).message || '备份未完成';
+      this.dataStatus = (error as Error).message || '导出未完成';
+    } finally { this.busy = false; this.storageAccessChanged(); }
+  }
+  private async importSettingsPlugins(): Promise<void> {
+    this.busy = true;
+    try {
+      const msg = await LexiStorageService.importSettingsAndPlugins(this.context());
+      await this.refresh();
+      this.dataStatus = msg;
+      this.toast(msg);
+    } catch (error) {
+      this.dataStatus = (error as Error).message || '导入未完成';
+    } finally { this.busy = false; this.storageAccessChanged(); }
+  }
+  private async exportWorkspaceZip(): Promise<void> {
+    this.busy = true;
+    this.dataStatus = '正在打包工作区 Markdown、思维导图与白板…';
+    try {
+      await LexiStorageService.exportWorkspaceZip(this.context(), this.activeVaultId);
+      this.dataStatus = `「${this.activeVaultName()}」已导出为 ZIP 压缩包。`;
+      this.toast('工作区压缩包已导出');
+    } catch (error) {
+      this.dataStatus = (error as Error).message || '压缩导出未完成';
+    } finally { this.busy = false; this.storageAccessChanged(); }
+  }
+  private async importWorkspaceZip(): Promise<void> {
+    this.busy = true;
+    this.dataStatus = '正在解析压缩包并保存到所选文件夹…';
+    try {
+      const msg = await LexiStorageService.importWorkspaceZip(this.context() as common.UIAbilityContext);
+      await this.refresh();
+      this.dataStatus = msg;
+      this.toast(msg);
+    } catch (error) {
+      this.dataStatus = (error as Error).message || '压缩包导入未完成';
     } finally { this.busy = false; this.storageAccessChanged(); }
   }
   private async exportMarkdown(): Promise<void> {
@@ -1247,7 +1287,7 @@ struct Index {
     const choice = await this.getUIContext().getPromptAction().showDialog({
       title: '导入笔记或恢复备份',
       message: '支持 .md / .txt 笔记、原生导图 JSON，以及知萤完整备份。完整备份将替换当前全部知识库内容，导入前建议先导出一次备份。',
-      buttons: [{ text: '取消', color: $r('app.color.text_secondary') }, { text: '选择文件', color: $r('app.color.brand') }]
+      buttons: [{ text: '取消', color: this.palette.text_secondary }, { text: '选择文件', color: this.palette.brand }]
     });
     if (choice.index !== 1) { return; }
     this.busy = true;
@@ -1271,7 +1311,7 @@ struct Index {
     finally { this.busy = false; this.storageAccessChanged(); }
   }
   private information(title: string, message: string): void {
-    this.getUIContext().getPromptAction().showDialog({ title: title, message: message, buttons: [{ text: '知道了', color: $r('app.color.brand') }] });
+    this.getUIContext().getPromptAction().showDialog({ title: title, message: message, buttons: [{ text: '知道了', color: this.palette.brand }] });
   }
   private createMenu(): MenuElement[] {
     return [
@@ -1288,7 +1328,7 @@ struct Index {
       Text(label)
         .fontSize(10)
         .fontWeight(this.activeTab === index ? FontWeight.Bold : FontWeight.Medium)
-        .fontColor(this.activeTab === index ? $r('app.color.brand') : $r('app.color.text_secondary'))
+        .fontColor(this.activeTab === index ? this.palette.brand : this.palette.text_secondary)
     }
     .id(`primary-tab-${index}`)
     .width('100%')
@@ -1319,7 +1359,7 @@ struct Index {
             Text(this.titleCollapsed[index] ? this.tabTitle(index) : 'LexiNote')
               .fontSize(this.titleCollapsed[index] ? 20 : 23)
               .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.text_primary'))
+              .fontColor(this.palette.text_primary)
               .maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
               .animation({ duration: 150, curve: Curve.EaseOut })
@@ -1335,8 +1375,8 @@ struct Index {
         .width(40)
         .height(40)
         .padding(0)
-        .backgroundColor(this.immersiveSupported ? Color.Transparent : $r('app.color.brand_soft'))
-        .systemMaterial(this.immersiveSupported ? this.titleActiveChipMaterial : undefined)
+        .backgroundColor(this.immersiveSupported ? Color.Transparent : this.palette.brand_soft)
+        .systemMaterial(this.immersiveSupported ? this.titleActiveChipMaterial() : undefined)
         .accessibilityText(this.tr('新建内容'))
         .bindMenu(this.createMenu())
       }
@@ -1353,7 +1393,7 @@ struct Index {
 
   @Builder
   tabScrollPage(index: number) {
-    WithTheme({ theme: this.titleTheme }) {
+    WithTheme({ theme: this.titleTheme() }) {
       // Give each tab its own native title bar so inactive scrollers cannot retain its blur state.
       Navigation() {
         Scroll(this.tabScrollers[index]) {
@@ -1547,7 +1587,7 @@ struct Index {
             })
           }
       }.width('100%').constraintSize({ maxWidth: 1160 }).padding({ top: 32, bottom: 32 })
-    }.width('100%').height('100%').align(Alignment.Top).backgroundColor($r('app.color.workspace_page'))
+    }.width('100%').height('100%').align(Alignment.Top).backgroundColor(this.palette.workspace_page)
   }
 
   @Builder
@@ -1600,10 +1640,12 @@ struct Index {
       defaultTier: this.defaultTier,
       busy: this.busy,
       dataStatus: this.dataStatus,
-      lastBackup: this.lastBackup,
       onSelectTheme: (theme: string): void => { this.setTheme(theme); },
       onSelectTier: (tier: string): void => { this.setDefaultTier(tier); },
-      onExportBackup: (): void => { this.exportBackup(); },
+      onExportSettingsPlugins: (): void => { this.exportSettingsPlugins(); },
+      onImportSettingsPlugins: (): void => { this.importSettingsPlugins(); },
+      onExportWorkspaceZip: (): void => { this.exportWorkspaceZip(); },
+      onImportWorkspaceZip: (): void => { this.importWorkspaceZip(); },
       onExportMarkdown: (): void => { this.exportMarkdown(); },
       onImportFiles: (): void => { this.importFiles(); },
       onRebuildIndex: (): void => { this.rebuildIndex(); },
@@ -1675,14 +1717,14 @@ struct Index {
           }
           .barHeight(this.wide() ? 0 : 62)
           .barOverlap(!this.wide())
-          .barBackgroundColor(this.wide() || this.immersiveSupported ? Color.Transparent : $r('app.color.dock_fallback'))
+          .barBackgroundColor(this.wide() || this.immersiveSupported ? Color.Transparent : this.palette.dock_fallback)
           .barFloatingStyle(
             !this.wide()
               ? {
                   barBottomMargin: this.bottomInset,
                   barSideMargin: 24,
                   maskColor: Color.Transparent,
-                  systemMaterial: this.immersiveSupported ? this.dockMaterial : undefined
+                  systemMaterial: this.immersiveSupported ? this.dockMaterial() : undefined
                 }
               : undefined
           )
@@ -1713,7 +1755,7 @@ struct Index {
           dragBar: false,
           showClose: false,
           radius: LengthMetrics.vp(12),
-          backgroundColor: $r('app.color.workspace_page'),
+          backgroundColor: this.palette.workspace_page,
           onDisappear: (): void => { LexiHotkeyRecorder.cancel(); this.storageAccessChanged(); }
         })
       Column().width(0).height(0)
@@ -1724,17 +1766,17 @@ struct Index {
           dragBar: false,
           showClose: false,
           radius: LengthMetrics.vp(16),
-          backgroundColor: $r('app.color.workspace_page')
+          backgroundColor: this.palette.workspace_page
         })
       Column().width(0).height(0)
         .bindSheet($$this.showPluginWindow, this.pluginSheet, {
           height: SheetSize.LARGE, width: '100%',
           preferType: SheetType.BOTTOM,
           radius: LengthMetrics.vp(28), shadow: ShadowStyle.OUTER_DEFAULT_LG,
-          borderWidth: 0.5, borderColor: $r('app.color.workspace_line'),
+          borderWidth: 0.5, borderColor: this.palette.workspace_line,
           dragBar: true, showClose: true, title: { title: this.tr('插件') },
           keyboardAvoidMode: SheetKeyboardAvoidMode.RESIZE_ONLY,
-          backgroundColor: $r('app.color.surface')
+          backgroundColor: this.palette.surface
         })
       }.width('100%').height('100%')
         .bindSheet($$this.showTemplates, this.templateSheet, {
@@ -1742,21 +1784,21 @@ struct Index {
           width: this.wide() ? Math.min(760, this.viewportWidth - 96) : '100%',
           preferType: this.wide() ? SheetType.CENTER : SheetType.BOTTOM,
           radius: LengthMetrics.vp(28), shadow: ShadowStyle.OUTER_DEFAULT_LG,
-          borderWidth: 0.5, borderColor: $r('app.color.workspace_line'),
+          borderWidth: 0.5, borderColor: this.palette.workspace_line,
           dragBar: !this.wide(), showClose: true, title: { title: this.tr('模板库') },
           keyboardAvoidMode: SheetKeyboardAvoidMode.TRANSLATE_AND_RESIZE,
           onWillDismiss: (action: DismissSheetAction): void => { this.dismissTemplates(action); },
           onDisappear: (): void => { this.presentTemplateEditor(); this.storageAccessChanged(); },
-          backgroundColor: $r('app.color.background')
+          backgroundColor: this.palette.background
         })
     }
     .width('100%')
     .height(LayoutPolicy.matchParent)
-    .background($r('app.color.background'))
+    .background(this.palette.background)
     .bindSheet($$this.showNoteDestination, this.noteDestinationSheet, {
       height: SheetSize.MEDIUM, dragBar: true, showClose: true, title: { title: this.tr('选择保存工作区') },
       onDisappear: (): void => { this.storageAccessChanged(); },
-      backgroundColor: $r('app.color.surface')
+      backgroundColor: this.palette.surface
     })
     .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
     .onKeyPreIme((event: KeyEvent): boolean => {

@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 export function lexiIconResource(name: string, muted: boolean = false): Resource {
   switch (name) {
     case 'dock-home':
@@ -70,12 +71,14 @@ export function lexiIconResource(name: string, muted: boolean = false): Resource
 
 @Component
 export struct LexiIcon {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @Prop name: string = 'note';
   @Prop iconSize: number = 22;
   @Prop muted: boolean = false;
 
   build() {
     Image(lexiIconResource(this.name, this.muted))
+      .supportSvg2(true).colorFilter(this.muted ? this.palette.text_secondary : this.palette.brand)
       .width(this.iconSize)
       .height(this.iconSize)
       .draggable(false)

@@ -1,5 +1,7 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { LexiExportService } from '../core/LexiExportService';
-import { window } from '@kit.ArkUI';
+import { LengthMetrics, window } from '@kit.ArkUI';
+import { pointer } from '@kit.InputKit';
 import { LexiWorkspacePreferences } from '../core/LexiWorkspacePreferences';
 import { LexiKnowledgePanel } from './LexiKnowledgePanel';
 import { LexiStorageService } from '../core/LexiStorageService';
@@ -51,6 +53,7 @@ function lexiWorkspaceEmptySlot() {}
 
 @Component
 export struct LexiDesktopWorkspace {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiLanguage') private interfaceLanguage: string = LexiI18n.language();
 
   private tr(source: string, args: string[] = []): string {
@@ -58,7 +61,10 @@ export struct LexiDesktopWorkspace {
   }
 
   @StorageProp('lexiTopInset') topInset: number = 0;
+  @StorageProp('lexiViewportHeight') private viewportHeight: number = 800;
   @StorageProp('lexiShowRibbon') private showRibbon: boolean = true;
+  @StorageProp('lexiSidebarWidth') private preferredSidebarWidth: number = 244;
+  @StorageProp('lexiRightSidebarWidth') private preferredRightSidebarWidth: number = 280;
   @StorageProp('lexiTabHeaders') private showTabHeaders: boolean = true;
   @StorageProp('lexiHiddenRibbonCommands') private hiddenRibbonCommands: string = '[]';
   @StorageProp('lexiWindowButtonsInset') windowButtonsInset: number = 0;
@@ -79,8 +85,16 @@ export struct LexiDesktopWorkspace {
   @Prop requestedNoteId: string = '';
   @Prop @Watch('requestedChanged') openRevision: number = 0;
   @Prop routeActive: boolean = false;
-  @State private sidebarOpen: boolean = true;
+  @State @Watch('sidebarVisibilityChanged') private sidebarOpen: boolean = true;
+  @State private sidebarResizing: boolean = false;
+  @State private sidebarResizeHovered: boolean = false;
+  @State private sidebarDragWidth: number = 244;
+  private sidebarDragStartWidth: number = 244;
   @State private rightSidebarOpen: boolean = false;
+  @State private rightSidebarResizing: boolean = false;
+  @State private rightSidebarResizeHovered: boolean = false;
+  @State private rightSidebarDragWidth: number = 280;
+  private rightSidebarDragStartWidth: number = 280;
   @State private rightSidebarMode: string = 'outline';
   @State private measuredWorkspaceWidth: number = 0;
   @State private inspectorSnapshot: LexiWorkspaceInspectorSnapshot = new LexiWorkspaceInspectorSnapshot();
@@ -146,6 +160,8 @@ export struct LexiDesktopWorkspace {
   }
 
   aboutToDisappear(): void {
+    this.clearSidebarResize();
+    this.clearRightSidebarResize();
     LexiShortcutRouter.unregister();
     this.tabLayoutRevision++;
   }
@@ -154,14 +170,73 @@ export struct LexiDesktopWorkspace {
     return LexiInterfaceSettings.isVisible(this.hiddenRibbonCommands, id);
   }
 
-  private sidebarWidth(): number { return (this.sidebarOpen ? 244 : 0) + (this.showRibbon ? 56 : 0); }
+  private sidebarContentWidth(): number {
+    return LexiInterfaceSettings.sidebarWidthForWindow(
+      this.sidebarResizing ? this.sidebarDragWidth : this.preferredSidebarWidth,
+      this.availableWorkspaceWidth(), this.showRibbon ? 56 : 0, this.rightSidebarWidth());
+  }
+
+  private sidebarWidth(): number { return (this.sidebarOpen ? this.sidebarContentWidth() : 0) + (this.showRibbon ? 56 : 0); }
+
+  private sidebarVisibilityChanged(): void {
+    if (this.sidebarOpen && this.rightSidebarOpen &&
+      this.availableWorkspaceWidth() - this.sidebarWidth() - this.rightSidebarWidth() < 420) {
+      this.rightSidebarOpen = false;
+      this.clearRightSidebarResize();
+    }
+  }
+
+  private updateSidebarCursor(): void {
+    const cursor = this.getUIContext().getCursorController();
+    if (this.sidebarResizeHovered || this.sidebarResizing || this.rightSidebarResizeHovered || this.rightSidebarResizing) {
+      cursor.setCursor(pointer.PointerStyle.RESIZE_LEFT_RIGHT);
+    }
+    else { cursor.restoreDefault(); }
+  }
+
+  private clearSidebarResize(): void {
+    if (this.sidebarResizing || this.sidebarResizeHovered) {
+      this.sidebarResizing = false;
+      this.sidebarResizeHovered = false;
+      this.updateSidebarCursor();
+    }
+  }
+
+  private finishSidebarResize(): void {
+    if (!this.sidebarResizing) { return; }
+    // Persist only an explicit resize, preserving the preferred width on window changes.
+    LexiInterfaceSettings.setSidebarWidth(this.sidebarContentWidth()).catch((): void => {
+      this.getUIContext().getPromptAction().showToast({ message: this.tr('侧栏宽度保存失败，请重试。') });
+    });
+    this.sidebarResizing = false;
+    this.updateSidebarCursor();
+  }
 
   private availableWorkspaceWidth(): number {
     return this.measuredWorkspaceWidth > 0 ? this.measuredWorkspaceWidth : this.viewportWidth;
   }
 
   private rightSidebarWidth(): number {
-    return this.rightSidebarOpen ? Math.min(280, Math.max(232, this.availableWorkspaceWidth() * 0.24)) : 0;
+    return this.rightSidebarOpen ? LexiInterfaceSettings.rightSidebarWidthForWindow(
+      this.rightSidebarResizing ? this.rightSidebarDragWidth : this.preferredRightSidebarWidth,
+      this.availableWorkspaceWidth(), this.showRibbon ? 56 : 0, this.sidebarOpen) : 0;
+  }
+
+  private clearRightSidebarResize(): void {
+    if (this.rightSidebarResizing || this.rightSidebarResizeHovered) {
+      this.rightSidebarResizing = false;
+      this.rightSidebarResizeHovered = false;
+      this.updateSidebarCursor();
+    }
+  }
+
+  private finishRightSidebarResize(): void {
+    if (!this.rightSidebarResizing) { return; }
+    LexiInterfaceSettings.setRightSidebarWidth(this.rightSidebarWidth()).catch((): void => {
+      this.getUIContext().getPromptAction().showToast({ message: this.tr('侧栏宽度保存失败，请重试。') });
+    });
+    this.rightSidebarResizing = false;
+    this.updateSidebarCursor();
   }
 
   private editorPaneWidth(): number {
@@ -274,6 +349,8 @@ export struct LexiDesktopWorkspace {
   }
 
   private vaultChanged(): void {
+    this.clearSidebarResize();
+    this.clearRightSidebarResize();
     this.tabs = []; this.groupTabs = [];
     this.selectedId = '';
     this.searchText = '';
@@ -407,25 +484,25 @@ export struct LexiDesktopWorkspace {
   private workspaceOpenSheet() {
     Column({ space: 16 }) {
       Text(this.vaults.find((vault: VaultItem): boolean => vault.id === this.workspaceOpenTarget)?.name || '')
-        .fontSize(20).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+        .fontSize(20).fontWeight(FontWeight.Medium).fontColor(this.palette.text_primary)
         .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
-      Text(this.tr('选择此工作区的打开方式。')).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
+      Text(this.tr('选择此工作区的打开方式。')).fontSize(13).fontColor(this.palette.text_secondary).width('100%')
       Button(this.tr('在当前窗口打开'), { type: ButtonType.Normal })
         .id('workspace-open-current').width('100%').height(42).borderRadius(10).enabled(!this.switchingVault)
         .onClick((): void => { this.openWorkspace(this.workspaceOpenTarget, 'current', this.rememberWorkspaceOpen); })
       Button(this.tr('在新窗口打开'), { type: ButtonType.Normal })
         .id('workspace-open-new').width('100%').height(42).borderRadius(10).enabled(!this.switchingVault)
-        .backgroundColor($r('app.color.brand_soft')).fontColor($r('app.color.brand'))
+        .backgroundColor(this.palette.brand_soft).fontColor(this.palette.brand)
         .onClick((): void => { this.openWorkspace(this.workspaceOpenTarget, 'new', this.rememberWorkspaceOpen); })
       Row({ space: 8 }) {
         Checkbox({ name: 'remember-workspace-open' }).id('workspace-open-remember')
           .select(this.rememberWorkspaceOpen).enabled(!this.switchingVault)
           .accessibilityText(this.tr('下次不再提示'))
           .onChange((checked: boolean): void => { this.rememberWorkspaceOpen = checked; })
-        Text(this.tr('下次不再提示')).fontSize(13).fontColor($r('app.color.text_primary'))
+        Text(this.tr('下次不再提示')).fontSize(13).fontColor(this.palette.text_primary)
       }.width('100%')
       Text(this.tr('所有工作区共用此选择，可在“设置 → 编辑器”中重新选择。'))
-        .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
+        .fontSize(12).fontColor(this.palette.text_secondary).width('100%')
       Button(this.tr('取消'), { buttonStyle: ButtonStyleMode.TEXTUAL }).enabled(!this.switchingVault)
         .id('workspace-open-cancel').onClick((): void => { this.showWorkspaceOpen = false; })
     }.width('100%').padding({ left: 24, right: 24, top: 12, bottom: 16 }).alignItems(HorizontalAlign.Start)
@@ -618,6 +695,7 @@ export struct LexiDesktopWorkspace {
   @Builder
   private paletteSheet() {
     LexiCommandPalette({ mode: this.paletteMode,
+      showClose: true,
       notes: this.notes.filter((note: NoteItem): boolean => note.vaultId === this.activeVaultId &&
         (!note.projectId || this.projects.some((project: LexiProject): boolean => project.id === note.projectId))),
       maps: this.maps, canvases: this.canvases,
@@ -662,7 +740,7 @@ export struct LexiDesktopWorkspace {
       LexiIcon({ name: $$.iconName, iconSize: 19, muted: !$$.selected })
     }
     .id(`workspace-action-${$$.iconName}`).width(40).height(40).padding(0).borderRadius(9)
-    .backgroundColor($$.selected ? $r('app.color.workspace_selection') : Color.Transparent)
+    .backgroundColor($$.selected ? this.palette.workspace_selection : Color.Transparent)
     .accessibilityText($$.label).onClick($$.action)
   }
 
@@ -671,7 +749,7 @@ export struct LexiDesktopWorkspace {
     Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
       SymbolGlyph($r('sys.symbol.gearshape'))
         .fontSize(19)
-        .fontColor([$r('app.color.text_secondary')])
+        .fontColor([this.palette.text_secondary])
     }
     .id('workspace-settings-gear').width(40).height(40).padding(0).borderRadius(9)
     .backgroundColor(Color.Transparent)
@@ -722,7 +800,7 @@ export struct LexiDesktopWorkspace {
         .accessibilityText(this.tr('快速切换文档'))
         .onClick((): void => { this.openPalette('switcher'); }) }
       if (this.commandVisible('commands')) { Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-        Text('⌘').fontSize(22).fontColor($r('app.color.text_secondary'))
+        Text('⌘').fontSize(22).fontColor(this.palette.text_secondary)
       }.id('workspace-command-palette').width(40).height(40).padding(0).backgroundColor(Color.Transparent)
         .accessibilityText(this.tr('命令面板'))
         .onClick((): void => { this.openPalette('commands'); }) }
@@ -737,8 +815,8 @@ export struct LexiDesktopWorkspace {
         action: (): void => { this.onOpenTrash(); }, selected: false })
       this.settingsGearButton()
     }
-    .width(56).height('100%').padding({ top: 16, bottom: this.inlineContextMenus() ? 10 : 14 }).backgroundColor($r('app.color.workspace_rail'))
-    .border({ width: { right: 0.5 }, color: $r('app.color.workspace_line') })
+    .width(56).height('100%').padding({ top: 16, bottom: this.inlineContextMenus() ? 10 : 14 }).backgroundColor(this.palette.workspace_rail)
+    .border({ width: { right: 0.5 }, color: this.palette.workspace_line })
   }
 
   @Builder
@@ -748,14 +826,14 @@ export struct LexiDesktopWorkspace {
       Row({ space: 8 }) {
         LexiIcon({ name: $$.note.noteType === 'study' ? 'study' : 'note', iconSize: 15, muted: this.selectedId !== $$.note.id })
         Text(MarkdownEngine.displayTitle($$.note)).fontSize(13)
-          .fontColor(this.selectedId === $$.note.id ? $r('app.color.brand_ink') : $r('app.color.text_primary'))
+          .fontColor(this.selectedId === $$.note.id ? this.palette.brand_ink : this.palette.text_primary)
           .fontWeight(this.selectedId === $$.note.id ? FontWeight.Medium : FontWeight.Regular)
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
         if ($$.note.favorite) { LexiIcon({ name: 'star', iconSize: 12 }); }
       }.width('100%')
     }
     .id(`workspace-note-${$$.note.id}`).width('100%').height(38).padding({ left: 14, right: this.inlineContextMenus() ? 48 : 10 }).borderRadius(7)
-    .backgroundColor(this.selectedId === $$.note.id && this.activeSection <= 1 ? $r('app.color.workspace_selection') : Color.Transparent)
+    .backgroundColor(this.selectedId === $$.note.id && this.activeSection <= 1 ? this.palette.workspace_selection : Color.Transparent)
     .onClick((): void => { if (!this.onNoteOpenRequest($$.note.id)) { this.openDocument($$.note.id); } })
     }
   }
@@ -766,25 +844,25 @@ export struct LexiDesktopWorkspace {
       LexiContextSurface({ target: LexiContextTarget.scope('workspace', this.activeVaultId, this.activeVaultId, '', this.activeVaultName, this.vaults.find((vault: VaultItem): boolean => vault.id === this.activeVaultId)?.favorite ?? false),
         beforeAction: (): Promise<void> => this.flushAll() }) {
       Row({ space: 8 }) {
-        Text(this.tr('知识库')).fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')).layoutWeight(1)
-        Text(`${this.visibleNotes().length}`).fontSize(11).fontColor($r('app.color.text_secondary'))
+        Text(this.tr('知识库')).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.palette.text_primary).layoutWeight(1)
+        Text(`${this.visibleNotes().length}`).fontSize(11).fontColor(this.palette.text_secondary)
       }.height(48).width('100%').padding({ left: 6, right: this.inlineContextMenus() ? 44 : 0 })
       }
       Row({ space: 6 }) {
         LexiIcon({ name: 'search', iconSize: 15 })
         TextInput({ text: this.searchText, placeholder: this.tr('搜索 · tag: type: notebook:') })
           .id('workspace-search').layoutWeight(1).height(34).padding(0).fontSize(12)
-          .fontColor($r('app.color.text_primary')).placeholderColor($r('app.color.text_secondary'))
-          .caretColor($r('app.color.brand')).backgroundColor(Color.Transparent)
+          .fontColor(this.palette.text_primary).placeholderColor(this.palette.text_secondary)
+          .caretColor(this.palette.brand).backgroundColor(Color.Transparent)
           .onChange((text: string): void => { this.searchText = text; })
         if (this.searchText.length > 0) {
           Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-            SymbolGlyph($r('sys.symbol.xmark')).fontSize(10).fontColor([$r('app.color.text_secondary')])
+            SymbolGlyph($r('sys.symbol.xmark')).fontSize(10).fontColor([this.palette.text_secondary])
           }.id('workspace-search-clear').width(28).height(32).padding(0).backgroundColor(Color.Transparent)
             .accessibilityText(this.tr('清空搜索')).onClick((): void => { this.searchText = ''; })
         }
-      }.width('100%').padding({ left: 10, right: 8 }).borderRadius(7).backgroundColor($r('app.color.workspace_page'))
-        .border({ width: 0.5, color: $r('app.color.workspace_line') }).margin({ bottom: 14 })
+      }.width('100%').padding({ left: 10, right: 8 }).borderRadius(7).backgroundColor(this.palette.workspace_page)
+        .border({ width: 0.5, color: this.palette.workspace_line }).margin({ bottom: 14 })
       Row({ space: 6 }) {
         Button(this.tr('今日笔记'), { buttonStyle: ButtonStyleMode.TEXTUAL }).id('workspace-daily-note').height(34).fontSize(12)
           .onClick((): void => { this.executeCommand('daily'); })
@@ -794,13 +872,13 @@ export struct LexiDesktopWorkspace {
       Row({ space: 6 }) {
         Button(this.tr('全部笔记'), { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
           .height(30).fontSize(12).padding({ left: 10, right: this.inlineContextMenus() ? 48 : 10 }).borderRadius(6)
-          .fontColor(!this.favoritesOnly ? $r('app.color.brand_ink') : $r('app.color.text_secondary'))
-          .backgroundColor(!this.favoritesOnly ? $r('app.color.workspace_selection') : Color.Transparent)
+          .fontColor(!this.favoritesOnly ? this.palette.brand_ink : this.palette.text_secondary)
+          .backgroundColor(!this.favoritesOnly ? this.palette.workspace_selection : Color.Transparent)
           .onClick((): void => { this.favoritesOnly = false; })
         Button(this.tr('收藏'), { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
           .height(30).fontSize(12).padding({ left: 10, right: this.inlineContextMenus() ? 48 : 10 }).borderRadius(6)
-          .fontColor(this.favoritesOnly ? $r('app.color.brand_ink') : $r('app.color.text_secondary'))
-          .backgroundColor(this.favoritesOnly ? $r('app.color.workspace_selection') : Color.Transparent)
+          .fontColor(this.favoritesOnly ? this.palette.brand_ink : this.palette.text_secondary)
+          .backgroundColor(this.favoritesOnly ? this.palette.workspace_selection : Color.Transparent)
           .onClick((): void => { this.favoritesOnly = true; })
       }.width('100%').margin({ bottom: 12 })
       Scroll() {
@@ -812,7 +890,7 @@ export struct LexiDesktopWorkspace {
                 Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
                   Row({ space: 8 }) {
                     LexiIcon({ name: 'folder', iconSize: 16 })
-                    Text(project.name).fontSize(13).fontColor($r('app.color.text_primary')).layoutWeight(1).maxLines(1)
+                    Text(project.name).fontSize(13).fontColor(this.palette.text_primary).layoutWeight(1).maxLines(1)
                     if (project.favorite) { LexiIcon({ name: 'star', iconSize: 12 }); }
                     LexiIcon({ name: 'chevron', iconSize: 12 })
                   }.width('100%')
@@ -827,13 +905,13 @@ export struct LexiDesktopWorkspace {
                 beforeAction: (): Promise<void> => this.flushAll() }) {
               Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
                 Row({ space: 7 }) {
-                  SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(9).fontColor([$r('app.color.text_secondary')])
+                  SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(9).fontColor([this.palette.text_secondary])
                     .rotate({ angle: this.closedFolders.includes(folder) ? 0 : 90 })
                     .animation({ duration: 150, curve: Curve.EaseOut })
                   LexiIcon({ name: 'folder', iconSize: 15 })
-                  Text(folder).fontSize(12).fontColor($r('app.color.text_secondary')).maxLines(1)
+                  Text(folder).fontSize(12).fontColor(this.palette.text_secondary).maxLines(1)
                     .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
-                  Text(`${this.folderNotes(folder).length}`).fontSize(10).fontColor($r('app.color.text_secondary'))
+                  Text(`${this.folderNotes(folder).length}`).fontSize(10).fontColor(this.palette.text_secondary)
                 }.width('100%')
               }.width('100%').height(36).padding({ left: 5, right: this.inlineContextMenus() ? 48 : 10 }).backgroundColor(Color.Transparent).borderRadius(6)
                 .onClick((): void => { this.toggleFolder(folder); })
@@ -845,11 +923,11 @@ export struct LexiDesktopWorkspace {
           }, (folder: string): string => folder)
           if (this.visibleNotes().length === 0) {
             Text(this.searchText ? this.tr('没有找到匹配的笔记') : this.favoritesOnly ? this.tr('收藏的笔记会出现在这里') : this.tr('写下第一条笔记'))
-              .fontSize(12).lineHeight(22).fontColor($r('app.color.text_secondary')).width('100%').padding(12)
+              .fontSize(12).lineHeight(22).fontColor(this.palette.text_secondary).width('100%').padding(12)
           }
           if (!this.searchText && !this.favoritesOnly) {
-            Divider().color($r('app.color.workspace_line')).margin({ top: 12, bottom: 12 })
-            Text(this.tr('可视化空间')).fontSize(11).fontColor($r('app.color.text_secondary')).width('100%').padding({ left: 6, bottom: 6 })
+            Divider().color(this.palette.workspace_line).margin({ top: 12, bottom: 12 })
+            Text(this.tr('可视化空间')).fontSize(11).fontColor(this.palette.text_secondary).width('100%').padding({ left: 6, bottom: 6 })
             ForEach(this.maps.filter((map: MindMapDoc): boolean => map.trashedAt === 0 && (!this.activeProjectId || map.projectId === this.activeProjectId)), (map: MindMapDoc) => {
               LexiContextSurface({ target: LexiContextTarget.scope('mindmap', map.id, map.vaultId, map.projectId || '', map.title),
                 beforeAction: (): Promise<void> => this.flushAll() }) {
@@ -857,13 +935,13 @@ export struct LexiDesktopWorkspace {
                 Row({ space: 8 }) {
                   LexiIcon({ name: 'mindmap', iconSize: 15, muted: this.selectedId !== `map:${map.id}` })
                   Text(map.title || this.tr('未命名导图')).fontSize(12)
-                    .fontColor(this.selectedId === `map:${map.id}` ? $r('app.color.brand_ink') : $r('app.color.text_primary'))
+                    .fontColor(this.selectedId === `map:${map.id}` ? this.palette.brand_ink : this.palette.text_primary)
                     .fontWeight(this.selectedId === `map:${map.id}` ? FontWeight.Medium : FontWeight.Regular)
                     .maxLines(1)
                     .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
                 }.width('100%')
               }.id(`workspace-map-${map.id}`).height(38).width('100%').padding({ left: 10, right: this.inlineContextMenus() ? 48 : 10 })
-                .backgroundColor(this.selectedId === `map:${map.id}` && this.activeSection <= 1 ? $r('app.color.workspace_selection') : Color.Transparent)
+                .backgroundColor(this.selectedId === `map:${map.id}` && this.activeSection <= 1 ? this.palette.workspace_selection : Color.Transparent)
                 .borderRadius(6)
                 .onClick((): void => { this.openDocument(`map:${map.id}`); })
               }
@@ -874,7 +952,7 @@ export struct LexiDesktopWorkspace {
               Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
                 Row({ space: 8 }) {
                   LexiIcon({ name: 'canvas', iconSize: 15 })
-                  Text(board.title || this.tr('未命名白板')).fontSize(12).fontColor($r('app.color.text_primary')).maxLines(1)
+                  Text(board.title || this.tr('未命名白板')).fontSize(12).fontColor(this.palette.text_primary).maxLines(1)
                     .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
                 }.width('100%')
               }.height(38).width('100%').padding({ left: 10, right: this.inlineContextMenus() ? 48 : 10 }).backgroundColor(Color.Transparent).borderRadius(6)
@@ -893,35 +971,97 @@ export struct LexiDesktopWorkspace {
         Row({ space: 8 }) {
           LexiIcon({ name: 'folder', iconSize: 17 })
           Column({ space: 3 }) {
-            Text(this.activeVaultName).fontSize(12).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+            Text(this.activeVaultName).fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.palette.text_primary)
               .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-            Text(this.activeProjectName).fontSize(10).fontColor($r('app.color.text_secondary'))
+            Text(this.activeProjectName).fontSize(10).fontColor(this.palette.text_secondary)
           }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(10).fontColor([$r('app.color.text_secondary')])
+          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(10).fontColor([this.palette.text_secondary])
         }.width('100%')
       }.width('100%').height(this.inlineContextMenus() ? 56 : 62).padding({ left: 10, right: this.inlineContextMenus() ? 48 : 10, bottom: this.inlineContextMenus() ? 4 : 0 }).borderRadius(0)
-        .backgroundColor(Color.Transparent).border({ width: { top: 0.5 }, color: $r('app.color.workspace_line') })
+        .backgroundColor(Color.Transparent).border({ width: { top: 0.5 }, color: this.palette.workspace_line })
         .id('workspace-switcher').accessibilityText(this.tr('工作区与项目')).bindMenu(this.vaultMenu())
         .bindSheet($$this.showWorkspaceOpen, this.workspaceOpenSheet, {
           height: 410, width: 440, preferType: SheetType.CENTER, dragBar: false, showClose: false,
-          title: { title: this.tr('打开工作区') }, backgroundColor: $r('app.color.surface'),
+          title: { title: this.tr('打开工作区') }, backgroundColor: this.palette.surface,
           shouldDismiss: (sheetDismiss: SheetDismiss): void => { if (!this.switchingVault) { sheetDismiss.dismiss(); } }
         })
       }
     }
-    .width(244).height('100%').padding({ left: 12, right: 12 }).backgroundColor($r('app.color.workspace_sidebar'))
+    .width(this.sidebarContentWidth()).height('100%').padding({ left: 12, right: 12 }).backgroundColor(this.palette.workspace_sidebar)
+  }
+
+  @Builder
+  private sidebarResizeHandle() {
+    Stack({ alignContent: Alignment.End }) {
+      Column().width(this.sidebarResizeHovered || this.sidebarResizing ? 2 : 0.5).height('100%')
+        .backgroundColor(this.sidebarResizeHovered || this.sidebarResizing ? this.palette.brand : this.palette.workspace_line)
+        .hitTestBehavior(HitTestMode.None)
+    }
+    .id('workspace-sidebar-resize').width(10).height('100%').backgroundColor(Color.Transparent)
+    .accessibilityText(this.tr('拖动调整知识库侧栏宽度'))
+    .onHover((hovered: boolean): void => {
+      this.sidebarResizeHovered = hovered;
+      this.updateSidebarCursor();
+    })
+    .onDisAppear((): void => { this.clearSidebarResize(); })
+    .gesture(PanGesture({ direction: PanDirection.Horizontal, distance: 1 })
+      .onActionStart((event: GestureEvent): void => {
+        this.sidebarDragStartWidth = this.sidebarContentWidth();
+        this.sidebarDragWidth = this.sidebarDragStartWidth + event.offsetX;
+        this.sidebarResizing = true;
+        this.updateSidebarCursor();
+      })
+      .onActionUpdate((event: GestureEvent): void => {
+        if (this.sidebarResizing) { this.sidebarDragWidth = this.sidebarDragStartWidth + event.offsetX; }
+      })
+      .onActionEnd((event: GestureEvent): void => {
+        if (this.sidebarResizing) { this.sidebarDragWidth = this.sidebarDragStartWidth + event.offsetX; }
+        this.finishSidebarResize();
+      })
+      .onActionCancel((): void => { this.finishSidebarResize(); }))
+  }
+
+  @Builder
+  private rightSidebarResizeHandle() {
+    Stack({ alignContent: Alignment.Start }) {
+      Column().width(this.rightSidebarResizeHovered || this.rightSidebarResizing ? 2 : 0.5).height('100%')
+        .backgroundColor(this.rightSidebarResizeHovered || this.rightSidebarResizing ? this.palette.brand : this.palette.workspace_line)
+        .hitTestBehavior(HitTestMode.None)
+    }
+    .id('workspace-right-sidebar-resize').width(10).height('100%').backgroundColor(Color.Transparent).zIndex(1)
+    .accessibilityText(this.tr('拖动调整右侧栏宽度'))
+    .onHover((hovered: boolean): void => {
+      this.rightSidebarResizeHovered = hovered;
+      this.updateSidebarCursor();
+    })
+    .onDisAppear((): void => { this.clearRightSidebarResize(); })
+    .gesture(PanGesture({ direction: PanDirection.Horizontal, distance: 1 })
+      .onActionStart((event: GestureEvent): void => {
+        this.rightSidebarDragStartWidth = this.rightSidebarWidth();
+        this.rightSidebarDragWidth = this.rightSidebarDragStartWidth - event.offsetX;
+        this.rightSidebarResizing = true;
+        this.updateSidebarCursor();
+      })
+      .onActionUpdate((event: GestureEvent): void => {
+        if (this.rightSidebarResizing) { this.rightSidebarDragWidth = this.rightSidebarDragStartWidth - event.offsetX; }
+      })
+      .onActionEnd((event: GestureEvent): void => {
+        if (this.rightSidebarResizing) { this.rightSidebarDragWidth = this.rightSidebarDragStartWidth - event.offsetX; }
+        this.finishRightSidebarResize();
+      })
+      .onActionCancel((): void => { this.finishRightSidebarResize(); }))
   }
 
   @Builder
   private tabStrip() {
     Row({ space: 4 }) {
       Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-        SymbolGlyph($r('sys.symbol.list_bullet')).fontSize(17).fontColor([$r('app.color.text_secondary')])
+        SymbolGlyph($r('sys.symbol.list_bullet')).fontSize(17).fontColor([this.palette.text_secondary])
       }.id('workspace-sidebar-toggle').width(40).height(40).padding(0).borderRadius(7).backgroundColor(Color.Transparent)
         .accessibilityText(this.tr('展开或收起知识库侧栏')).onClick((): void => { this.sidebarOpen = !this.sidebarOpen; })
       if (!this.showRibbon) {
         Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-          SymbolGlyph($r('sys.symbol.gearshape')).fontSize(19).fontColor([$r('app.color.text_secondary')])
+          SymbolGlyph($r('sys.symbol.gearshape')).fontSize(19).fontColor([this.palette.text_secondary])
         }.id('workspace-settings-without-ribbon').width(40).height(40).padding(0)
           .backgroundColor(Color.Transparent).accessibilityText(this.tr('设置'))
           .onClick((): void => { this.onOpenSettings(); })
@@ -933,20 +1073,20 @@ export struct LexiDesktopWorkspace {
               Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
                 Row({ space: 8 }) {
                   LexiIcon({ name: tab.noteId.startsWith('map:') ? 'mindmap' : 'note', iconSize: 14, muted: this.selectedId !== tab.noteId })
-                  Text(this.tabTitle(tab.noteId)).fontSize(12).fontColor($r('app.color.text_primary')).maxLines(1)
+                  Text(this.tabTitle(tab.noteId)).fontSize(12).fontColor(this.palette.text_primary).maxLines(1)
                     .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
                 }.width('100%')
               }.id(`workspace-tab-${tab.noteId}`).height(38).layoutWeight(1).padding({ left: 14, right: 4 })
                 .backgroundColor(Color.Transparent).borderRadius(0).onClick((): void => { this.openDocument(tab.noteId); })
               Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-                SymbolGlyph($r('sys.symbol.xmark')).fontSize(10).fontColor([$r('app.color.text_secondary')])
+                SymbolGlyph($r('sys.symbol.xmark')).fontSize(10).fontColor([this.palette.text_secondary])
               }.id(`workspace-close-${tab.noteId}`).width(30).height(34).padding(0).backgroundColor(Color.Transparent)
                 .accessibilityText(this.tr('关闭 {0}', [this.tabTitle(tab.noteId)])).onClick((): void => { this.closeDocument(tab); })
             }
             .width(LexiTabStripLayout.tabWidth(this.tabViewportWidth, this.tabs.length)).height(40).clip(true)
             .borderRadius({ topLeft: 8, topRight: 8 })
-            .backgroundColor(this.selectedId === tab.noteId && this.activeSection <= 1 ? $r('app.color.workspace_page') : Color.Transparent)
-            .border({ width: { top: this.selectedId === tab.noteId && this.activeSection <= 1 ? 2 : 0 }, color: $r('app.color.brand') })
+            .backgroundColor(this.selectedId === tab.noteId && this.activeSection <= 1 ? this.palette.workspace_page : Color.Transparent)
+            .border({ width: { top: this.selectedId === tab.noteId && this.activeSection <= 1 ? 2 : 0 }, color: this.palette.brand })
           }, (tab: LexiWorkspaceTab): string => tab.noteId)
         }.width(LexiTabStripLayout.contentWidth(this.tabViewportWidth, this.tabs.length))
           .height('100%').alignItems(VerticalAlign.Bottom)
@@ -959,12 +1099,12 @@ export struct LexiDesktopWorkspace {
       Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
         Row({ space: 6 }) {
           LexiIcon({ name: 'plus', iconSize: 17 })
-          Text(this.tr('新建')).fontSize(12).fontWeight(FontWeight.Medium).fontColor($r('app.color.brand_ink'))
+          Text(this.tr('新建')).fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.palette.brand_ink)
         }
       }.id('workspace-create-menu').width(76).height(36).padding({ left: 8, right: 8 }).borderRadius(7)
-        .backgroundColor($r('app.color.workspace_selection')).accessibilityText(this.tr('新建内容')).bindMenu(this.createMenu())
+        .backgroundColor(this.palette.workspace_selection).accessibilityText(this.tr('新建内容')).bindMenu(this.createMenu())
       Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-        Image(this.rightSidebarOpen ? $r('app.media.ic_dock_panel_shown') : $r('app.media.ic_dock_panel_hidden'))
+        Image(this.rightSidebarOpen ? $r('app.media.ic_dock_panel_shown') : $r('app.media.ic_dock_panel_hidden')).supportSvg2(true).colorFilter(this.palette.text_secondary)
           .width(22).height(22).draggable(false).accessibilityLevel('no')
       }.id('workspace-right-sidebar-toggle').width(36).height(36).padding(0).borderRadius(7)
         .backgroundColor(Color.Transparent)
@@ -973,8 +1113,8 @@ export struct LexiDesktopWorkspace {
     }
     .width('100%').height(52 + this.topInset)
       .padding({ left: 8, right: this.windowButtonsInset > 0 ? this.windowButtonsInset + 4 : 12, top: this.topInset })
-    .backgroundColor($r('app.color.workspace_tabs'))
-    .border({ width: { bottom: 0.5 }, color: $r('app.color.workspace_line') })
+    .backgroundColor(this.palette.workspace_tabs)
+    .border({ width: { bottom: 0.5 }, color: this.palette.workspace_line })
   }
 
   build() {
@@ -983,24 +1123,27 @@ export struct LexiDesktopWorkspace {
         noteId: this.selectedId, excerpt: this.knowledgeExcerpt, selectionStart: this.knowledgeSelectionStart, selectionEnd: this.knowledgeSelectionEnd, openNoteIds: this.tabs.map((tab: LexiWorkspaceTab): string => tab.noteId),
         onSaved: (note: NoteItem): void => { this.onSaved(note); }, onOpen: (id: string): void => { this.openDocument(id); },
         onSearch: (query: string): void => { this.searchText = query; this.sidebarOpen = true; this.onSelectSection(1); } })
-      Column() {
-        Row({ space: 10 }) {
-          Image($r('app.media.lexi_logo')).width(28).height(28).borderRadius(7)
-          if (this.sidebarOpen) {
-            Text(this.tr('知萤')).fontSize(17).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary'))
-            Text('LexiNote').fontSize(12).fontWeight(FontWeight.Medium).fontColor($r('app.color.brand_ink'))
-            Blank()
-          }
-        }.width('100%').height(52 + this.topInset).padding({ left: 14, right: 18, top: this.topInset }).backgroundColor($r('app.color.workspace_sidebar'))
-          .border({ width: { bottom: 0.5 }, color: $r('app.color.workspace_line') })
-        Row() {
-          if (this.showRibbon) { this.rail() }
-          if (this.sidebarOpen) { this.sidebar(); }
-        }.width('100%').layoutWeight(1)
+      Stack({ alignContent: Alignment.End }) {
+        Column() {
+          Row({ space: 10 }) {
+            Image($r('app.media.lexi_logo')).width(28).height(28).borderRadius(7)
+            if (this.sidebarOpen) {
+              Text(this.tr('知萤')).fontSize(17).fontWeight(FontWeight.Bold).fontColor(this.palette.text_primary)
+              Text('LexiNote').fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.palette.brand_ink)
+              Blank()
+            }
+          }.width('100%').height(52 + this.topInset).padding({ left: 14, right: 18, top: this.topInset }).backgroundColor(this.palette.workspace_sidebar)
+            .border({ width: { bottom: 0.5 }, color: this.palette.workspace_line })
+          Row() {
+            if (this.showRibbon) { this.rail() }
+            if (this.sidebarOpen) { this.sidebar(); }
+          }.width('100%').layoutWeight(1)
+        }.width('100%').height('100%')
+        if (this.sidebarOpen) { this.sidebarResizeHandle(); }
       }
       .width(this.sidebarWidth()).height('100%')
-      .backgroundColor($r('app.color.workspace_sidebar')).clip(true).zIndex(2)
-      .border({ width: { right: 0.5 }, color: $r('app.color.workspace_line') })
+      .backgroundColor(this.palette.workspace_sidebar).clip(true).zIndex(2)
+      .border({ width: { right: 0.5 }, color: this.palette.workspace_line })
       Column() {
         this.tabStrip()
         Row() {
@@ -1044,18 +1187,18 @@ export struct LexiDesktopWorkspace {
             } else if (this.tabs.length === 0 || !this.selectedId) {
               Column({ space: 12 }) {
                 LexiIcon({ name: 'note', iconSize: 32 })
-                Text(this.tr('选择或新建一篇笔记')).fontSize(20).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
-                Text(this.tr('从左侧打开已有笔记，或点击右上角“新建”开始记录。')).fontSize(13).fontColor($r('app.color.text_secondary'))
+                Text(this.tr('选择或新建一篇笔记')).fontSize(20).fontWeight(FontWeight.Medium).fontColor(this.palette.text_primary)
+                Text(this.tr('从左侧打开已有笔记，或点击右上角“新建”开始记录。')).fontSize(13).fontColor(this.palette.text_secondary)
               }.width('100%').height('100%').justifyContent(FlexAlign.Center)
-                .backgroundColor($r('app.color.workspace_page'))
+                .backgroundColor(this.palette.workspace_page)
             }
           }.layoutWeight(1).width('100%').height('100%')
           if (this.groupTabs.length > 0 && this.activeSection <= 1) {
             Column() {
               Row() {
-                Text(this.tr('标签组')).fontSize(12).fontColor($r('app.color.text_secondary')).layoutWeight(1)
+                Text(this.tr('标签组')).fontSize(12).fontColor(this.palette.text_secondary).layoutWeight(1)
                 Button(this.tr('关闭分组'), { buttonStyle: ButtonStyleMode.TEXTUAL }).height(40).fontSize(12)
-                  .fontColor($r('app.color.brand')).onClick((): void => { this.closeGroup(); })
+                  .fontColor(this.palette.brand).onClick((): void => { this.closeGroup(); })
               }.width('100%').padding({ left: 16, right: 8 })
               Column() {
               ForEach(this.groupTabs, (groupTab: LexiWorkspaceTab) => {
@@ -1080,11 +1223,11 @@ export struct LexiDesktopWorkspace {
                 }
               }, (groupTab: LexiWorkspaceTab): string => groupTab.noteId)
               }.width('100%').layoutWeight(1)
-            }.layoutWeight(1).height('100%').border({ width: { left: 1 }, color: $r('app.color.workspace_line') })
+            }.layoutWeight(1).height('100%').border({ width: { left: 1 }, color: this.palette.workspace_line })
           }
           }.width('100%').height('100%').visibility(this.routeActive ? Visibility.Hidden : Visibility.Visible)
         }.mode(NavigationMode.Stack).hideTitleBar(true).height('100%').layoutWeight(1).clip(true)
-            Column() {
+            Stack({ alignContent: Alignment.Start }) {
               LexiWorkspaceRightSidebar({ snapshot: this.currentInspector(), selectedMode: this.rightSidebarMode, sidebarOpen: this.rightSidebarOpen,
                 onSelectMode: (mode: string): void => { this.rightSidebarMode = mode; },
                 onRevealHeading: (heading: OutlineHeading): void => {
@@ -1101,13 +1244,14 @@ export struct LexiDesktopWorkspace {
                 },
                 onManagePlugins: (): void => { this.onManagePlugins(); }
               })
+              if (this.rightSidebarOpen) { this.rightSidebarResizeHandle(); }
             }.width(this.rightSidebarWidth()).height('100%').clip(true)
         }.width('100%').layoutWeight(1)
       }.layoutWeight(1).height('100%')
-        .backgroundColor($r('app.color.workspace_page')).clip(true).zIndex(1)
+        .backgroundColor(this.palette.workspace_page).clip(true).zIndex(1)
     }
     .width('100%').height('100%')
-    .backgroundColor($r('app.color.workspace_page'))
+    .backgroundColor(this.palette.workspace_page)
     .onAreaChange((_old: Area, current: Area): void => {
       const measured = Number(current.width);
       if (measured > 0 && Math.abs(measured - this.measuredWorkspaceWidth) > 0.5) {
@@ -1130,9 +1274,14 @@ export struct LexiDesktopWorkspace {
       return true;
     })
     .bindSheet($$this.showPalette, this.paletteSheet, {
-      height: 540, dragBar: false, showClose: true,
-      title: { title: this.paletteMode === 'commands' ? this.tr('命令面板') : this.tr('快速切换') },
-      backgroundColor: $r('app.color.surface')
+      height: Math.max(280, Math.min(560, this.viewportHeight - 140)),
+      width: Math.max(420, Math.min(720, this.viewportWidth - 96)),
+      preferType: SheetType.CENTER,
+      dragBar: false,
+      showClose: false,
+      radius: LengthMetrics.vp(16),
+      keyboardAvoidMode: SheetKeyboardAvoidMode.RESIZE_ONLY,
+      backgroundColor: this.palette.workspace_page
     })
   }
 }

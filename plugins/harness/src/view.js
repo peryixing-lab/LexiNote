@@ -1,7 +1,8 @@
 'use strict';
 
 const { runTurn, stopTurn } = require('./agent');
-const { createSession, ensureSystem, buildSystemPrompt, saveSession } = require('./session');
+const { createSession, ensureSystem, buildSystemPrompt, saveSession, listConversations,
+  selectConversation, deleteConversation, historyNotice } = require('./session');
 const { clip, text, errorText } = require('./util');
 const { renderMarkdown } = require('./markdown');
 const { serviceName } = require('./providers');
@@ -152,6 +153,32 @@ const STYLE = `
 .harness-model-option:disabled { cursor:default; opacity:.65; }
 .harness-model-badge { flex:0 0 auto; font-size:10px; color:var(--text-accent,#807397); }
 .harness-models-tip { margin:10px 0 0 !important; }
+.harness-services-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:0 0 8px; }
+.harness-services-head b { font-size:11px; color:var(--text-muted,#827b87); font-weight:500; }
+.harness-services-list { display:flex; flex-direction:column; gap:6px; max-height:190px; overflow:auto; margin:0 0 14px; }
+.harness-service-row { display:flex; gap:4px; align-items:center; padding:4px; border:1px solid var(--background-modifier-border,#e1dce6); border-radius:9px; }
+.harness-service-row.selected { border-color:#8c7eab; background:rgba(140,126,171,.06); }
+.harness-service-choice { min-width:0; flex:1; text-align:left; border:0; background:transparent; color:inherit; cursor:pointer; padding:4px 6px; }
+.harness-service-choice b,.harness-service-choice span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.harness-service-choice b { font-size:12px; font-weight:500; }
+.harness-service-choice span { font-size:10px; color:var(--text-muted,#827b87); margin-top:2px; }
+.harness-service-row > .harness-btn { padding:4px; font-size:10px; border:0; color:var(--text-muted,#827b87); }
+.harness-remove-confirm { padding:10px; margin:0 0 12px; background:var(--background-secondary,#eeeaf1); border-radius:8px; }
+.harness-remove-confirm p { margin:0 0 8px; }
+.harness-history-search { width:100%; box-sizing:border-box; border:1px solid var(--background-modifier-border,#e1dce6);
+  padding:9px 10px; margin:0 0 12px; border-radius:8px; background:transparent; color:inherit; font:inherit; outline:none; }
+.harness-history-search:focus { border-color:#8c7eab; }
+.harness-history-list { display:flex; flex-direction:column; gap:7px; max-height:400px; overflow:auto; }
+.harness-history-row { display:flex; align-items:center; gap:4px; padding:5px;
+  border:1px solid var(--background-modifier-border,#e1dce6); border-radius:10px; }
+.harness-history-row.selected { border-color:#8c7eab; background:rgba(140,126,171,.06); }
+.harness-history-choice { flex:1; min-width:0; border:0; padding:6px; background:transparent; color:inherit; text-align:left; cursor:pointer; }
+.harness-history-choice b,.harness-history-choice span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.harness-history-choice b { font-size:12px; font-weight:500; }
+.harness-history-choice .harness-history-preview { font-size:11px; color:var(--text-muted,#827b87); margin:4px 0; }
+.harness-history-meta { font-size:10px; color:var(--text-faint,#a9a2b3); }
+.harness-history-row > .harness-btn { border:0; color:var(--text-muted,#827b87); padding:6px; }
+.harness-history-empty { padding:22px 8px; text-align:center; }
 @media (hover:hover) and (pointer:fine) {
   .harness-model-trigger:hover,.harness-model-option:hover { background:var(--background-secondary,#eeeaf1); }
 }
@@ -200,9 +227,30 @@ function createViewController(ctx, holder, options) {
   let quotaLoading = false;
   let quotaError = '';
   let bindingRevision = 0;
+  let profiles = [];
+  let profilesAvailable = false;
+  let profilesError = '';
+  let checkingProfiles = false;
+  let editingProfileId = '';
+  let addingProfile = false;
+  let pendingRemovalId = '';
+  let showHistory = false;
+  let historyEntries = [];
+  let historyQuery = '';
+  let historyError = '';
+  let historyWorking = false;
+  let historyRemovalId = '';
+  let draftTimer = null;
+  let draftDirty = false;
+  let draftSaving = Promise.resolve();
 
-  function routeKey() {
-    return status ? `${status.provider}|${status.baseUrl}` : '';
+  function legacyRoute(profile) {
+    return profile ? `${profile.provider}|${profile.baseUrl}` : '';
+  }
+
+  function routeKey(profile) {
+    const selected = profile || status;
+    return selected ? (selected.profileId || legacyRoute(selected)) : '';
   }
 
   function modelNames(value) {
@@ -210,37 +258,64 @@ function createViewController(ctx, holder, options) {
       .map((name) => text(name).trim()).filter((name) => name.length > 0 && name.length <= 128))].slice(0, 300);
   }
 
-  function currentModels() {
-    return modelNames([status && status.model, ...(modelLists[routeKey()] || [])]);
+  function currentModels(profile) {
+    const selected = profile || status;
+    return modelNames([selected && selected.model, ...(modelLists[routeKey(selected)] || modelLists[legacyRoute(selected)] || [])]);
   }
 
   function currentService() {
-    return serviceName(status, serviceNames[routeKey()]);
+    return profileName(status);
   }
 
-  async function rememberService(name) {
+  function profileName(profile) {
+    return serviceName(profile, profile && profile.name || serviceNames[routeKey(profile)] || serviceNames[legacyRoute(profile)]);
+  }
+
+  async function reloadProfiles() {
+    const revision = bindingRevision;
+    try {
+      const catalog = await ctx.ai.profiles();
+      if (revision !== bindingRevision) { return; }
+      if (!catalog || !Array.isArray(catalog.profiles)) { throw new Error('宿主返回的服务商列表格式不正确'); }
+      profiles = catalog.profiles;
+      profilesAvailable = true;
+      profilesError = '';
+    } catch (failure) {
+      if (revision === bindingRevision) {
+        profilesAvailable = false;
+        const detail = errorText(failure);
+        profilesError = `读取插件服务商配置失败：${detail}。请重试。`;
+      }
+    }
+  }
+
+  async function rememberService(name, profile) {
+    const selected = profile || status;
+    const key = routeKey(selected);
     const next = {};
-    for (const route of Object.keys(serviceNames).filter((key) => key !== routeKey()).slice(-11)) {
+    for (const route of Object.keys(serviceNames).filter((route) => route !== key).slice(-11)) {
       next[route] = serviceNames[route];
     }
     const label = text(name).trim().slice(0, 64);
-    if (label) { next[routeKey()] = label; }
-    while (JSON.stringify(next).length > 28000 && Object.keys(next).length > 1) { delete next[Object.keys(next)[0]]; }
+    if (label) { next[key] = label; }
+    if (selected && selected.profileId) { delete next[legacyRoute(selected)]; }
+    while (JSON.stringify(next).length > 10000 && Object.keys(next).length) { delete next[Object.keys(next)[0]]; }
     serviceNames = next;
     await ctx.storage.set('harness.services.v1', next);
   }
 
-  async function rememberModels(names) {
-    modelLists[routeKey()] = modelNames(names);
+  async function rememberModels(names, profile) {
+    const key = routeKey(profile);
+    modelLists[key] = modelNames(names);
     // Bound storage across service changes; keys and credentials never go here.
-    const routes = Object.keys(modelLists).filter((route) => route !== routeKey()).slice(-11);
-    routes.push(routeKey());
+    const routes = Object.keys(modelLists).filter((route) => route !== key).slice(-11);
+    routes.push(key);
     const next = {};
     for (const route of routes) { next[route] = modelLists[route]; }
-    while (JSON.stringify(next).length > 28000 && Object.keys(next).length > 1) {
+    while (JSON.stringify(next).length > 24000 && Object.keys(next).length > 1) {
       delete next[Object.keys(next)[0]];
     }
-    while (JSON.stringify(next).length > 28000 && next[routeKey()].length > 1) { next[routeKey()].pop(); }
+    while (JSON.stringify(next).length > 24000 && next[key].length > 1) { next[key].pop(); }
     modelLists = next;
     await ctx.storage.set('harness.models.v1', next);
   }
@@ -251,6 +326,7 @@ function createViewController(ctx, holder, options) {
     quota = null;
     quotaError = '';
     quotaLoading = false;
+    pendingRemovalId = '';
   }
 
   function session() {
@@ -392,6 +468,7 @@ function createViewController(ctx, holder, options) {
       chip.addEventListener('click', () => {
         if (dom && dom.input) {
           dom.input.value = starter;
+          trackDraft();
           dom.input.focus();
         }
       });
@@ -404,7 +481,7 @@ function createViewController(ctx, holder, options) {
   function renderSetupHint() {
     const box = element('div', 'harness-setup');
     box.appendChild(element('b', '', '还没有绑定模型服务'));
-    box.appendChild(element('p', '', 'Harness 需要模型才能对话。API Key 保存在知萤宿主，插件只能使用、不能读回。'));
+    box.appendChild(element('p', '', 'Harness 需要模型才能对话。可添加多个服务商，配置和 Key 保存在本插件的本地数据中。'));
     box.appendChild(button('绑定模型', 'primary', () => openSettings()));
     return box;
   }
@@ -416,8 +493,9 @@ function createViewController(ctx, holder, options) {
     header.appendChild(element('span', 'harness-title', 'Harness'));
     header.appendChild(element('span', 'harness-sub', statusSubtitle()));
     const actions = element('div', 'harness-actions');
-    actions.appendChild(button('模型', '', () => openModels(), busy || switching || saving));
-    actions.appendChild(button('新会话', '', () => resetSession(), busy));
+    actions.appendChild(button('历史', '', () => openHistory(), busy || switching || saving || historyWorking));
+    actions.appendChild(button('模型', '', () => openModels(), busy || switching || saving || historyWorking));
+    actions.appendChild(button('新会话', '', () => resetSession(), busy || switching || saving || historyWorking));
     header.appendChild(actions);
     return header;
   }
@@ -430,6 +508,9 @@ function createViewController(ctx, holder, options) {
     const input = element('textarea', 'harness-input');
     input.placeholder = '问 Harness，例如：整理当前笔记并给出行动项';
     input.rows = 2;
+    input.value = session().draft || '';
+    input.addEventListener('input', () => trackDraft());
+    input.addEventListener('blur', () => { flushDraft().catch(() => {}); });
     input.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
@@ -452,7 +533,7 @@ function createViewController(ctx, holder, options) {
   function renderToolbar() {
     if (!dom) { return; }
     dom.toolbar.replaceChildren();
-    const trigger = button('', 'harness-model-trigger', () => openModels(), busy || switching || saving);
+    const trigger = button('', 'harness-model-trigger', () => openModels(), busy || switching || saving || historyWorking);
     const configured = status && status.configured;
     const provider = configured ? currentService() : '模型服务';
     const model = configured ? status.model : '选择并配置模型';
@@ -471,9 +552,9 @@ function createViewController(ctx, holder, options) {
       refresh();
       if (quotaOpen) { fetchQuota(); }
     }, !status || !status.configured));
-    dom.toolbarMessage.textContent = toolbarError;
+    dom.toolbarMessage.textContent = [toolbarError, historyNotice(ctx)].filter(Boolean).join('\n');
     dom.sendButton.textContent = busy ? '停止' : '发送';
-    dom.sendButton.disabled = !busy && (switching || saving || !status || !status.configured);
+    dom.sendButton.disabled = !busy && (switching || saving || historyWorking || !status || !status.configured);
     dom.quotaPanel.replaceChildren();
     if (!quotaOpen) { return; }
     if (quotaLoading) { dom.quotaPanel.appendChild(element('p', '', '正在查询余额 / 配额…')); }
@@ -502,7 +583,7 @@ function createViewController(ctx, holder, options) {
     } else {
       dom.quotaPanel.appendChild(element('p', '', '点击刷新查询当前服务的余额 / 配额。'));
     }
-    dom.quotaPanel.appendChild(button('刷新', '', () => fetchQuota(), quotaLoading || switching || saving));
+    dom.quotaPanel.appendChild(button('刷新', '', () => fetchQuota(true), quotaLoading || switching || saving));
   }
 
   async function fetchModels() {
@@ -531,6 +612,7 @@ function createViewController(ctx, holder, options) {
     refresh();
     try {
       bindingChanged(await ctx.ai.configure({ model }));
+      await reloadProfiles();
       if (quotaOpen) { fetchQuota(); }
     } catch (failure) {
       if (showModels) { modelsError = errorText(failure); }
@@ -539,7 +621,7 @@ function createViewController(ctx, holder, options) {
     finally { switching = false; refresh(); }
   }
 
-  async function fetchQuota() {
+  async function fetchQuota(force) {
     if (quotaLoading || !status || !status.configured) { return; }
     quotaLoading = true;
     quotaError = '';
@@ -547,10 +629,74 @@ function createViewController(ctx, holder, options) {
     refresh();
     try {
       if (typeof ctx.ai.balance !== 'function') { throw new Error('请更新知萤宿主以支持余额查询'); }
-      const result = await ctx.ai.balance();
+      const result = await ctx.ai.balance({ force: force === true });
       if (revision === bindingRevision) { quota = result; }
     } catch (failure) { if (revision === bindingRevision) { quotaError = errorText(failure); } }
     finally { if (revision === bindingRevision) { quotaLoading = false; refresh(); } }
+  }
+
+  function renderHistoryRows(list) {
+    list.replaceChildren();
+    const query = historyQuery.trim().toLowerCase();
+    const entries = historyEntries.filter(entry => `${entry.title} ${entry.preview}`.toLowerCase().includes(query));
+    if (!entries.length) {
+      list.appendChild(element('p', 'harness-history-empty', historyWorking ? '正在读取…' : query ? '没有匹配的对话' : '发送消息后会自动保存，也会保留有内容的草稿。'));
+    }
+    for (const entry of entries) {
+      const row = element('div', `harness-history-row${entry.current ? ' selected' : ''}`);
+      const choice = element('button', 'harness-history-choice');
+      choice.type = 'button';
+      choice.disabled = historyWorking;
+      choice.setAttribute('aria-label', `打开对话 ${entry.title}`);
+      if (entry.current) { choice.setAttribute('aria-current', 'true'); }
+      choice.appendChild(element('b', '', `${entry.current ? '当前 · ' : ''}${entry.title}`));
+      choice.appendChild(element('span', 'harness-history-preview', `${entry.draft ? '有草稿 · ' : ''}${entry.preview}`));
+      const date = new Date(entry.updatedAt).toLocaleString();
+      choice.appendChild(element('span', 'harness-history-meta', `${date}${entry.model ? ` · ${entry.model}` : ''}${entry.trimmed ? ' · 部分内容已压缩' : ''}`));
+      choice.addEventListener('click', () => resumeHistory(entry.id));
+      row.appendChild(choice);
+      const remove = button('删除', '', () => {
+        historyRemovalId = entry.id; settingsDirty = true; refresh();
+      }, historyWorking);
+      remove.setAttribute('aria-label', `删除对话 ${entry.title}`);
+      row.appendChild(remove);
+      list.appendChild(row);
+    }
+  }
+
+  function renderHistory() {
+    const overlay = element('div', 'harness-overlay');
+    const panel = element('div', 'harness-settings harness-models harness-history');
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-label', '对话历史');
+    const head = element('div', 'harness-models-head');
+    head.appendChild(element('h3', '', '对话历史'));
+    head.appendChild(button('关闭', '', () => { showHistory = false; settingsDirty = true; refresh(); }));
+    panel.appendChild(head);
+    const search = element('input', 'harness-history-search');
+    search.type = 'search'; search.placeholder = '搜索对话'; search.value = historyQuery;
+    search.setAttribute('aria-label', '搜索对话');
+    panel.appendChild(search);
+    const actions = element('div', 'harness-models-actions');
+    actions.appendChild(button('新建对话', 'primary', () => resetSession(), historyWorking));
+    panel.appendChild(actions);
+    if (historyError) { panel.appendChild(element('div', 'harness-settings-error', historyError)); }
+    const deleting = historyEntries.find(entry => entry.id === historyRemovalId);
+    if (deleting) {
+      const confirmation = element('div', 'harness-remove-confirm');
+      confirmation.appendChild(element('p', '', `删除对话「${deleting.title}」？此操作不可恢复。`));
+      confirmation.appendChild(button('取消删除', '', () => { historyRemovalId = ''; settingsDirty = true; refresh(); }, historyWorking));
+      confirmation.appendChild(button('确认删除对话', '', () => removeHistory(deleting.id), historyWorking));
+      panel.appendChild(confirmation);
+    }
+    const list = element('div', 'harness-history-list');
+    list.setAttribute('aria-label', '已保存的对话');
+    search.addEventListener('input', () => { historyQuery = search.value; renderHistoryRows(list); });
+    renderHistoryRows(list);
+    panel.appendChild(list);
+    panel.appendChild(element('p', 'harness-models-tip', '本地最多保留 20 段对话；长对话保留最近内容，空间不足时清理最早历史。恢复后使用输入栏当前模型继续。'));
+    overlay.appendChild(panel);
+    return overlay;
   }
 
   function renderModels() {
@@ -562,6 +708,40 @@ function createViewController(ctx, holder, options) {
     head.appendChild(element('h3', '', '模型'));
     head.appendChild(button('关闭', '', () => closeModels()));
     panel.appendChild(head);
+    const servicesHead = element('div', 'harness-services-head');
+    servicesHead.appendChild(element('b', '', '服务商'));
+    servicesHead.appendChild(button(checkingProfiles ? '正在检查…' : '添加服务商', '', () => openAddProfile(),
+      busy || switching || saving || checkingProfiles));
+    panel.appendChild(servicesHead);
+    const services = element('div', 'harness-services-list');
+    services.setAttribute('aria-label', '已保存的服务商');
+    for (const profile of profiles) {
+      const selected = status && profile.profileId === status.profileId;
+      const row = element('div', `harness-service-row${selected ? ' selected' : ''}`);
+      const choice = element('button', 'harness-service-choice');
+      choice.type = 'button';
+      choice.disabled = busy || switching || saving;
+      choice.setAttribute('aria-label', `使用服务商 ${profileName(profile)}`);
+      choice.setAttribute('aria-pressed', String(!!selected));
+      choice.appendChild(element('b', '', profileName(profile)));
+      choice.appendChild(element('span', '', `${selected ? '当前使用 · ' : ''}${profile.model}${profile.needsApiKey ? ' · 需补填 Key' : ''}`));
+      choice.addEventListener('click', () => selectProfile(profile.profileId));
+      row.appendChild(choice);
+      row.appendChild(button('编辑', '', () => openSettings(profile.profileId), busy || switching || saving));
+      const remove = button('删除', '', () => { pendingRemovalId = profile.profileId; refresh(); }, busy || switching || saving);
+      remove.setAttribute('aria-label', `删除服务商 ${profileName(profile)}`);
+      row.appendChild(remove);
+      services.appendChild(row);
+    }
+    if (profiles.length) { panel.appendChild(services); }
+    const removing = profiles.find((profile) => profile.profileId === pendingRemovalId);
+    if (removing) {
+      const confirmation = element('div', 'harness-remove-confirm');
+      confirmation.appendChild(element('p', '', `删除「${profileName(removing)}」及保存的 API Key？`));
+      confirmation.appendChild(button('取消删除', '', () => { pendingRemovalId = ''; refresh(); }, saving));
+      confirmation.appendChild(button('确认删除', '', () => removeProfile(removing.profileId), saving));
+      panel.appendChild(confirmation);
+    }
     const service = element('div', 'harness-models-service');
     service.appendChild(element('b', '', status && status.configured ? currentService() : '尚未绑定模型服务'));
     if (status && status.configured) {
@@ -576,6 +756,9 @@ function createViewController(ctx, holder, options) {
       busy || switching || loadingModels || saving || !status || !status.configured));
     panel.appendChild(actions);
     if (modelsError) { panel.appendChild(element('div', 'harness-settings-error', modelsError)); }
+    if (modelsError && !profilesAvailable) {
+      panel.appendChild(button('重试读取配置', '', () => openAddProfile(), busy || switching || saving || checkingProfiles));
+    }
     const list = element('div', 'harness-models-list');
     list.setAttribute('aria-label', '可用模型');
     if (status && status.configured) {
@@ -601,22 +784,26 @@ function createViewController(ctx, holder, options) {
   }
 
   function renderOverlay() {
+    if (showHistory) { return renderHistory(); }
     if (showModels) { return renderModels(); }
     if (!showSettings) { return null; }
     const overlay = element('div', 'harness-overlay');
     const panel = element('div', 'harness-settings harness-config');
     panel.setAttribute('role', 'dialog');
     panel.setAttribute('aria-label', '模型服务设置');
-    panel.appendChild(element('h3', '', '绑定模型服务'));
+    panel.appendChild(element('h3', '', addingProfile ? '添加服务商' : '编辑服务商'));
+    const editing = addingProfile ? null : (profiles.find((profile) => profile.profileId === editingProfileId) || status);
     panel.appendChild(element('p', '',
-      'API Key 安全保存在知萤。留空沿用已保存的 Key；更换 Base URL 时请重新填写。'));
+      editing && editing.needsApiKey
+        ? '此服务商还没有可用的 API Key。请补填一次；新宿主上 Key 只写不读回。'
+        : '新宿主上 API Key 只写入宿主、保存后不可读回；旧宿主会保存在插件本地数据中。插件仅保存服务商配置。编辑时留空沿用；更换 Base URL 请重新填写。'));
     const draft = settingsDraft || {
-      provider: status && status.provider ? status.provider : 'openai-compatible',
-      baseUrl: status && status.baseUrl ? status.baseUrl : 'https://api.deepseek.com',
-      model: status && status.model ? status.model : 'deepseek-chat',
+      provider: editing && editing.provider ? editing.provider : 'openai-compatible',
+      baseUrl: editing && editing.baseUrl ? editing.baseUrl : '',
+      model: editing && editing.model ? editing.model : '',
       apiKey: '',
-      quickModels: currentModels().join(', '),
-      serviceName: serviceNames[routeKey()] || ''
+      quickModels: editing ? currentModels(editing).join(', ') : '',
+      serviceName: editing && (editing.name || serviceNames[routeKey(editing)] || serviceNames[legacyRoute(editing)]) || ''
     };
     settingsDraft = draft;
     function track(node, name, event) {
@@ -687,7 +874,7 @@ function createViewController(ctx, holder, options) {
     const apiKey = element('input');
     apiKey.type = 'password';
     apiKey.value = draft.apiKey || '';
-    apiKey.placeholder = status && status.configured ? '已保存，留空则不修改' : 'sk-…';
+    apiKey.placeholder = editing && editing.needsApiKey ? '请补填此服务商的 Key' : editing && editing.configured ? '此服务已保存，留空则不修改' : 'sk-…';
     apiKey.maxLength = 8192;
     apiKey.autocomplete = 'new-password';
     track(apiKey, 'apiKey');
@@ -709,7 +896,7 @@ function createViewController(ctx, holder, options) {
     }
 
     const actions = element('div', 'harness-settings-actions');
-    if (status && status.configured) {
+    if (!profilesAvailable && status && status.configured) {
       actions.appendChild(button('清除绑定', '', () => clearBinding(), saving));
     }
     actions.appendChild(button('取消', '', () => {
@@ -720,7 +907,7 @@ function createViewController(ctx, holder, options) {
       settingsDirty = true;
       refresh();
     }, saving));
-    actions.appendChild(button(saving ? '保存中…' : '保存', 'primary', () => saveSettings({
+    actions.appendChild(button(saving ? '保存中…' : (addingProfile ? '保存并使用' : '保存'), 'primary', () => saveSettings({
       provider: provider.value,
       baseUrl: baseUrl.value,
       model: model.value,
@@ -790,6 +977,7 @@ function createViewController(ctx, holder, options) {
     try {
       const next = await ctx.ai.status();
       if (revision === bindingRevision && !saving && !switching) { status = next; }
+      await reloadProfiles();
     } catch (failure) {
       if (revision === bindingRevision) { error = errorText(failure); }
     }
@@ -816,10 +1004,15 @@ function createViewController(ctx, holder, options) {
 
   async function send(value) {
     const prompt = text(value).trim();
-    if (prompt.length === 0 || busy || saving || switching) { return; }
+    if (prompt.length === 0 || busy || saving || switching || historyWorking) { return; }
     busy = true;
     error = '';
     pending = '正在思考…';
+    if (draftTimer) { clearTimeout(draftTimer); draftTimer = null; }
+    draftDirty = false;
+    session().draft = '';
+    session().service = currentService();
+    session().model = status && status.model || '';
     if (dom && dom.input) { dom.input.value = ''; }
     refresh();
     try {
@@ -841,18 +1034,99 @@ function createViewController(ctx, holder, options) {
   }
 
   async function resetSession() {
-    if (busy) { return; }
-    const next = createSession();
-    ensureSystem(next, buildSystemPrompt(ctx));
-    holder.session = next;
-    await saveSession(ctx, next);
-    error = '';
+    if (busy || saving || switching || historyWorking) { return false; }
+    let created = false;
+    historyWorking = true; historyError = '';
     refresh();
+    try {
+      await persistCurrent();
+      const next = createSession();
+      ensureSystem(next, buildSystemPrompt(ctx));
+      await saveSession(ctx, next, { strict: true });
+      setConversation(next);
+      showHistory = false; showModels = false; showSettings = false; settingsDirty = true;
+      created = true;
+    } catch (failure) { historyError = errorText(failure); error = `新建对话失败：${historyError}`; }
+    finally { historyWorking = false; settingsDirty = true; refresh(); }
+    return created;
   }
 
-  function openSettings() {
-    if (busy || saving || switching) { return; }
+  function trackDraft() {
+    if (!dom || !dom.input) { return; }
+    session().draft = dom.input.value;
+    draftDirty = true;
+    if (draftTimer) { clearTimeout(draftTimer); }
+    draftTimer = setTimeout(() => { flushDraft().then(() => refresh()).catch(() => refresh()); }, 450);
+  }
+
+  async function flushDraft() {
+    if (draftTimer) { clearTimeout(draftTimer); draftTimer = null; }
+    if (!draftDirty) { return draftSaving; }
+    const current = session();
+    if (dom && dom.input) { current.draft = dom.input.value; }
+    draftDirty = false;
+    draftSaving = saveSession(ctx, current, { strict: true }).catch(failure => {
+      if (session() === current) { draftDirty = true; }
+      throw failure;
+    });
+    return draftSaving;
+  }
+
+  async function persistCurrent() {
+    if (draftTimer) { clearTimeout(draftTimer); draftTimer = null; }
+    if (dom && dom.input) { session().draft = dom.input.value; }
+    draftDirty = false;
+    draftSaving = saveSession(ctx, session(), { strict: true });
+    try { await draftSaving; }
+    catch (failure) { draftDirty = true; throw failure; }
+  }
+
+  function setConversation(next) {
+    holder.session = next;
+    ensureSystem(next, buildSystemPrompt(ctx));
+    if (dom && dom.input) { dom.input.value = next.draft || ''; }
+    error = ''; pending = ''; activeTool = null; historyRemovalId = '';
+  }
+
+  async function openHistory() {
+    if (busy || saving || switching || historyWorking) { return; }
+    showHistory = true; showModels = false; showSettings = false;
+    historyQuery = ''; historyError = ''; historyRemovalId = ''; historyWorking = true;
+    settingsDirty = true; refresh();
+    try { await persistCurrent(); historyEntries = await listConversations(ctx); }
+    catch (failure) { historyError = errorText(failure); }
+    finally { historyWorking = false; settingsDirty = true; refresh(); }
+  }
+
+  async function resumeHistory(id) {
+    if (busy || saving || switching || historyWorking) { return; }
+    historyWorking = true; historyError = ''; settingsDirty = true; refresh();
+    try {
+      await persistCurrent();
+      const next = await selectConversation(ctx, id);
+      setConversation(next);
+      showHistory = false;
+    } catch (failure) { historyError = errorText(failure); }
+    finally { historyWorking = false; settingsDirty = true; refresh(); }
+  }
+
+  async function removeHistory(id) {
+    if (busy || saving || switching || historyWorking) { return; }
+    historyWorking = true; historyError = ''; settingsDirty = true; refresh();
+    try {
+      await persistCurrent();
+      setConversation(await deleteConversation(ctx, id));
+      historyEntries = await listConversations(ctx);
+    } catch (failure) { historyError = errorText(failure); }
+    finally { historyWorking = false; settingsDirty = true; refresh(); }
+  }
+
+  function openSettings(profileId) {
+    if (busy || saving || switching || historyWorking) { return; }
+    showHistory = false;
     settingsReturnToModels = showModels;
+    addingProfile = false;
+    editingProfileId = typeof profileId === 'string' ? profileId : (status && status.profileId || '');
     showModels = false;
     settingsDraft = null;
     settingsError = '';
@@ -862,8 +1136,61 @@ function createViewController(ctx, holder, options) {
     if (!settingsReturnToModels) { refreshStatus().catch(() => {}); }
   }
 
+  async function openAddProfile() {
+    if (busy || saving || switching || checkingProfiles) { return; }
+    if (!profilesAvailable) {
+      checkingProfiles = true;
+      modelsError = '';
+      refresh();
+      await reloadProfiles();
+      checkingProfiles = false;
+    }
+    if (!profilesAvailable) {
+      modelsError = profilesError || '服务商配置尚未读取完成，请重试读取配置。';
+      refresh();
+      return;
+    }
+    // The user may have closed the manager while the host was being checked.
+    if (!showModels) {
+      return;
+    }
+    openSettings();
+    addingProfile = true;
+    editingProfileId = '';
+    settingsDraft = null;
+    settingsDirty = true;
+    refresh();
+  }
+
+  async function selectProfile(profileId) {
+    if (busy || saving || switching || !profilesAvailable || status && profileId === status.profileId) { return; }
+    switching = true;
+    modelsError = '';
+    refresh();
+    try {
+      bindingChanged(await ctx.ai.configure({ action: 'select', profileId }));
+      await reloadProfiles();
+      if (quotaOpen) { fetchQuota(); }
+    } catch (failure) { modelsError = errorText(failure); }
+    finally { switching = false; refresh(); }
+  }
+
+  async function removeProfile(profileId) {
+    if (busy || saving || switching || !profilesAvailable) { return; }
+    saving = true;
+    modelsError = '';
+    refresh();
+    try {
+      bindingChanged(await ctx.ai.configure({ action: 'remove', profileId }));
+      await reloadProfiles();
+      if (quotaOpen && status.configured) { fetchQuota(); }
+    } catch (failure) { modelsError = errorText(failure); }
+    finally { saving = false; refresh(); }
+  }
+
   function openModels() {
-    if (busy || saving || switching) { return; }
+    if (busy || saving || switching || historyWorking) { return; }
+    showHistory = false;
     showSettings = false;
     showModels = true;
     settingsDraft = null;
@@ -888,6 +1215,12 @@ function createViewController(ctx, holder, options) {
       baseUrl: text(patch.baseUrl).trim(),
       model: text(patch.model).trim()
     };
+    const editing = profiles.find((profile) => profile.profileId === editingProfileId) || status;
+    if (profilesAvailable) {
+      payload.action = addingProfile ? 'create' : 'save';
+      if (!addingProfile && editingProfileId) { payload.profileId = editingProfileId; }
+      payload.name = text(patch.serviceName).trim();
+    }
     if (!payload.baseUrl || !payload.model) {
       settingsError = '请填写完整的 Base URL 和模型名称';
       settingsDirty = true;
@@ -896,7 +1229,7 @@ function createViewController(ctx, holder, options) {
     }
     if (text(patch.apiKey).trim().length > 0) {
       payload.apiKey = text(patch.apiKey).trim();
-    } else if (!status || !status.configured) {
+    } else if (addingProfile || !editing || !editing.configured || editing.needsApiKey) {
       settingsError = '首次绑定需要填写 API Key';
       settingsDirty = true;
       refresh();
@@ -907,13 +1240,17 @@ function createViewController(ctx, holder, options) {
     refresh();
     try {
       bindingChanged(await ctx.ai.configure(payload));
+      const savedProfileId = addingProfile ? status.profileId : editingProfileId;
+      await reloadProfiles();
       showSettings = false;
       showModels = settingsReturnToModels;
       modelsError = '';
       settingsDraft = null;
       try {
-        await rememberService(patch.serviceName);
-        await rememberModels([status.model, ...modelNames(patch.quickModels)]);
+        const savedProfile = profiles.find((profile) => profile.profileId === savedProfileId);
+        // Saving an inactive profile must not write its model list into the active service.
+        await rememberService(patch.serviceName, savedProfile);
+        await rememberModels([payload.model, ...modelNames(patch.quickModels)], savedProfile);
       }
       catch (failure) { toolbarError = `模型已绑定，常用列表保存失败：${errorText(failure)}`; }
       try { await ctx.ui.notice('模型服务已绑定', 2000); } catch (ignored) { /* notice is optional */ }
@@ -979,6 +1316,12 @@ function createViewController(ctx, holder, options) {
     resetSession,
     openSettings,
     openModels,
+    openHistory,
+    async dispose() {
+      if (busy) { stopTurn(session()); }
+      await flushDraft().catch(() => {});
+      container = null; dom = null;
+    },
     isBusy() { return busy; },
     session() { return session(); },
     notify(message) {

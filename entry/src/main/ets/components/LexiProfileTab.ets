@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { LexiI18n } from '../core/LexiI18n';
 import { LexiHeroHeading } from './LexiNoteCard';
 
@@ -8,6 +9,7 @@ import { LexiHeroHeading } from './LexiNoteCard';
  */
 @Component
 export struct LexiProfileTab {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiLanguage') private interfaceLanguage: string = LexiI18n.language();
 
   private tr(source: string, args: string[] = []): string {
@@ -40,10 +42,10 @@ export struct LexiProfileTab {
         Text('知萤 LexiNote')
           .fontSize(17)
           .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_primary'))
+          .fontColor(this.palette.text_primary)
         Text(this.vaultSubtitle())
           .fontSize(12)
-          .fontColor($r('app.color.text_secondary'))
+          .fontColor(this.palette.text_secondary)
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
       }
@@ -51,14 +53,14 @@ export struct LexiProfileTab {
       .alignItems(HorizontalAlign.Start)
       Text(this.tr('{0} 篇笔记', [this.noteCount.toString()]))
         .fontSize(11)
-        .fontColor($r('app.color.brand_ink'))
+        .fontColor(this.palette.brand_ink)
         .padding({ left: 9, right: 9, top: 5, bottom: 5 })
-        .backgroundColor($r('app.color.brand_soft'))
+        .backgroundColor(this.palette.brand_soft)
         .borderRadius(10)
     }
     .width('100%')
     .padding(16)
-    .backgroundColor($r('app.color.surface'))
+    .backgroundColor(this.palette.surface)
     .borderRadius(20)
   }
 
@@ -69,21 +71,21 @@ export struct LexiProfileTab {
         Stack() {
           SymbolGlyph($r('sys.symbol.gearshape'))
             .fontSize(22)
-            .fontColor([$r('app.color.brand')])
+            .fontColor([this.palette.brand])
         }
         .width(46)
         .height(46)
         .borderRadius(15)
-        .backgroundColor($r('app.color.brand_soft'))
+        .backgroundColor(this.palette.brand_soft)
 
         Column({ space: 4 }) {
           Text(this.tr('设置'))
             .fontSize(16)
             .fontWeight(FontWeight.Medium)
-            .fontColor($r('app.color.text_primary'))
+            .fontColor(this.palette.text_primary)
           Text(this.tr('外观、编辑器、插件与数据'))
             .fontSize(12)
-            .fontColor($r('app.color.text_secondary'))
+            .fontColor(this.palette.text_secondary)
             .maxLines(2)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
         }
@@ -92,7 +94,7 @@ export struct LexiProfileTab {
 
         SymbolGlyph($r('sys.symbol.chevron_right'))
           .fontSize(12)
-          .fontColor([$r('app.color.text_secondary')])
+          .fontColor([this.palette.text_secondary])
       }
       .width('100%')
       .padding({ left: 16, right: 14, top: 14, bottom: 14 })
@@ -102,7 +104,7 @@ export struct LexiProfileTab {
     .constraintSize({ minHeight: 84 })
     .padding(0)
     .borderRadius(20)
-    .backgroundColor($r('app.color.surface'))
+    .backgroundColor(this.palette.surface)
     .accessibilityText(this.tr('设置'))
     .accessibilityDescription(this.tr('外观、编辑器、插件与数据'))
     .onClick((): void => { this.onOpenSettings(); })
@@ -115,21 +117,21 @@ export struct LexiProfileTab {
         Stack() {
           SymbolGlyph($r('sys.symbol.trash'))
             .fontSize(21)
-            .fontColor([$r('app.color.brand_ink')])
+            .fontColor([this.palette.brand_ink])
         }
         .width(46)
         .height(46)
         .borderRadius(15)
-        .backgroundColor($r('app.color.soft_surface'))
+        .backgroundColor(this.palette.soft_surface)
 
         Column({ space: 4 }) {
           Text(this.tr('回收站'))
             .fontSize(16)
             .fontWeight(FontWeight.Medium)
-            .fontColor($r('app.color.text_primary'))
+            .fontColor(this.palette.text_primary)
           Text(this.tr('恢复已删除的笔记，或永久删除'))
             .fontSize(12)
-            .fontColor($r('app.color.text_secondary'))
+            .fontColor(this.palette.text_secondary)
             .maxLines(2)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
         }
@@ -140,17 +142,17 @@ export struct LexiProfileTab {
           Text(`${this.deletedCount}`)
             .fontSize(11)
             .fontWeight(FontWeight.Medium)
-            .fontColor($r('app.color.brand_ink'))
+            .fontColor(this.palette.brand_ink)
             .constraintSize({ minWidth: 22 })
             .height(22)
             .padding({ left: 7, right: 7 })
             .textAlign(TextAlign.Center)
-            .backgroundColor($r('app.color.brand_soft'))
+            .backgroundColor(this.palette.brand_soft)
             .borderRadius(11)
         }
         SymbolGlyph($r('sys.symbol.chevron_right'))
           .fontSize(12)
-          .fontColor([$r('app.color.text_secondary')])
+          .fontColor([this.palette.text_secondary])
       }
       .width('100%')
       .padding({ left: 16, right: 14, top: 14, bottom: 14 })
@@ -160,7 +162,7 @@ export struct LexiProfileTab {
     .constraintSize({ minHeight: 84 })
     .padding(0)
     .borderRadius(20)
-    .backgroundColor($r('app.color.surface'))
+    .backgroundColor(this.palette.surface)
     .accessibilityText(this.tr('回收站'))
     .accessibilityDescription(this.tr('恢复已删除的笔记，或永久删除'))
     .onClick((): void => { this.onOpenTrash(); })
@@ -181,7 +183,7 @@ export struct LexiProfileTab {
       Text(this.tr('管理'))
         .fontSize(13)
         .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_secondary'))
+        .fontColor(this.palette.text_secondary)
         .width('100%')
         .padding({ left: 4 })
 
@@ -191,7 +193,7 @@ export struct LexiProfileTab {
       Text(this.tr('笔记保存在本机，可随时在设置中导出备份。'))
         .fontSize(12)
         .lineHeight(20)
-        .fontColor($r('app.color.text_secondary'))
+        .fontColor(this.palette.text_secondary)
         .width('100%')
         .padding({ left: 4, right: 4, top: 4 })
     }

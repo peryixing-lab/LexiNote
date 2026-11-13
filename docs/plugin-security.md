@@ -10,5 +10,6 @@
 - **安装安全**：路径穿越/符号链接/重复路径/超预算/压缩炸弹/非预期二进制全拒
   （`LexiPackageVerifier`）；完整性 `ERR_HASH_MISMATCH`；发布者签名 `ERR_SIGNATURE_INVALID`。
 - **分发信任链**：root→timestamp→snapshot→targets 四角色（TUF 风格），撤销表命中即整链拒绝。
+- **模型凭据**：`ai.configure` 的 `apiKey` 只写；宿主按 `<pluginId>:<profileId>` 存密钥，`status`/`configure`/`chat` 不回传，插件存储与 boot 数据不含 Key；卸载插件时清除。
 - **沙箱**：插件执行上下文 opaque origin + CSP connect-src 'none'，唯一宿主入口为专属
   MessagePort；错误码统一 §12.3（ERR_PERMISSION_DENIED / ERR_PLUGIN_CRASH / …）。

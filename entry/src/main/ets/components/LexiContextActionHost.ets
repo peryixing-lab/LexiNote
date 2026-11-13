@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { common } from '@kit.AbilityKit';
 import { CanvasBoard, LexiProject, MindMapDoc, NoteItem, NoteRevision, VaultItem } from '../core/LexiModels';
 import { LexiContextCommand, LexiContextTarget } from '../core/LexiContextModels';
@@ -8,6 +9,7 @@ import { MarkdownEngine } from '../core/MarkdownEngine';
 
 @Component
 export struct LexiContextActionHost {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiContextCommand') @Watch('received') private commandText: string = '';
   @State private showPanel: boolean = false;
   @State private panelTitle: string = '';
@@ -33,7 +35,7 @@ export struct LexiContextActionHost {
     this.nameDialogId = await this.getUIContext().getPromptAction().openCustomDialog({
       builder: (): void => { this.nameForm(); }, alignment: DialogAlignment.Center,
       width: Math.min(420, (AppStorage.get<number>('lexiViewportWidth') || 390) - 48),
-      backgroundColor: $r('app.color.surface'), backgroundBlurStyle: BlurStyle.NONE,
+      backgroundColor: this.palette.surface, backgroundBlurStyle: BlurStyle.NONE,
       cornerRadius: 24, autoCancel: true,
       onDidDisappear: (): void => { this.nameDialogId = -1; }
     });
@@ -117,7 +119,7 @@ export struct LexiContextActionHost {
       this.getUIContext().showAlertDialog({ title: spatial ? '删除这个文件？' : note ? '移到回收站？' : '从列表移除？',
         message: spatial ? `「${this.target.title}」将被删除，此操作无法撤销。` : note ? `「${this.target.title}」中的笔记可从回收站恢复。` : '原文件与内容保留。可在工作区管理的“已移除”区域重新启用。',
         primaryButton: { value: '取消', action: (): void => {} },
-        secondaryButton: { value: spatial ? '删除' : note ? '移到回收站' : '移除', fontColor: $r('app.color.error'),
+        secondaryButton: { value: spatial ? '删除' : note ? '移到回收站' : '移除', fontColor: this.palette.error,
           action: (): void => { this.runImmediate('delete'); } } }); return;
     }
     await this.runImmediate(action);
@@ -215,29 +217,29 @@ export struct LexiContextActionHost {
   }
   @Builder
   private destination() {
-    Text('选择工作区和目标文件夹').fontSize(14).fontColor($r('app.color.text_secondary')).width('100%')
+    Text('选择工作区和目标文件夹').fontSize(14).fontColor(this.palette.text_secondary).width('100%')
     if (this.selectedVault && this.selectedVault !== this.target.vaultId && this.target.kind === 'note') {
-      Text('各工作区的标题链接独立解析，跨区移动后需要重新关联相关笔记。').fontSize(13).lineHeight(21).fontColor($r('app.color.text_secondary'))
+      Text('各工作区的标题链接独立解析，跨区移动后需要重新关联相关笔记。').fontSize(13).lineHeight(21).fontColor(this.palette.text_secondary)
     }
     if (this.target.kind === 'project') {
-      Text('将项目归入目标工作区，已绑定的磁盘目录保持原位置。').fontSize(13).lineHeight(21).fontColor($r('app.color.text_secondary'))
+      Text('将项目归入目标工作区，已绑定的磁盘目录保持原位置。').fontSize(13).lineHeight(21).fontColor(this.palette.text_secondary)
     }
     if (this.target.kind === 'workspace') {
-      Text('将内容移入另一个工作区，完成后移除原工作区入口。').fontSize(13).lineHeight(21).fontColor($r('app.color.text_secondary'))
+      Text('将内容移入另一个工作区，完成后移除原工作区入口。').fontSize(13).lineHeight(21).fontColor(this.palette.text_secondary)
     }
     ForEach(this.vaults.filter((vault: VaultItem): boolean => this.target.kind !== 'workspace' || vault.id !== this.target.vaultId), (vault: VaultItem) => {
       Button(`${vault.id === this.selectedVault ? '✓  ' : ''}${vault.name}`, { type: ButtonType.Normal })
         .id(`context-destination-${vault.id}`).height(48).width('100%').borderRadius(12).fontSize(15)
-        .backgroundColor(vault.id === this.selectedVault ? $r('app.color.brand_soft') : $r('app.color.soft_surface'))
-        .fontColor($r('app.color.text_primary')).onClick((): void => { this.selectedVault = vault.id; this.selectedProject = ''; })
+        .backgroundColor(vault.id === this.selectedVault ? this.palette.brand_soft : this.palette.soft_surface)
+        .fontColor(this.palette.text_primary).onClick((): void => { this.selectedVault = vault.id; this.selectedProject = ''; })
     }, (vault: VaultItem): string => vault.id)
     if (this.selectedVault && this.target.kind !== 'project') {
       Button(this.selectedProject ? '工作区根目录' : '✓  工作区根目录', { type: ButtonType.Normal }).height(44).width('100%')
-        .backgroundColor($r('app.color.soft_surface')).fontColor($r('app.color.text_primary')).borderRadius(12)
+        .backgroundColor(this.palette.soft_surface).fontColor(this.palette.text_primary).borderRadius(12)
         .onClick((): void => { this.selectedProject = ''; })
       ForEach(this.projects.filter((project: LexiProject): boolean => project.vaultId === this.selectedVault), (project: LexiProject) => {
         Button(`${project.id === this.selectedProject ? '✓  ' : ''}${project.name}`, { type: ButtonType.Normal }).height(44).width('100%')
-          .id(`context-project-${project.id}`).backgroundColor($r('app.color.soft_surface')).fontColor($r('app.color.text_primary')).borderRadius(12)
+          .id(`context-project-${project.id}`).backgroundColor(this.palette.soft_surface).fontColor(this.palette.text_primary).borderRadius(12)
           .onClick((): void => { this.selectedProject = project.id; })
       }, (project: LexiProject): string => project.id)
     }
@@ -245,21 +247,21 @@ export struct LexiContextActionHost {
   @Builder
   private nameForm() {
     Column({ space: 16 }) {
-      Text(this.panelTitle).fontSize(20).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary')).width('100%')
+      Text(this.panelTitle).fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.palette.text_primary).width('100%')
       TextInput({ text: this.nameText, placeholder: '请输入名称' }).id('context-name-input').height(48).width('100%')
-        .fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.soft_surface')).borderRadius(12)
+        .fontColor(this.palette.text_primary).backgroundColor(this.palette.soft_surface).borderRadius(12)
         .onChange((text: string): void => { this.nameText = text; })
         .enterKeyType(EnterKeyType.Done).onSubmit((): void => { this.getUIContext().getFocusController().clearFocus(); this.commit(); })
       if (this.phase === 'rename' && (this.target.kind === 'workspace' || this.target.kind === 'project')) {
-        Text('修改应用内显示名称，磁盘目录保留原名。').fontSize(13).lineHeight(21).fontColor($r('app.color.text_secondary')).width('100%')
+        Text('修改应用内显示名称，磁盘目录保留原名。').fontSize(13).lineHeight(21).fontColor(this.palette.text_secondary).width('100%')
       }
-      if (this.message) { Text(this.message).fontSize(13).fontColor($r('app.color.error')).width('100%'); }
+      if (this.message) { Text(this.message).fontSize(13).fontColor(this.palette.error).width('100%'); }
       Button(this.working ? '正在处理…' : '确定', { type: ButtonType.Normal }).id('context-confirm')
         .width('100%').height(48).fontSize(15).borderRadius(14).enabled(!this.working && !!this.nameText.trim())
-        .fontColor($r('app.color.inverse_text')).backgroundColor($r('app.color.brand'))
+        .fontColor(this.palette.inverse_text).backgroundColor(this.palette.brand)
         .onClick((): void => { this.getUIContext().getFocusController().clearFocus(); this.commit(); })
       Button('取消', { buttonStyle: ButtonStyleMode.TEXTUAL }).width('100%').height(40).fontSize(14)
-        .fontColor($r('app.color.text_secondary')).onClick((): void => { this.closeNameDialog(); })
+        .fontColor(this.palette.text_secondary).onClick((): void => { this.closeNameDialog(); })
     }.width('100%').padding(24)
   }
 
@@ -271,53 +273,53 @@ export struct LexiContextActionHost {
         Column({ space: 12 }) {
           if (this.phase === 'rename' || this.phase === 'new-folder') {
             TextInput({ text: this.nameText, placeholder: '请输入名称' }).id('context-name-input').height(48).width('100%')
-              .fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.soft_surface')).borderRadius(12)
+              .fontColor(this.palette.text_primary).backgroundColor(this.palette.soft_surface).borderRadius(12)
               .onChange((text: string): void => { this.nameText = text; })
             if (this.phase === 'rename' && (this.target.kind === 'workspace' || this.target.kind === 'project')) {
-              Text('修改应用内显示名称，已绑定的磁盘目录保留原名。').fontSize(13).lineHeight(22).fontColor($r('app.color.text_secondary'))
+              Text('修改应用内显示名称，已绑定的磁盘目录保留原名。').fontSize(13).lineHeight(22).fontColor(this.palette.text_secondary)
             }
           } else if (this.phase === 'move') { this.destination(); }
           else if (this.phase === 'merge' || this.phase === 'location') {
             if (this.phase === 'merge') {
-              Text('将正文追加到目标笔记，原笔记移入回收站，相关标题链接同步更新。').fontSize(13).lineHeight(22).fontColor($r('app.color.text_secondary'))
+              Text('将正文追加到目标笔记，原笔记移入回收站，相关标题链接同步更新。').fontSize(13).lineHeight(22).fontColor(this.palette.text_secondary)
               TextInput({ text: this.searchText, placeholder: '搜索目标笔记' }).height(44).width('100%')
-                .fontColor($r('app.color.text_primary')).backgroundColor($r('app.color.soft_surface'))
+                .fontColor(this.palette.text_primary).backgroundColor(this.palette.soft_surface)
                 .onChange((text: string): void => { this.searchText = text; })
             } else {
-              Text(this.nameText).fontSize(13).lineHeight(22).fontColor($r('app.color.text_secondary')).width('100%').copyOption(CopyOptions.LocalDevice)
-              Text('以下显示应用中的内容。').fontSize(13).fontColor($r('app.color.text_secondary'))
+              Text(this.nameText).fontSize(13).lineHeight(22).fontColor(this.palette.text_secondary).width('100%').copyOption(CopyOptions.LocalDevice)
+              Text('以下显示应用中的内容。').fontSize(13).fontColor(this.palette.text_secondary)
             }
             ForEach(this.selectionNotes(), (note: NoteItem) => {
               Button(`${this.selectedNote === note.id ? '✓  ' : ''}${MarkdownEngine.displayTitle(note)}`, { type: ButtonType.Normal })
                 .id(`context-note-${note.id}`).width('100%').height(48).fontSize(14).borderRadius(12)
-                .backgroundColor($r('app.color.soft_surface')).fontColor($r('app.color.text_primary'))
+                .backgroundColor(this.palette.soft_surface).fontColor(this.palette.text_primary)
                 .onClick((): void => {
                   if (this.phase === 'location') { this.showPanel = false; this.onOpen(note.id, 'tab'); } else { this.selectedNote = note.id; this.getUIContext().getFocusController().clearFocus(); }
                 })
             }, (note: NoteItem): string => `${note.id}-${note.updatedAt}`)
           } else if (this.phase === 'history') {
-            Text('保留最近 20 次正文或标题修改。恢复版本前的内容会继续保留。').fontSize(13).lineHeight(22).fontColor($r('app.color.text_secondary'))
+            Text('保留最近 20 次正文或标题修改。恢复版本前的内容会继续保留。').fontSize(13).lineHeight(22).fontColor(this.palette.text_secondary)
             if (this.revisions.length === 0) {
-              Text('还没有历史版本。后续修改并保存后，旧版本会自动出现在这里。').fontSize(14).lineHeight(24).fontColor($r('app.color.text_primary'))
+              Text('还没有历史版本。后续修改并保存后，旧版本会自动出现在这里。').fontSize(14).lineHeight(24).fontColor(this.palette.text_primary)
             }
             ForEach(this.revisions, (revision: NoteRevision) => {
               Button(`${this.selectedRevision === revision.id ? '✓  ' : ''}${new Date(revision.savedAt).toLocaleString()}`, { type: ButtonType.Normal })
                 .id(`context-revision-${revision.id}`).width('100%').height(48).fontSize(14).borderRadius(12)
-                .backgroundColor($r('app.color.soft_surface')).fontColor($r('app.color.text_primary'))
+                .backgroundColor(this.palette.soft_surface).fontColor(this.palette.text_primary)
                 .onClick((): void => { this.selectedRevision = revision.id; })
               if (this.selectedRevision === revision.id) {
                 Text(revision.snapshot.content || '空白正文').width('100%').fontSize(14).lineHeight(23)
-                  .fontColor($r('app.color.text_primary')).padding(16).backgroundColor($r('app.color.soft_surface')).borderRadius(12)
+                  .fontColor(this.palette.text_primary).padding(16).backgroundColor(this.palette.soft_surface).borderRadius(12)
               }
             }, (revision: NoteRevision): string => revision.id)
           }
         }.width('100%')
       }.width('100%').layoutWeight(1).align(Alignment.Top)
-      if (this.message) { Text(this.message).fontSize(13).fontColor($r('app.color.error')).width('100%'); }
+      if (this.message) { Text(this.message).fontSize(13).fontColor(this.palette.error).width('100%'); }
       if (this.phase !== 'location') {
         Button(this.working ? '正在处理…' : this.phase === 'history' ? '恢复此版本' : this.phase === 'merge' ? '确认合并' : '确定', { type: ButtonType.Normal })
           .id('context-confirm').height(48).width('100%').fontSize(15).borderRadius(14)
-          .backgroundColor($r('app.color.brand')).fontColor($r('app.color.inverse_text'))
+          .backgroundColor(this.palette.brand).fontColor(this.palette.inverse_text)
           .enabled(!this.working && (this.phase !== 'merge' || !!this.selectedNote) && (this.phase !== 'history' || !!this.selectedRevision))
           .onClick((): void => { this.commit(); })
       }
@@ -326,7 +328,7 @@ export struct LexiContextActionHost {
   }
   build() {
     Column().width(0).height(0).bindSheet($$this.showPanel, this.panel, {
-      height: SheetSize.LARGE, keyboardAvoidMode: SheetKeyboardAvoidMode.TRANSLATE_AND_RESIZE, dragBar: true, showClose: true, title: { title: this.panelTitle }, backgroundColor: $r('app.color.surface')
+      height: SheetSize.LARGE, keyboardAvoidMode: SheetKeyboardAvoidMode.TRANSLATE_AND_RESIZE, dragBar: true, showClose: true, title: { title: this.panelTitle }, backgroundColor: this.palette.surface
     })
   }
 }

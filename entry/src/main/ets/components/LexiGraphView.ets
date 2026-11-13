@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { GraphEdge, GraphNode } from '../core/LexiModels';
 
 /**
@@ -5,6 +6,7 @@ import { GraphEdge, GraphNode } from '../core/LexiModels';
  */
 @Component
 export struct LexiGraphView {
+  @StorageProp('lexiThemePalette') @Watch('redraw') private palette: LexiThemePalette = LexiTheme.current();
   @Prop @Watch('redraw') nodes: GraphNode[] = [];
   @Prop @Watch('redraw') edges: GraphEdge[] = [];
   @Prop @Watch('redraw') selectedId: string = '';
@@ -19,33 +21,27 @@ export struct LexiGraphView {
   private nodeIndex: Map<string, GraphNode> = new Map<string, GraphNode>();
   private readonly graphPadding: number = 34;
 
-  private color(res: Resource, alpha: number = 1): string {
-    try {
-      const value = this.getUIContext().getHostContext()!.resourceManager.getColorSync(res.id);
-      const a = ((value >>> 24) & 0xff) / 255 * alpha;
-      const r = (value >>> 16) & 0xff;
-      const g = (value >>> 8) & 0xff;
-      const b = value & 0xff;
-      return `rgba(${r},${g},${b},${a.toFixed(3)})`;
-    } catch {
-      return `rgba(110,68,217,${alpha})`;
-    }
+  private color(hex: string, alpha: number = 1): string {
+    const red = parseInt(hex.substring(1, 3), 16);
+    const green = parseInt(hex.substring(3, 5), 16);
+    const blue = parseInt(hex.substring(5, 7), 16);
+    return `rgba(${red},${green},${blue},${alpha.toFixed(3)})`;
   }
 
   private nodeColor(node: GraphNode): string {
     if (node.kind === 'mindmap') {
-      return this.color($r('app.color.brand_ink'));
+      return this.color(this.palette.brand_ink);
     }
     if (node.kind === 'tag') {
-      return this.color($r('app.color.text_secondary'));
+      return this.color(this.palette.text_secondary);
     }
     if (node.noteType === 'study') {
-      return this.color($r('app.color.success'));
+      return this.color(this.palette.success);
     }
     if (node.noteType === 'markdown') {
-      return this.color($r('app.color.warning'));
+      return this.color(this.palette.warning);
     }
-    return this.color($r('app.color.brand'));
+    return this.color(this.palette.brand);
   }
 
   private radius(node: GraphNode): number {
@@ -73,8 +69,8 @@ export struct LexiGraphView {
     this.nodeIndex.clear();
     for (const node of this.nodes) { this.nodeIndex.set(node.id, node); }
     ctx.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
-    const edgeColor = this.color($r('app.color.text_secondary'), 0.28);
-    const focusEdge = this.color($r('app.color.brand'), 0.85);
+    const edgeColor = this.color(this.palette.text_secondary, 0.28);
+    const focusEdge = this.color(this.palette.brand, 0.85);
     for (let i = 0; i < this.edges.length; i++) {
       const edge = this.edges[i];
       const a = this.find(edge.sourceId);
@@ -92,8 +88,8 @@ export struct LexiGraphView {
       ctx.stroke();
     }
     ctx.setLineDash([]);
-    const labelColor = this.color($r('app.color.text_primary'), 0.88);
-    const ringColor = this.color($r('app.color.brand_soft'));
+    const labelColor = this.color(this.palette.text_primary, 0.88);
+    const ringColor = this.color(this.palette.brand_soft);
     const showAllLabels = this.nodes.length <= 26;
     for (let i = 0; i < this.nodes.length; i++) {
       const node = this.nodes[i];

@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { LexiTheme } = require('./lib/theme-harness.cjs').loadTheme();
 const ts = require(process.env.LEXI_TYPESCRIPT || '/Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor/node_modules/typescript');
 const filename = path.resolve(__dirname, '../../entry/src/main/ets/pages/Index.ets');
 const source = fs.readFileSync(filename, 'utf8');
@@ -31,7 +32,7 @@ function subject() {
   dialogResult = async () => ({ index: 0 }); pickerResult = async () => '';
   const page = new moduleScope.exports();
   Object.assign(page, {
-    ready: true, showWelcome: false, storageAccessBusy: false, storageLocation: 'internal',
+    palette: LexiTheme.current(), ready: true, showWelcome: false, storageAccessBusy: false, storageLocation: 'internal',
     showNoteDestination: false, destinationBusy: false, templateBusy: false, handlingNativeLaunch: false,
     toasts: [], refreshes: 0, context: () => ({}), tr: text => text, toast(text) { this.toasts.push(text); },
     async refresh() { this.refreshes++; },

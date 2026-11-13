@@ -1,9 +1,11 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { LexiI18n } from '../core/LexiI18n';
 import { uiMaterial } from '@kit.ArkUI';
 import { LexiIcon } from './LexiIcon';
 
 @Component
 export struct LexiNavigation {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiLanguage') private interfaceLanguage: string = LexiI18n.language();
 
   private tr(source: string, args: string[] = []): string {
@@ -13,19 +15,23 @@ export struct LexiNavigation {
   @Prop active: number = 0;
   onSelect: (index: number) => void = () => {};
   @State private immersiveSupported: boolean = false;
-  private readonly activeNavMaterial: uiMaterial.ImmersiveMaterial = new uiMaterial.ImmersiveMaterial({
-    style: uiMaterial.ImmersiveStyle.ULTRA_THIN,
-    materialColor: $r('app.color.title_chip_active'),
-    interactive: true,
-    applyShadow: true,
-    lightEffect: { color: $r('app.color.dock_light') }
-  });
-  private readonly inactiveNavMaterial: uiMaterial.ImmersiveMaterial = new uiMaterial.ImmersiveMaterial({
-    style: uiMaterial.ImmersiveStyle.ULTRA_THIN,
-    interactive: true,
-    applyShadow: false,
-    lightEffect: { color: $r('app.color.dock_light') }
-  });
+  private activeNavMaterial(): uiMaterial.ImmersiveMaterial {
+    return new uiMaterial.ImmersiveMaterial({
+      style: uiMaterial.ImmersiveStyle.ULTRA_THIN,
+      materialColor: this.palette.title_chip_active,
+      interactive: true,
+      applyShadow: true,
+      lightEffect: { color: this.palette.dock_light }
+    });
+  }
+  private inactiveNavMaterial(): uiMaterial.ImmersiveMaterial {
+    return new uiMaterial.ImmersiveMaterial({
+      style: uiMaterial.ImmersiveStyle.ULTRA_THIN,
+      interactive: true,
+      applyShadow: false,
+      lightEffect: { color: this.palette.dock_light }
+    });
+  }
 
   aboutToAppear(): void {
     try {
@@ -43,7 +49,7 @@ export struct LexiNavigation {
         Text(title)
           .fontSize(15)
           .fontWeight(this.active === index ? FontWeight.Bold : FontWeight.Medium)
-          .fontColor(this.active === index ? $r('app.color.brand') : $r('app.color.text_secondary'))
+          .fontColor(this.active === index ? this.palette.brand : this.palette.text_secondary)
       }
       .padding({ left: 16, right: 16 })
     }
@@ -53,14 +59,14 @@ export struct LexiNavigation {
       this.immersiveSupported
         ? Color.Transparent
         : this.active === index
-          ? $r('app.color.brand_soft')
+          ? this.palette.brand_soft
           : Color.Transparent
     )
     .systemMaterial(
       this.immersiveSupported
         ? this.active === index
-          ? this.activeNavMaterial
-          : this.inactiveNavMaterial
+          ? this.activeNavMaterial()
+          : this.inactiveNavMaterial()
         : undefined
     )
     .accessibilityText(title)
@@ -80,7 +86,7 @@ export struct LexiNavigation {
         Text('LexiNote')
           .fontSize(23)
           .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_primary'))
+          .fontColor(this.palette.text_primary)
       }
       .margin({ right: 28 })
 

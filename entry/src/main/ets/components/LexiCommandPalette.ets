@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { LexiHotkeySettings } from '../core/LexiHotkeySettings';
 import { LexiI18n } from '../core/LexiI18n';
 import { CanvasBoard, MindMapDoc, NoteItem } from '../core/LexiModels';
@@ -7,8 +8,20 @@ import { MarkdownEngine } from '../core/MarkdownEngine';
 import { PluginCommandRegistry, PluginCommandEntry } from '../plugin/core/PluginCommandRegistry';
 import { KeyCode } from '@kit.InputKit';
 
+const PALETTE_ROW_HEIGHT: number = 52;
+const PALETTE_ROW_GAP: number = 2;
+
+/**
+ * Command palette / quick switcher contents.
+ *
+ * The host presents this panel inside the same centered sheet as the trash
+ * window (see LexiDesktopWorkspace.paletteSheet), so the panel owns its whole
+ * chrome: a trash-style header, the query field, and a scrolling result list.
+ */
 @Component
 export struct LexiCommandPalette {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
+  @StorageProp('lexiBottomInset') private bottomInset: number = 0;
   @StorageProp('lexiHotkeyOverrides') private hotkeyOverrides: string = '[]';
   @StorageProp('lexiLanguage') private interfaceLanguage: string = LexiI18n.language();
 
@@ -20,6 +33,7 @@ export struct LexiCommandPalette {
   @Prop notes: NoteItem[] = [];
   @Prop maps: MindMapDoc[] = [];
   @Prop canvases: CanvasBoard[] = [];
+  @Prop showClose: boolean = true;
   @State private paletteQuery: string = '';
   @State private selectedResult: number = 0;
   onCommand: (id: string) => void = (_id: string): void => {};
@@ -77,6 +91,15 @@ export struct LexiCommandPalette {
     return command.title;
   }
 
+  private windowTitle(): string {
+    return this.mode === 'commands' ? this.tr('命令面板') : this.tr('快速切换');
+  }
+
+  private resultSummary(): string {
+    const count = this.results().length.toString();
+    return this.mode === 'commands' ? this.tr('{0} 个命令', [count]) : this.tr('{0} 个文档', [count]);
+  }
+
   private submit(): void {
     const rows = this.results();
     if (rows.length) { this.choose(rows[Math.min(this.selectedResult, rows.length - 1)].id); }
@@ -89,44 +112,155 @@ export struct LexiCommandPalette {
       const count = this.results().length;
       if (count) {
         this.selectedResult = (this.selectedResult + (event.keyCode === KeyCode.KEYCODE_DPAD_DOWN ? 1 : -1) + count) % count;
-        this.resultScroller.scrollTo({ xOffset: 0, yOffset: this.selectedResult * 56 });
+        this.resultScroller.scrollTo({ xOffset: 0, yOffset: this.selectedResult * (PALETTE_ROW_HEIGHT + PALETTE_ROW_GAP) });
       }
       event.stopPropagation();
     } else if (event.keyCode === KeyCode.KEYCODE_ESCAPE) { this.onClose(); event.stopPropagation(); }
   }
 
-  build() {
+  @Builder
+  private header() {
+    Row({ space: 12 }) {
+      Column({ space: 3 }) {
+        Text(this.windowTitle())
+          .fontSize(18)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(this.palette.text_primary)
+        Text(this.resultSummary())
+          .fontSize(11)
+          .fontColor(this.palette.text_secondary)
+      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+
+      if (this.showClose) {
+        Button({ type: ButtonType.Circle, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+          SymbolGlyph($r('sys.symbol.xmark'))
+            .fontSize(16)
+            .fontColor([this.palette.text_secondary])
+        }
+        .id('command-palette-close')
+        .width(34)
+        .height(34)
+        .padding(0)
+        .backgroundColor(Color.Transparent)
+        .accessibilityText(this.tr('关闭命令面板'))
+        .onClick((): void => { this.onClose(); })
+      }
+    }
+    .width('100%')
+    .padding({ left: 24, right: 18, top: 18, bottom: 14 })
+    .backgroundColor(this.palette.workspace_sidebar)
+    .border({ width: { bottom: 0.5 }, color: this.palette.workspace_line })
+  }
+
+  @Builder
+  private resultRow(command: LexiCommand, rowIndex: number) {
+    Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+      Column({ space: 3 }) {
+        Text(this.commandTitle(command))
+          .fontSize(14)
+          .fontWeight(rowIndex === this.selectedResult ? FontWeight.Medium : FontWeight.Normal)
+          .fontColor(this.palette.text_primary)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+        if (command.hint) {
+          Text(command.hint)
+            .fontSize(11)
+            .fontColor(this.palette.text_secondary)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+        }
+      }
+      .width('100%')
+      .alignItems(HorizontalAlign.Start)
+    }
+    .id(`palette-result-${command.id}`)
+    .width('100%')
+    .height(PALETTE_ROW_HEIGHT)
+    .padding({ left: 12, right: 12 })
+    .borderRadius(8)
+    .backgroundColor(rowIndex === this.selectedResult ? this.palette.brand_soft : Color.Transparent)
+    .onClick((): void => { this.choose(command.id); })
+  }
+
+  @Builder
+  private emptyState() {
     Column({ space: 12 }) {
-      TextInput({ text: this.paletteQuery, placeholder: this.mode === 'commands' ? this.tr('搜索命令…') : this.tr('搜索笔记、导图或白板…') })
-        .id('command-palette-input').height(48).fontSize(16)
-        .fontColor($r('app.color.text_primary')).placeholderColor($r('app.color.text_secondary'))
-        .backgroundColor($r('app.color.soft_surface')).borderRadius(12).defaultFocus(true)
-        .onChange((text: string): void => { this.paletteQuery = text; this.selectedResult = 0; this.resultScroller.scrollEdge(Edge.Top); })
-        .onSubmit((): void => { this.submit(); }).onKeyEvent((event: KeyEvent): void => { this.keyPressed(event); })
-      Text(this.mode === 'commands' ? this.tr('↑ ↓ 选择 · Enter 执行 · Esc 关闭') : this.tr('支持 tag:#标签 type:study notebook:分类 · Enter 打开'))
-        .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
-      Scroll(this.resultScroller) {
-        Column({ space: 2 }) {
-          ForEach(this.results(), (command: LexiCommand, rowIndex: number) => {
-            Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-              Column({ space: 4 }) {
-                Text(this.commandTitle(command)).fontSize(14).fontColor($r('app.color.text_primary')).maxLines(1).width('100%')
-                if (command.hint) { Text(command.hint).fontSize(11).fontColor($r('app.color.text_secondary')).maxLines(1).width('100%'); }
-              }.width('100%').alignItems(HorizontalAlign.Start)
-            }.id(`palette-result-${command.id}`).width('100%').height(54).padding({ left: 12, right: 12 }).borderRadius(8)
-              .backgroundColor(rowIndex === this.selectedResult ? $r('app.color.brand_soft') : Color.Transparent)
-              .onClick((): void => { this.choose(command.id); })
-          }, (command: LexiCommand): string => command.id)
-          if (this.results().length === 0) {
-            Text(this.mode === 'commands' ? this.tr('没有匹配的命令') : this.tr('没有匹配的文档')).fontSize(14)
-              .fontColor($r('app.color.text_secondary')).padding(20)
-            if (this.mode !== 'commands' && this.paletteQuery.trim()) {
-              Button(this.tr('新建「{0}」', [this.paletteQuery.trim()])).id('palette-create-note')
-                .onClick((): void => { this.onCreate(this.paletteQuery.trim()); })
+      Text(this.mode === 'commands' ? this.tr('没有匹配的命令') : this.tr('没有匹配的文档'))
+        .fontSize(15)
+        .fontColor(this.palette.text_secondary)
+        .textAlign(TextAlign.Center)
+      if (this.mode !== 'commands' && this.paletteQuery.trim()) {
+        Button(this.tr('新建「{0}」', [this.paletteQuery.trim()]))
+          .id('palette-create-note')
+          .height(44)
+          .fontColor(this.palette.brand)
+          .backgroundColor(this.palette.brand_soft)
+          .onClick((): void => { this.onCreate(this.paletteQuery.trim()); })
+      }
+    }
+    .width('100%')
+    .padding({ top: 48, bottom: 48 })
+  }
+
+  build() {
+    Column({ space: 0 }) {
+      this.header()
+      Column({ space: 12 }) {
+        TextInput({
+          text: this.paletteQuery,
+          placeholder: this.mode === 'commands' ? this.tr('搜索命令…') : this.tr('搜索笔记、导图或白板…')
+        })
+          .id('command-palette-input')
+          .width('100%')
+          .height(44)
+          .fontSize(15)
+          .fontColor(this.palette.text_primary)
+          .placeholderColor(this.palette.text_secondary)
+          .caretColor(this.palette.brand)
+          .backgroundColor(this.palette.soft_surface)
+          .borderRadius(10)
+          .defaultFocus(true)
+          .onChange((text: string): void => {
+            this.paletteQuery = text;
+            this.selectedResult = 0;
+            this.resultScroller.scrollEdge(Edge.Top);
+          })
+          .onSubmit((): void => { this.submit(); })
+          .onKeyEvent((event: KeyEvent): void => { this.keyPressed(event); })
+        Text(this.mode === 'commands' ? this.tr('↑ ↓ 选择 · Enter 执行 · Esc 关闭') : this.tr('支持 tag:#标签 type:study notebook:分类 · Enter 打开'))
+          .fontSize(12)
+          .lineHeight(18)
+          .fontColor(this.palette.text_secondary)
+          .width('100%')
+          .maxLines(2)
+        Scroll(this.resultScroller) {
+          Column({ space: PALETTE_ROW_GAP }) {
+            ForEach(this.results(), (command: LexiCommand, rowIndex: number) => {
+              this.resultRow(command, rowIndex);
+            }, (command: LexiCommand): string => command.id)
+            if (this.results().length === 0) {
+              this.emptyState()
             }
           }
-        }.width('100%')
-      }.width('100%').layoutWeight(1).scrollBar(BarState.Auto).align(Alignment.TopStart)
-    }.width('100%').height('100%').padding({ left: 20, right: 20, top: 12, bottom: 24 })
+          .width('100%')
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .scrollBar(BarState.Auto)
+        .align(Alignment.Top)
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .padding({ left: 24, right: 24, top: 16, bottom: 24 + this.bottomInset })
+      .alignItems(HorizontalAlign.Start)
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(this.palette.workspace_page)
+    .clip(true)
   }
 }

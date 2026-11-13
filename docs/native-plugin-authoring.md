@@ -298,8 +298,8 @@ ctx.subscriptions.add(off);
 
 | 方法 | 返回 | 说明 |
 |---|---|---|
-| `status()` | `Promise<AiStatus>` | `{ configured, provider, model, baseUrl, maxTokens, temperature, balanceProvider }` |
-| `configure(patch)` | `Promise<AiStatus>` | 绑定/更新模型服务；`apiKey` 传空表示沿用已保存的 Key，`clear: true` 清空 |
+| `status()` | `Promise<AiStatus>` | `{ configured, profileId, name, provider, model, baseUrl, maxTokens, temperature, balanceProvider, needsApiKey }` |
+| `configure(patch)` | `Promise<AiStatus>` | 每插件一个绑定：`profileId`/`name`/`provider`/`baseUrl`/`model`/`maxTokens`/`temperature`；`action: 'select'` / `'remove'` 选择或删除；`select: false` 只更新不切换；`apiKey` 只写、留空沿用；`clear: true` 清空本插件全部绑定 |
 | `chat({ messages, tools?, maxTokens?, temperature? })` | `Promise<AiReply>` | 一次非流式模型调用 |
 | `models()` | `Promise<string[]>` | 当前绑定服务的模型 ID（最多 300 个） |
 | `balance()` | `Promise<AiBalance>` | 适配的官方余额 / 套餐配额，成功缓存 60 秒 |
@@ -326,22 +326,29 @@ interface AiReply {
 
 - 支持 `openai-compatible` 与 `anthropic-compatible` 两种线协议；`provider` 只接受这两个值，
   也兼容 `deepseek-openai` / `deepseek-anthropic` 这类旧写法。
-- **API Key 只存在宿主**：`status()`/`configure()` 的返回值永远不含 Key；插件之后也读不回。
+- **Key 只写、只存在宿主**：`apiKey` 通过 `configure()` 写入后，`status()`/`configure()`/`chat()` 的返回值都不含 Key，插件之后也读不回；宿主把 Key 存在按 `<pluginId>:<profileId>` 隔离的密钥槽中，插件的 `storage` 与 `boot.dataJson` 中不出现 Key。
+- **绑定按插件隔离**：每个插件只看到、只能使用自己的 profile；一个插件无法选择或消耗另一个插件的 Key。
+- 1.5.0 起绑定按插件隔离；旧版全局 `pluginAiConfig.v1` 只迁移给 `lexinote.harness`，其他插件升级后需要重新 `configure` 一次。
+- 宿主密钥槽位于应用 preferences，未额外加密，依赖系统文件级加密/设备锁；它不是 HUKS，不要把它当硬件密钥库。
+- **URL 策略**：公网 Base URL 只允许 `https://`；`localhost`、回环、RFC1918 私网与 `.local` 可用 `http://`。Base URL 不含账号、查询参数或片段。
+- **传输加固**：宿主拒绝重定向（`maxRedirects: 0`），每次请求只发一种认证头（OpenAI 兼容 `Authorization: Bearer`；Anthropic 兼容 `x-api-key`），并带 `User-Agent`。
 - 插件依旧没有网络：`fetch`/`XMLHttpRequest` 被 CSP 与 `blockNetwork(true)` 禁止；模型请求由宿主发出。
 - 单次调用走 **120 s** 宿主预算（`PluginLimits.AI_TIMEOUT_MS`），不是普通 RPC 的 15 s。
 - 单次最多 **128 条消息 / 32 个工具**；请求体仍受 512 KiB 限制。
-- 未绑定、HTTP 非 2xx、网络异常统一 `E_MODEL_UNAVAILABLE`；错误文本保留服务端 message。
+- 未绑定是 `E_MISSING_CREDENTIAL`，Key 含空白/非可打印 ASCII 是 `E_INVALID_CREDENTIAL`；HTTP 非 2xx、网络异常是 `E_MODEL_UNAVAILABLE`。错误文本会脱敏 Key 与 `Bearer`/`sk-` 片段。
 - 工具调用闭环由插件负责：把 assistant 的 `toolCalls` 原样带回，再追加 `role: 'tool'` 消息。
 - `ctx.ai.models()` 获取当前绑定服务的模型 ID，最多 300 个；`ctx.ai.balance()` 获取已适配官方
   服务的余额或 Coding Plan 配额（成功缓存 60 秒）。两者超时 30 秒、都由宿主代发，
   不接受插件指定 URL / Header。未知余额服务返回 `supported: false`，失败抛错供 UI 重试。
 - `AiStatus.balanceProvider` 返回当前识别到的余额服务名（不支持则空字符串）。Base URL / Key
-  最多 8192 字符；仅切换模型可调用 `configure({ model: '...' })` 复用宿主 Key。
+  最多 8192 字符；Key 只接受可打印 ASCII。切换服务商传 `{ action: 'select', profileId }`；
+  只改模型可传 `{ profileId, model: '...' }`，留空 `apiKey` 会沿用宿主已保存的 Key。
 
 ```js
 const status = await ctx.ai.status();
 if (!status.configured) {
-  await ctx.ai.configure({ provider: 'openai-compatible', baseUrl: 'https://api.deepseek.com',
+  await ctx.ai.configure({ action: 'create', profileId: 'deepseek', name: 'DeepSeek',
+    provider: 'openai-compatible', baseUrl: 'https://api.deepseek.com',
     model: 'deepseek-chat', apiKey: 'sk-…' });
 }
 const reply = await ctx.ai.chat({
@@ -440,7 +447,9 @@ await ctx.views.open('chat');  // 让工作区打开右侧栏并显示该视图
 | `E_EDITOR_CONFLICT` | 用户有未保存草稿 | 提示用户先保存 |
 | `E_EDITOR_READONLY` | 无活动编辑器 / 只读 | 先 `editor.active()` 判空 |
 | `E_UNSUPPORTED_API` | 该能力本版未实现 | 降级或提示，不要假装成功 |
-| `E_MODEL_UNAVAILABLE` | 模型未绑定、HTTP 非 2xx、网络异常 | 提示用户绑定模型或检查配置；不要假装成功 |
+| `E_MISSING_CREDENTIAL` | 当前插件没有已保存的模型 Key | 打开模型设置，补填一次 Key |
+| `E_INVALID_CREDENTIAL` | Key 含空白/非可打印 ASCII | 让用户粘贴原始 Key；不要回显 Key |
+| `E_MODEL_UNAVAILABLE` | HTTP 非 2xx、网络异常、响应无法解析 | 检查 Base URL/模型/额度；展示脱敏后的服务端 message |
 | `E_QUOTA_EXCEEDED` | 存储/命令/源码/视图超限 | 精简数据 |
 | `E_RATE_LIMITED` | 并发 >16 或请求体 >512 KiB | 串行化、分页 |
 | `E_TIMEOUT` | 15s 未响应 | 拆分任务 |
@@ -582,7 +591,8 @@ zip -X quick-capture.zip manifest.json main.js
 | 写入报 `E_EDITOR_CONFLICT` | 用户正在编辑同一篇 | 提示用户保存后重试 |
 | 事件不触发 | 未授予能力 / 订阅被 dispose / 事件类型拼错 | 检查 `§4.8` |
 | `storage.set` 报 `E_QUOTA_EXCEEDED` | 超过 128 KiB 或 128 键 | 精简或分片键 |
-| `ai.chat` 报 `E_MODEL_UNAVAILABLE` | 未绑定模型、Key 错误、网络失败 | 先在插件视图里绑定模型；展示服务端 message |
+| `ai.chat` 报 `E_MISSING_CREDENTIAL` / `E_INVALID_CREDENTIAL` | 未绑定模型 / Key 不可用 | 打开模型设置补填或更换 Key |
+| `ai.chat` 报 `E_MODEL_UNAVAILABLE` | HTTP 非 2xx、网络失败、响应异常 | 检查 Base URL、模型与额度；展示脱敏后的服务端 message |
 | 侧栏没有插件图标 | 插件未安装；或 id 与宿主约定不一致 | 先安装插件；本版 Harness 的 id 是 `lexinote.harness` |
 | 视图空白 / `E_UNSUPPORTED_API: 插件没有注册视图` | `activate` 里没注册，或注册失败 | 看「能力与诊断」；确认已授予 `ui.views` |
 
@@ -605,7 +615,8 @@ zip -X quick-capture.zip manifest.json main.js
 - 不能读取任意本地文件、系统路径、沙箱路径、其他知识库。
 - 不能访问网络（`fetch`/`XMLHttpRequest` 在页面 CSP 下被禁；`network` 能力安装即被拒）。
 - `ai.inference` 不是网络能力：插件只提交消息与工具定义，URL、API Key、HTTP 与超时都由宿主持有；
-  宿主只允许用户绑定的端点，且 Key 不会回传给插件。
+  宿主只允许用户绑定的端点，Key 只写不读、按插件隔离，且不会回传给插件。
+- `ai.configure` 的 `apiKey` 只写；不要在插件 `storage`、笔记、日志或对话里保存/回显 Key。
 - 不能加载 Node/Electron 模块，不能执行外部脚本。
 - 不能修改用户笔记之外的数据（设置、索引、其他插件的数据）。
 - 不能静默吞掉错误：写失败必须让用户看到，而不是"看起来成功"。

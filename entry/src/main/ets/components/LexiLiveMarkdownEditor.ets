@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { MarkdownBlock, NoteItem } from '../core/LexiModels';
 import { LexiLiveEditorController, LexiLiveMarkdown, LexiLiveRange, LexiLiveSelection } from '../core/LexiLiveMarkdown';
 import { LexiMarkdownPreview } from './LexiEditorPanels';
@@ -14,8 +15,9 @@ class LexiLiveFocusFrame extends FrameCallback {
 /** Render by default. Only the paragraph selected by the user becomes a source field. */
 @Component
 export struct LexiLiveMarkdownEditor {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiFontSize') private noteFontSize: number = 16;
-  @StorageProp('lexiAccent') private noteAccent: string = '#6E44D9';
+  @StorageProp('lexiEffectiveAccent') private noteAccent: string = '#6E44D9';
   @Prop @Watch('documentChanged') content: string = '';
   @Prop availableNotes: NoteItem[] = [];
   @Prop notePath: string = '';
@@ -299,9 +301,9 @@ export struct LexiLiveMarkdownEditor {
         TextArea({ text: this.editingCode && !this.showCodeSource ? this.codeBody : this.sourceText,
           controller: this.inputController, placeholder: this.editingCode ? '在这里输入代码' : this.placeholder })
           .id(`${this.anchorPrefix}-source`).enabled(this.editorEnabled).width('100%').height(this.sourceHeight())
-          .fontSize(this.noteFontSize).lineHeight(this.noteFontSize * 1.75).fontColor($r('app.color.text_primary'))
-          .placeholderColor($r('app.color.text_secondary')).caretColor(this.noteAccent)
-          .backgroundColor($r('app.color.soft_surface')).borderRadius(10).padding(12)
+          .fontSize(this.noteFontSize).lineHeight(this.noteFontSize * 1.75).fontColor(this.palette.text_primary)
+          .placeholderColor(this.palette.text_secondary).caretColor(this.noteAccent)
+          .backgroundColor(this.palette.soft_surface).borderRadius(10).padding(12)
           .onChange((text: string): void => {
             if (this.editingCode && !this.showCodeSource) { this.codeChanged(text); } else { this.sourceChanged(text); }
           })
@@ -326,7 +328,7 @@ export struct LexiLiveMarkdownEditor {
       }
       Text(LexiLiveMarkdown.hasBody(this.documentText) ? ' ' : this.placeholder)
         .id(`${this.anchorPrefix}-append`).width('100%').constraintSize({ minHeight: 64 })
-        .fontSize(this.noteFontSize).fontColor($r('app.color.text_secondary')).padding({ top: 8, bottom: 20 })
+        .fontSize(this.noteFontSize).fontColor(this.palette.text_secondary).padding({ top: 8, bottom: 20 })
         .onClick((): void => {
           if (!this.editorEnabled) { return; }
           if (!this.documentText.endsWith('\n') && this.documentText.length) {

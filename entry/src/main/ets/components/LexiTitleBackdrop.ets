@@ -1,5 +1,7 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 @Component
 export struct LexiTitleBackdrop {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiTopInset') titleTopInset: number = 0;
 
   build() {
@@ -9,8 +11,8 @@ export struct LexiTitleBackdrop {
       .linearGradient({
         angle: 180,
         colors: [
-          [$r('app.color.title_scrim'), 0],
-          [$r('app.color.title_scrim'), (48 + this.titleTopInset) / (56 + this.titleTopInset)],
+          [this.palette.title_scrim, 0],
+          [this.palette.title_scrim, (48 + this.titleTopInset) / (56 + this.titleTopInset)],
           [Color.Transparent, 1]
         ]
       })

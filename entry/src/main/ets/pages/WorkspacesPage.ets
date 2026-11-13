@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { common } from '@kit.AbilityKit';
 import { LexiBackHeader } from '../components/LexiBackHeader';
@@ -13,6 +14,7 @@ export function workspacesPageBuilder() { WorkspacesPage() }
 
 @Component
 export struct WorkspacesPage {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiTopInset') topInset: number = 0;
   @StorageProp('lexiBottomInset') bottomInset: number = 0;
   @StorageProp('lexiViewportWidth') viewportWidth: number = 390;
@@ -171,37 +173,37 @@ export struct WorkspacesPage {
   private editForm() {
     Column({ space: 14 }) {
       Text(this.localScopeId ? '保存到本地文件夹' : this.formKind === 'workspace' ? '添加工作区' : '添加项目')
-        .fontSize(20).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary'))
+        .fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.palette.text_primary)
       TextInput({ text: this.draftName, placeholder: this.formKind === 'workspace' ? '工作区名称' : '项目名称' })
-        .id('workspace-name-input').width('100%').height(44).fontSize(14).fontColor($r('app.color.text_primary'))
-        .placeholderColor($r('app.color.text_secondary')).backgroundColor($r('app.color.soft_surface')).borderRadius(8)
+        .id('workspace-name-input').width('100%').height(44).fontSize(14).fontColor(this.palette.text_primary)
+        .placeholderColor(this.palette.text_secondary).backgroundColor(this.palette.soft_surface).borderRadius(8)
         .enabled(!this.working && !this.localScopeId).onChange((text: string): void => { this.draftName = text; })
       Button(this.draftFolder ? LexiFolderStore.path(this.draftFolder) : '选择文件夹', { type: ButtonType.Normal })
         .id('workspace-folder-picker').width('100%').constraintSize({ minHeight: 44 }).fontSize(13).borderRadius(8)
-        .padding(12).fontColor($r('app.color.brand_ink')).backgroundColor($r('app.color.workspace_selection'))
+        .padding(12).fontColor(this.palette.brand_ink).backgroundColor(this.palette.workspace_selection)
         .enabled(!this.working).onClick((): void => { this.chooseFolder(); })
       Row({ space: 10 }) {
         Toggle({ type: ToggleType.Checkbox, isOn: this.createChild })
-          .id('workspace-create-child').width(28).height(28).selectedColor($r('app.color.brand'))
+          .id('workspace-create-child').width(28).height(28).selectedColor(this.palette.brand)
           .accessibilityText('在所选目录下新建同名文件夹').enabled(!this.working)
           .onChange((checked: boolean): void => { this.createChild = checked; })
-        Text('在所选目录下新建同名文件夹').fontSize(13).fontColor($r('app.color.text_primary')).layoutWeight(1)
+        Text('在所选目录下新建同名文件夹').fontSize(13).fontColor(this.palette.text_primary).layoutWeight(1)
           .constraintSize({ minHeight: 44 }).onClick((): void => { if (!this.working) { this.createChild = !this.createChild; } })
       }.width('100%')
       Text(this.localScopeId
         ? '选择保存位置，笔记将写为 .md 文件，导图将写为可编辑的 .mindmap.json 文件，并保留工作区和项目归属。目标文件夹需要为空。'
         : '选择已有文件夹会读取其中的 Markdown 笔记，编辑时保存回原文件。')
-        .fontSize(12).lineHeight(21).fontColor($r('app.color.text_secondary')).width('100%')
+        .fontSize(12).lineHeight(21).fontColor(this.palette.text_secondary).width('100%')
       Row({ space: 12 }) {
         Button(this.working ? '正在处理…' : '保存', { type: ButtonType.Normal })
           .id('workspace-submit').height(40).fontSize(13).borderRadius(8).padding({ left: 24, right: 24 })
-          .backgroundColor($r('app.color.brand')).fontColor($r('app.color.inverse_text')).enabled(!this.working)
+          .backgroundColor(this.palette.brand).fontColor(this.palette.inverse_text).enabled(!this.working)
           .onClick((): void => { this.submit(); })
         Button('取消', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-          .id('workspace-cancel').height(40).fontSize(13).borderRadius(8).fontColor($r('app.color.text_secondary'))
+          .id('workspace-cancel').height(40).fontSize(13).borderRadius(8).fontColor(this.palette.text_secondary)
           .enabled(!this.working).onClick((): void => { this.formKind = ''; this.message = ''; })
       }.width('100%')
-    }.width('100%').padding(20).borderRadius(12).backgroundColor($r('app.color.workspace_sidebar')).alignItems(HorizontalAlign.Start)
+    }.width('100%').padding(20).borderRadius(12).backgroundColor(this.palette.workspace_sidebar).alignItems(HorizontalAlign.Start)
   }
 
   @Builder
@@ -216,7 +218,7 @@ export struct WorkspacesPage {
   private folderActions(id: string, project: boolean) {
     Button('授权', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
       .id(`folder-actions-${id}`).width(44).height(40).fontSize(12).padding(0).borderRadius(7)
-      .fontColor($r('app.color.text_secondary')).backgroundColor(Color.Transparent).accessibilityText('文件夹操作')
+      .fontColor(this.palette.text_secondary).backgroundColor(Color.Transparent).accessibilityText('文件夹操作')
       .bindMenu(this.folderActionMenu(id, project))
   }
 
@@ -230,14 +232,14 @@ export struct WorkspacesPage {
       Scroll(this.pageScroller) {
         Column({ space: 24 }) {
           if (this.message) {
-            Text(this.message).id('workspace-status').fontSize(13).lineHeight(22).fontColor($r('app.color.brand_ink'))
-              .width('100%').padding(12).borderRadius(8).backgroundColor($r('app.color.workspace_selection'))
+            Text(this.message).id('workspace-status').fontSize(13).lineHeight(22).fontColor(this.palette.brand_ink)
+              .width('100%').padding(12).borderRadius(8).backgroundColor(this.palette.workspace_selection)
           }
           if (this.formKind) { this.editForm(); }
           Row() {
-            Text('工作区').fontSize(18).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary')).layoutWeight(1)
+            Text('工作区').fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.palette.text_primary).layoutWeight(1)
             Button('添加工作区', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-              .id('workspace-add').height(38).fontSize(13).fontColor($r('app.color.brand_ink')).enabled(!this.working)
+              .id('workspace-add').height(38).fontSize(13).fontColor(this.palette.brand_ink).enabled(!this.working)
               .onClick((): void => { this.beginForm('workspace'); })
           }.width('100%')
           Column({ space: 6 }) {
@@ -249,14 +251,14 @@ export struct WorkspacesPage {
                   Row({ space: 12 }) {
                     LexiIcon({ name: 'folder', iconSize: 22 })
                     Column({ space: 5 }) {
-                      Text(`${vault.favorite ? '★  ' : ''}${vault.name}`).fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+                      Text(`${vault.favorite ? '★  ' : ''}${vault.name}`).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.palette.text_primary)
                       Text(vault.folderUri ? LexiFolderStore.path(vault.folderUri) : '应用内工作区')
-                        .fontSize(12).fontColor($r('app.color.text_secondary')).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+                        .fontSize(12).fontColor(this.palette.text_secondary).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
                     }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-                    if (vault.id === this.activeVaultId) { Text('当前').fontSize(11).fontColor($r('app.color.brand_ink')); }
+                    if (vault.id === this.activeVaultId) { Text('当前').fontSize(11).fontColor(this.palette.brand_ink); }
                   }.width('100%')
                 }.id(`workspace-card-${vault.id}`).width('100%').constraintSize({ minHeight: 72 }).padding({ left: 12, right: deviceInfo.deviceType === 'tablet' ? 56 : 12, top: 12, bottom: 12 }).borderRadius(9)
-                  .backgroundColor(vault.id === this.activeVaultId ? $r('app.color.workspace_selection') : $r('app.color.workspace_sidebar'))
+                  .backgroundColor(vault.id === this.activeVaultId ? this.palette.workspace_selection : this.palette.workspace_sidebar)
                   .enabled(!this.working).onClick((): void => { this.selectWorkspace(vault.id); })
                 }
                 }.layoutWeight(1)
@@ -264,22 +266,22 @@ export struct WorkspacesPage {
                   this.folderActions(vault.id, false)
                 } else {
                   Button('保存到本地', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-                    .id(`workspace-local-save-${vault.id}`).height(40).fontSize(12).fontColor($r('app.color.brand_ink'))
+                    .id(`workspace-local-save-${vault.id}`).height(40).fontSize(12).fontColor(this.palette.brand_ink)
                     .enabled(!this.working).onClick((): void => { this.beginLocalSave(vault.id, false); })
                 }
               }.width('100%')
             }, (vault: VaultItem): string => `${vault.id}-${vault.folderUri}-${vault.name}-${vault.favorite}`)
           }.width('100%')
           Row() {
-            Text('当前工作区的项目').fontSize(18).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary')).layoutWeight(1)
+            Text('当前工作区的项目').fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.palette.text_primary).layoutWeight(1)
             Button('添加项目', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-              .id('project-add').height(38).fontSize(13).fontColor($r('app.color.brand_ink')).enabled(!this.working)
+              .id('project-add').height(38).fontSize(13).fontColor(this.palette.brand_ink).enabled(!this.working)
               .onClick((): void => { this.beginForm('project'); })
           }.width('100%')
           Column({ space: 8 }) {
             Button('浏览整个工作区', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-              .id('project-all').height(40).width('100%').fontSize(13).borderRadius(8).fontColor($r('app.color.brand_ink'))
-              .backgroundColor(!this.activeProjectId ? $r('app.color.workspace_selection') : Color.Transparent)
+              .id('project-all').height(40).width('100%').fontSize(13).borderRadius(8).fontColor(this.palette.brand_ink)
+              .backgroundColor(!this.activeProjectId ? this.palette.workspace_selection : Color.Transparent)
               .enabled(!this.working).onClick((): void => { this.selectProject(''); })
             ForEach(this.currentProjects(), (project: LexiProject) => {
               Row({ space: 12 }) {
@@ -287,12 +289,12 @@ export struct WorkspacesPage {
                 LexiContextSurface({ target: LexiContextTarget.scope('project', project.id, project.vaultId, project.id, project.name, project.favorite) }) {
                 Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
                   Column({ space: 6 }) {
-                    Text(project.name).fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
-                    Text(project.folderUri ? LexiFolderStore.path(project.folderUri) : '应用内项目').fontSize(12).fontColor($r('app.color.text_secondary'))
+                    Text(project.name).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.palette.text_primary)
+                    Text(project.folderUri ? LexiFolderStore.path(project.folderUri) : '应用内项目').fontSize(12).fontColor(this.palette.text_secondary)
                       .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
                   }.width('100%').alignItems(HorizontalAlign.Start)
                 }.id(`project-card-${project.id}`).width('100%').constraintSize({ minHeight: 70 }).padding({ left: 14, right: deviceInfo.deviceType === 'tablet' ? 56 : 14, top: 14, bottom: 14 }).borderRadius(8)
-                  .backgroundColor(this.activeProjectId === project.id ? $r('app.color.workspace_selection') : $r('app.color.workspace_sidebar'))
+                  .backgroundColor(this.activeProjectId === project.id ? this.palette.workspace_selection : this.palette.workspace_sidebar)
                   .enabled(!this.working).onClick((): void => { this.selectProject(project.id); })
                 }
                 }.layoutWeight(1)
@@ -300,37 +302,37 @@ export struct WorkspacesPage {
                   this.folderActions(project.id, true)
                 } else {
                   Button('保存到本地', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-                    .id(`project-local-save-${project.id}`).height(40).fontSize(12).fontColor($r('app.color.brand_ink'))
+                    .id(`project-local-save-${project.id}`).height(40).fontSize(12).fontColor(this.palette.brand_ink)
                     .enabled(!this.working).onClick((): void => { this.beginLocalSave(project.id, true); })
                 }
               }.width('100%')
             }, (project: LexiProject): string => `${project.id}-${project.folderUri}-${project.name}-${project.favorite}`)
             if (this.currentProjects().length === 0) {
               Text('还没有项目。添加一个文件夹，把相关的笔记放在一起。').fontSize(13).lineHeight(22)
-                .fontColor($r('app.color.text_secondary')).width('100%').padding({ top: 8, bottom: 8 })
+                .fontColor(this.palette.text_secondary).width('100%').padding({ top: 8, bottom: 8 })
             }
           }.width('100%')
           if (this.removedVaults.length > 0 || this.removedProjects.length > 0) {
             Column({ space: 10 }) {
-              Text('已移除').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')).width('100%')
-              Text('原文件保留，可重新启用。').fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
+              Text('已移除').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.palette.text_primary).width('100%')
+              Text('原文件保留，可重新启用。').fontSize(13).fontColor(this.palette.text_secondary).width('100%')
               ForEach(this.removedVaults, (removedVault: VaultItem) => {
                 Button(`重新启用工作区：${removedVault.name}`, { buttonStyle: ButtonStyleMode.TEXTUAL }).height(44)
-                  .fontColor($r('app.color.brand')).onClick((): void => { this.restoreScope('workspace', removedVault.id); })
+                  .fontColor(this.palette.brand).onClick((): void => { this.restoreScope('workspace', removedVault.id); })
               }, (removedVault: VaultItem): string => removedVault.id)
               ForEach(this.removedProjects, (removedProject: LexiProject) => {
                 Button(`重新启用文件夹：${removedProject.name}`, { buttonStyle: ButtonStyleMode.TEXTUAL }).height(44)
-                  .fontColor($r('app.color.brand')).onClick((): void => { this.restoreScope('project', removedProject.id); })
+                  .fontColor(this.palette.brand).onClick((): void => { this.restoreScope('project', removedProject.id); })
               }, (removedProject: LexiProject): string => removedProject.id)
             }.width('100%')
           }
           Button('刷新文件夹内容', { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-            .id('workspace-refresh-folders').fontSize(13).height(40).fontColor($r('app.color.brand_ink')).enabled(!this.working)
+            .id('workspace-refresh-folders').fontSize(13).height(40).fontColor(this.palette.brand_ink).enabled(!this.working)
             .onClick((): void => { this.refreshFolders(); })
         }.width('100%').constraintSize({ maxWidth: 960 }).padding({ left: 28, right: 28, top: 24, bottom: 40 + this.bottomInset })
       }.width('100%').height('100%').align(Alignment.Top).scrollBar(BarState.Auto)
         .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
-    }.hideBackButton(true).backgroundColor($r('app.color.workspace_page'))
+    }.hideBackButton(true).backgroundColor(this.palette.workspace_page)
       .title({ builder: (): void => { this.pageTitle(); }, height: 56 + (this.viewportWidth < 840 ? this.topInset : 0) })
       .onReady((context: NavDestinationContext): void => { this.pathStack = context.pathStack; })
   }

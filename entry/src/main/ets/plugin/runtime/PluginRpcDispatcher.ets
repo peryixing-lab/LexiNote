@@ -363,15 +363,17 @@ export class PluginRpcDispatcher {
 
   /** `ai.*`: host-brokered inference; the plugin still has no socket of its own. */
   private static async dispatchAi(session: PluginSession, request: PluginRpcRequest): Promise<string> {
-    if (request.method === PluginRpcMethod.AI_MODELS) { return PluginAiService.models(); }
-    if (request.method === PluginRpcMethod.AI_BALANCE) { return PluginAiService.balance(); }
+    // Bindings are per plugin: one plugin can never spend or reconfigure another's credential.
+    const pluginId = session.pluginId;
+    if (request.method === PluginRpcMethod.AI_MODELS) { return PluginAiService.modelsFor(pluginId); }
+    if (request.method === PluginRpcMethod.AI_BALANCE) { return PluginAiService.balanceFor(pluginId); }
     if (request.method === PluginRpcMethod.AI_STATUS) {
-      return PluginAiService.status();
+      return PluginAiService.statusFor(pluginId);
     }
     if (request.method === PluginRpcMethod.AI_CONFIGURE) {
-      return PluginAiService.configure(request.params);
+      return PluginAiService.configureFor(pluginId, request.params);
     }
-    return PluginAiService.chat(request.params);
+    return PluginAiService.chatFor(pluginId, request.params);
   }
 
   /** `views.*`: declarations only; the DOM is rendered by the plugin runtime. */

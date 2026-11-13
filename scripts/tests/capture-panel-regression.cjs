@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { LexiTheme } = require('./lib/theme-harness.cjs').loadTheme();
 const ts = require(process.env.LEXI_TYPESCRIPT || '/Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor/node_modules/typescript');
 const coreRoot = path.resolve(__dirname, '../../entry/src/main/ets/core');
 const cache = new Map();
@@ -40,8 +41,8 @@ const start = source.indexOf('export struct LexiCaptureAssistantPanel {');
 const end = source.indexOf('  @Builder\n  private speechContent()', start);
 assert.ok(start >= 0 && end > start, 'real panel method boundaries');
 const classSource = source.slice(start, end).replace('export struct LexiCaptureAssistantPanel', 'class CapturePanel')
-  .replace(/@Prop\s+/g, '').replace(/@State\s+/g, '') + '\n};globalThis.CapturePanel=CapturePanel;';
-const sandbox = { LexiOfflineSpeech: SpeechMock, LexiSemanticAssistant: SemanticMock, LexiLocalAssistant, LexiLocalArrangement };
+  .replace(/@StorageProp\([^)]*\)\s*/g, '').replace(/@Prop\s+/g, '').replace(/@State\s+/g, '') + '\n};globalThis.CapturePanel=CapturePanel;';
+const sandbox = { LexiTheme, LexiOfflineSpeech: SpeechMock, LexiSemanticAssistant: SemanticMock, LexiLocalAssistant, LexiLocalArrangement };
 vm.createContext(sandbox);
 vm.runInContext(ts.transpileModule(classSource, { compilerOptions: { target: ts.ScriptTarget.ES2021 } }).outputText, sandbox);
 function defer() { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; }

@@ -3,10 +3,10 @@
   "formatVersion": 1,
   "id": "lexinote.harness",
   "name": "Harness 智能体",
-  "version": "1.1.2",
+  "version": "1.5.0",
   "apiVersion": "1.1",
   "main": "main.js",
-  "description": "知萤智能体的插件化版本：对话、工具调用、技能与会话持久化。模型请求由宿主代办，插件不直接联网。",
+  "description": "知萤智能体的插件化版本：对话、工具调用、技能与会话持久化。模型请求由宿主代办，API Key 只写宿主，插件不直接联网。",
   "author": "LexiNote",
   "capabilities": [
     "vault.read",

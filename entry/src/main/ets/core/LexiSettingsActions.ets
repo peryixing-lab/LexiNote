@@ -9,7 +9,10 @@
 export class LexiSettingsActions {
   static selectTheme: (theme: string) => void = (_theme: string): void => {};
   static selectTier: (tier: string) => void = (_tier: string): void => {};
-  static exportBackup: () => void = (): void => {};
+  static exportSettingsPlugins: () => void = (): void => {};
+  static importSettingsPlugins: () => void = (): void => {};
+  static exportWorkspaceZip: () => void = (): void => {};
+  static importWorkspaceZip: () => void = (): void => {};
   static exportMarkdown: () => void = (): void => {};
   static importFiles: () => void = (): void => {};
   static rebuildIndex: () => void = (): void => {};

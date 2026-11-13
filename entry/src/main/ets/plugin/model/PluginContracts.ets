@@ -400,23 +400,33 @@ export class PluginAiChatParams {
 
 /** Model binding. The API key is stored on the host and never returned to the plugin. */
 export class PluginAiConfigureParams {
+  action: string = '';
+  profileId: string = '';
+  name: string = '';
   provider: string = '';
   baseUrl: string = '';
   model: string = '';
   apiKey: string = '';
   maxTokens: number = 0;
   temperature: number = -1;
+  select: boolean = true;
+  remove: boolean = false;
   clear: boolean = false;
 
   static from(raw: string): PluginAiConfigureParams {
     const parsed = JSON.parse(raw) as Record<string, Object>;
     const params = new PluginAiConfigureParams();
+    if (typeof parsed['action'] === 'string') { params.action = parsed['action'] as string; }
+    if (typeof parsed['profileId'] === 'string') { params.profileId = parsed['profileId'] as string; }
+    if (typeof parsed['name'] === 'string') { params.name = parsed['name'] as string; }
     if (typeof parsed['provider'] === 'string') { params.provider = parsed['provider'] as string; }
     if (typeof parsed['baseUrl'] === 'string') { params.baseUrl = parsed['baseUrl'] as string; }
     if (typeof parsed['model'] === 'string') { params.model = parsed['model'] as string; }
     if (typeof parsed['apiKey'] === 'string') { params.apiKey = parsed['apiKey'] as string; }
     if (typeof parsed['maxTokens'] === 'number') { params.maxTokens = parsed['maxTokens'] as number; }
     if (typeof parsed['temperature'] === 'number') { params.temperature = parsed['temperature'] as number; }
+    if (parsed['select'] === false) { params.select = false; }
+    if (parsed['remove'] === true) { params.remove = true; }
     if (parsed['clear'] === true) { params.clear = true; }
     return params;
   }

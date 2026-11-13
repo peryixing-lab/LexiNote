@@ -9,12 +9,15 @@ const {
   buildSystemPrompt
 } = require('./session');
 const { createViewController } = require('./view');
+const { createProfileContext } = require('./profile-store');
+const { createLocalContext, compactLookups } = require('./local-store');
+let cleanupController = null;
 
 /**
- * Harness — the built-in LexiNote agent, packaged as a native plugin.
+ * Harness — a standalone LexiNote agent plugin.
  *
  * What lives here: the agent loop, tools, skills, session persistence and chat view.
- * What lives in the host: model transport (`ai.inference`), the API key, the plugin
+ * What lives in the host: model transport (`ai.inference`), the active API binding, the plugin
  * WebView and the sidebar surface (`ui.views`). Removing this plugin removes the agent;
  * the host has no fallback chat.
  */
@@ -29,9 +32,13 @@ module.exports = definePlugin({
         '请在 设置 → 插件 → Harness → 能力与诊断 中授权后重试');
     }
 
+    ctx = createProfileContext(createLocalContext(ctx));
+    await compactLookups(ctx);
+
     const holder = { session: await loadSession(ctx) };
     ensureSystem(holder.session, buildSystemPrompt(ctx));
     const controller = createViewController(ctx, holder);
+    cleanupController = controller;
 
     const view = ctx.views.register({
       id: 'harness',
@@ -55,10 +62,10 @@ module.exports = definePlugin({
       id: 'harness-new-session',
       title: 'Harness：新建会话',
       run: async () => {
-        await controller.resetSession();
+        const created = await controller.resetSession();
         await view.ready;
         await ctx.views.open('harness');
-        controller.notify('已新建 Harness 会话');
+        if (created) { controller.notify('已新建 Harness 会话'); }
       }
     }));
 
@@ -87,6 +94,7 @@ module.exports = definePlugin({
   },
 
   async deactivate() {
+    if (cleanupController) { await cleanupController.dispose(); cleanupController = null; }
     // Subscriptions (view, commands) are released by the SDK in reverse order.
   }
 });

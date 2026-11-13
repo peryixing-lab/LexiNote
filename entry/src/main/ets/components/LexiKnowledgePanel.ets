@@ -1,3 +1,4 @@
+import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
 import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { util } from '@kit.ArkTS';
@@ -9,6 +10,7 @@ import { MarkdownEngine } from '../core/MarkdownEngine';
 /** Persistent bookmarks and editable collections, opened by the shared command dispatcher. */
 @Component
 export struct LexiKnowledgePanel {
+  @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @Prop @Watch('openRequested') requestRevision: number = 0;
   @Prop command: string = '';
   @Prop vaultId: string = '';
@@ -237,11 +239,11 @@ export struct LexiKnowledgePanel {
           }
         }.width('100%').alignItems(HorizontalAlign.Start)
       }.width('100%').layoutWeight(1)
-    }.width('100%').height('100%').padding(20).backgroundColor($r('app.color.surface'))
+    }.width('100%').height('100%').padding(20).backgroundColor(this.palette.surface)
   }
   build() {
     Column() {}.width(0).height(0).bindSheet($$this.panelOpen, this.panelContent, {
-      height: SheetSize.LARGE, showClose: true, dragBar: true, backgroundColor: $r('app.color.surface')
+      height: SheetSize.LARGE, showClose: true, dragBar: true, backgroundColor: this.palette.surface
     })
   }
 }

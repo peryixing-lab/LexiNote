@@ -181,20 +181,44 @@ final class PluginRuntimeSession: NSObject, WKScriptMessageHandler, WKNavigation
 
     func applyTheme(palette: ThemePalette) async {
         guard isPageLoaded else { return }
+        // HarmonyOS plugins use the runtime's own neutral lavender palette in the
+        // original theme. Keep that palette instead of painting chat surfaces white.
+        let original = palette == ThemeEngine.original(dark: palette.isDark)
+        let colors: [String: String]
+        if original {
+            colors = [
+                "background-primary": palette.isDark ? "#25212B" : "#F7F5F8",
+                "background-secondary": palette.isDark ? "#302B38" : "#EEEAF1",
+                "background-modifier-border": palette.isDark ? "#453E4F" : "#E1DCE6",
+                "text-normal": palette.isDark ? "#DED8E6" : "#343139",
+                "text-muted": palette.isDark ? "#AAA1B5" : "#827B87",
+                "text-faint": "#AAA4AE", "text-accent": "#807397",
+                "text-error": "#D34B66", "interactive-accent": "#8C7EAB",
+                "interactive-accent-hover": "#807397",
+                "interactive-normal": palette.isDark ? "#39323F" : "#EEEAF1"
+            ]
+        } else {
+            colors = [
+                "background-primary": palette.workspaceInspectorHex,
+                "background-secondary": palette.backgroundHex,
+                "background-modifier-border": palette.workspaceLineHex,
+                "text-normal": palette.textPrimaryHex, "text-muted": palette.textSecondaryHex,
+                "text-faint": palette.textSecondaryHex, "text-accent": palette.brandInkHex,
+                "interactive-accent": palette.brandHex,
+                "interactive-accent-hover": palette.brandInkHex,
+                "interactive-normal": palette.backgroundHex
+            ]
+        }
+        let variables = colors.sorted { $0.key < $1.key }
+            .map { "--\($0.key): \($0.value);" }.joined(separator: "\n")
         let css = """
         :root {
-          --background-primary: \(palette.workspacePageHex);
-          --background-secondary: \(palette.workspaceInspectorHex);
-          --text-normal: \(palette.textPrimaryHex);
-          --text-muted: \(palette.textSecondaryHex);
-          --interactive-accent: \(palette.brandHex);
-          --interactive-accent-hover: \(palette.brandInkHex);
-          --background-modifier-border: \(palette.workspaceLineHex);
+          \(variables)
           color-scheme: \(palette.isDark ? "dark" : "light");
         }
-        body {
-          background: transparent;
-          color: \(palette.textPrimaryHex);
+        html, body {
+          background: var(--background-primary);
+          color: var(--text-normal);
           font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
           margin: 0;
         }

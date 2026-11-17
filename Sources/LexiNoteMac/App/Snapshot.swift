@@ -20,7 +20,7 @@ enum SnapshotRenderer {
         settings.appearance = .light
         settings.themeMode = .original
         settings.showSidebar = true
-        settings.sidebarWidth = 248
+        settings.sidebarWidth = 244
         settings.inspectorWidth = 280
         model.bootstrapSession()
 
@@ -119,7 +119,7 @@ enum SnapshotRenderer {
         emptySettings.showStatusBar = true
         emptySettings.appearance = .light
         emptySettings.themeMode = .original
-        emptySettings.sidebarWidth = 248
+        emptySettings.sidebarWidth = 244
         emptySettings.inspectorWidth = 280
         let emptyModel = AppModel(settings: emptySettings, inMemory: true, seedDemo: false)
         emptyModel.bootstrapSession()

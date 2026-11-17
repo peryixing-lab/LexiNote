@@ -294,6 +294,7 @@ final class LexiEditorBridge {
         let sel = EditorController.active?.selectedRange() ?? NSRange(location: 0, length: 0)
         let cursor = lineAndColumn(in: content, utf16Offset: sel.location)
         return [
+            "noteId": note.id,
             "fileId": note.id,
             "vaultId": note.vaultID,
             "content": content,

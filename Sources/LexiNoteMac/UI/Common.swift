@@ -13,6 +13,60 @@ extension EnvironmentValues {
     }
 }
 
+// MARK: - Workspace sheets
+
+/// Centered sheets enter from below the window, matching HarmonyOS desktop sheets.
+/// The scrim fades separately so the workspace stays still throughout the transition.
+struct WorkspaceModalSheet<Content: View>: View {
+    let isPresented: Bool
+    @ObservedObject var settings: SettingsStore
+    let onDismiss: () -> Void
+    @ViewBuilder var content: () -> Content
+    @Environment(\.lexiPalette) private var palette
+    @FocusState private var panelFocused: Bool
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                if isPresented {
+                    palette.scrim
+                        .ignoresSafeArea()
+                        .contentShape(Rectangle())
+                        .onTapGesture(perform: onDismiss)
+                        .transition(.opacity)
+                        .zIndex(0)
+
+                    content()
+                        .clipShape(RoundedRectangle(cornerRadius: LexiTokens.radiusLG, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: LexiTokens.radiusLG, style: .continuous)
+                                .stroke(palette.workspaceLine.opacity(0.9), lineWidth: 0.5)
+                        )
+                        .shadow(color: palette.shadow.opacity(1.6), radius: 28, y: 12)
+                        .padding(.horizontal, 48)
+                        .padding(.vertical, 40)
+                        .transition(LexiMotion.sheetTransition(
+                            reduced: LexiMotion.isReduced(settings), distance: geometry.size.height))
+                        .accessibilityAddTraits(.isModal)
+                        .focusable()
+                        .focusEffectDisabled()
+                        .focused($panelFocused)
+                        .onExitCommand(perform: onDismiss)
+                        .onAppear { panelFocused = true }
+                        .zIndex(1)
+                }
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .clipped()
+            .animation(LexiMotion.sheet(settings, isPresented: isPresented), value: isPresented)
+        }
+        // Expand the layout before clipping, so the scrim and centering include
+        // the native titlebar inset instead of leaving an uncovered strip above it.
+        .ignoresSafeArea(.container, edges: .top)
+        .allowsHitTesting(isPresented)
+    }
+}
+
 // MARK: - Window chrome
 
 struct WindowChrome: NSViewRepresentable {
@@ -346,12 +400,13 @@ struct LexiIconButton: View {
                 .foregroundStyle(active ? palette.brandInk : (tint ?? palette.textSecondary))
                 .frame(width: frame, height: frame)
                 .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    RoundedRectangle(cornerRadius: LexiTokens.radiusSM, style: .continuous)
                         .fill(active ? palette.workspaceSelection : (hovering ? palette.hoverFill : Color.clear))
                 )
+                .animation(LexiMotion.easeOutMicro, value: hovering)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LexiPressButtonStyle())
         .onHover { hovering = $0 }
         .help(help ?? "")
     }
@@ -379,12 +434,13 @@ struct LexiToolButton: View {
             .padding(.horizontal, compact ? 8 : 11)
             .frame(height: 30)
             .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                RoundedRectangle(cornerRadius: LexiTokens.radiusSM, style: .continuous)
                     .fill(active ? palette.workspaceSelection : (hovering ? palette.hoverFill : Color.clear))
             )
+            .animation(LexiMotion.easeOutMicro, value: hovering)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LexiPressButtonStyle())
         .onHover { hovering = $0 }
     }
 }
@@ -406,12 +462,13 @@ struct LexiPrimaryButton: View {
             .padding(.horizontal, 14)
             .frame(height: 32)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(palette.brand.opacity(hovering ? 0.88 : 1))
+                RoundedRectangle(cornerRadius: LexiTokens.radiusSM, style: .continuous)
+                    .fill(palette.brand.opacity(hovering ? 0.90 : 1))
             )
+            .animation(LexiMotion.easeOutMicro, value: hovering)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LexiPressButtonStyle())
         .onHover { hovering = $0 }
     }
 }
@@ -429,8 +486,8 @@ struct LexiSearchField: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(palette.textSecondary)
+                .font(.system(size: 15, weight: .regular))
+                .foregroundStyle(palette.brand)
             TextField(placeholder, text: $text)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12))
@@ -446,19 +503,21 @@ struct LexiSearchField: View {
                         .font(.system(size: 11))
                         .foregroundStyle(palette.textSecondary.opacity(0.8))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LexiPressButtonStyle())
             }
         }
         .padding(.horizontal, 9)
-        .frame(height: 32)
+        .frame(height: 34)
         .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
+            RoundedRectangle(cornerRadius: LexiTokens.radiusSM, style: .continuous)
                 .fill(palette.workspacePage)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(focused ? palette.brand.opacity(0.55) : palette.workspaceLine.opacity(0.7), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: LexiTokens.radiusSM, style: .continuous)
+                        .stroke(focused ? palette.focusRing : palette.workspaceLine,
+                                lineWidth: focused ? 1.5 : 0.5)
                 )
         )
+        .animation(LexiMotion.easeOutMicro, value: focused)
         .onTapGesture { focused = true }
     }
 }
@@ -467,35 +526,44 @@ struct LexiSearchField: View {
 
 struct LexiSegment<Value: Hashable>: View {
     @Environment(\.lexiPalette) private var palette
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let options: [(label: String, value: Value)]
     @Binding var selection: Value
     var compact: Bool = false
+    @Namespace private var pillNamespace
 
     var body: some View {
         HStack(spacing: 2) {
             ForEach(options, id: \.value) { option in
                 let active = option.value == selection
                 Button {
-                    withAnimation(.easeOut(duration: 0.14)) { selection = option.value }
+                    if reduceMotion || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                        selection = option.value
+                    } else {
+                        withAnimation(LexiMotion.easeOutFast) { selection = option.value }
+                    }
                 } label: {
                     Text(option.label)
                         .font(.system(size: compact ? 11 : 12, weight: active ? .medium : .regular))
                         .foregroundStyle(active ? palette.brandInk : palette.textSecondary)
                         .padding(.horizontal, compact ? 9 : 12)
                         .frame(height: compact ? 24 : 28)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(active ? palette.workspacePage : Color.clear)
-                                .shadow(color: active ? palette.shadow.opacity(0.35) : .clear, radius: 1.5, y: 0.5)
-                        )
+                        .background {
+                            if active {
+                                RoundedRectangle(cornerRadius: LexiTokens.radiusXS, style: .continuous)
+                                    .fill(palette.workspacePage)
+                                    .shadow(color: palette.shadow.opacity(0.35), radius: 1.5, y: 0.5)
+                                    .matchedGeometryEffect(id: "segment-pill", in: pillNamespace)
+                            }
+                        }
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LexiPressButtonStyle())
             }
         }
         .padding(2)
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: LexiTokens.radiusSM, style: .continuous)
                 .fill(palette.controlFill)
         )
     }
@@ -646,7 +714,7 @@ struct ResizeHandle: View {
         ZStack {
             Rectangle()
                 .fill(hovering ? palette.brand.opacity(0.8) : palette.workspaceLine)
-                .frame(width: hovering ? 2 : 1)
+                .frame(width: hovering ? 2 : 0.5)
         }
         .frame(width: 8)
         .frame(maxHeight: .infinity)
@@ -705,5 +773,167 @@ struct LiquidGlassLayer: View {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(fallback)
         }
+    }
+}
+
+// MARK: - Search highlight & Link quick preview
+
+struct HighlightText: View {
+    @Environment(\.lexiPalette) private var palette
+    let text: String
+    let query: String
+    var font: Font = .system(size: 13)
+    var color: Color? = nil
+    var lineLimit: Int? = nil
+
+    var body: some View {
+        let baseColor = color ?? palette.textPrimary
+        let segments = NoteSearch.highlightSegments(text, query: query)
+        let attr: AttributedString = {
+            var result = AttributedString()
+            for segment in segments {
+                var run = AttributedString(segment.text)
+                if segment.highlighted {
+                    run.foregroundColor = palette.brandInk
+                    run.backgroundColor = palette.brand.opacity(palette.isDark ? 0.34 : 0.22)
+                } else {
+                    run.foregroundColor = baseColor
+                }
+                result.append(run)
+            }
+            return result
+        }()
+        return Text(attr)
+            .font(font)
+            .lineLimit(lineLimit)
+    }
+}
+
+struct LinkPreviewCard: View {
+    @Environment(\.lexiPalette) private var palette
+    let preview: LinkTargetPreview
+    var onOpen: () -> Void
+    var onDismiss: () -> Void = {}
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: preview.exists ? "doc.text.magnifyingglass" : "plus.circle")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(preview.exists ? palette.brand : palette.warning)
+                    .padding(.top, 2)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(preview.title)
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundStyle(palette.textPrimary)
+                        .lineLimit(2)
+                    HStack(spacing: 6) {
+                        Text(preview.exists ? preview.notebook : "未创建")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(preview.exists ? palette.brandInk : palette.warning)
+                            .padding(.horizontal, 6)
+                            .frame(height: 18)
+                            .background(
+                                Capsule().fill(preview.exists ? palette.brandSoft : palette.warning.opacity(0.16))
+                            )
+                        if !preview.anchor.isEmpty {
+                            Text("#\(preview.anchor)")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(palette.brandInk)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+
+            Text(preview.snippet)
+                .font(.system(size: 12))
+                .foregroundStyle(palette.textSecondary)
+                .lineSpacing(3)
+                .lineLimit(4)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !preview.tags.isEmpty {
+                HStack(spacing: 5) {
+                    ForEach(preview.tags.prefix(4), id: \.self) { tag in
+                        Text("#\(tag)")
+                            .font(.system(size: 10))
+                            .foregroundStyle(palette.brandInk)
+                            .padding(.horizontal, 6)
+                            .frame(height: 18)
+                            .background(Capsule().fill(palette.softSurface))
+                    }
+                }
+            }
+
+            if preview.exists {
+                HStack(spacing: 10) {
+                    Label("出链 \(preview.outgoingCount) · 反链 \(preview.backlinkCount)", systemImage: "link")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(palette.textSecondary)
+                    Spacer(minLength: 4)
+                    if let accessed = preview.lastAccessedAt {
+                        Text("访问 \(LexiDate.relative(accessed))")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(palette.textSecondary)
+                    } else if let updated = preview.updatedAt {
+                        Text(LexiDate.relative(updated))
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(palette.textSecondary)
+                    }
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button {
+                    onDismiss()
+                    onOpen()
+                } label: {
+                    Label(preview.exists ? "打开笔记" : "创建并打开",
+                          systemImage: preview.exists ? "arrow.up.right.square" : "doc.badge.plus")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 11)
+                        .frame(height: 26)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(preview.exists ? palette.brand : palette.warning)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(14)
+        .frame(width: 296, alignment: .leading)
+    }
+}
+
+struct LinkHoverPreviewModifier: ViewModifier {
+    let previewProvider: () -> LinkTargetPreview
+    let arrowEdge: Edge
+    let onOpen: () -> Void
+    @Binding var isPresented: Bool
+    @State private var hoverWork: DispatchWorkItem?
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { inside in
+                hoverWork?.cancel()
+                hoverWork = nil
+                if inside {
+                    let work = DispatchWorkItem {
+                        isPresented = true
+                    }
+                    hoverWork = work
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.28, execute: work)
+                }
+            }
+            .popover(isPresented: $isPresented, arrowEdge: arrowEdge) {
+                LinkPreviewCard(preview: previewProvider(), onOpen: onOpen) {
+                    isPresented = false
+                }
+            }
     }
 }

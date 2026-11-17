@@ -25,8 +25,22 @@ enum NoteCodec {
         }
         lines.append("---")
         lines.append("")
-        lines.append(note.content)
+        lines.append(stripFrontmatter(note.content))
         return lines.joined(separator: "\n")
+    }
+
+    private static func stripFrontmatter(_ raw: String) -> String {
+        let body = raw.replacingOccurrences(of: "\r\n", with: "\n")
+        guard body.hasPrefix("---\n") else { return raw }
+        let lines = body.components(separatedBy: "\n")
+        for idx in 1..<lines.count {
+            let t = lines[idx].trimmingCharacters(in: .whitespaces)
+            if t == "---" || t == "..." {
+                return lines.dropFirst(idx + 1).joined(separator: "\n")
+                    .replacingOccurrences(of: "^\\n+", with: "", options: .regularExpression)
+            }
+        }
+        return raw
     }
 
     static func decode(text: String, relativePath: String, vaultID: String,
@@ -67,7 +81,12 @@ enum NoteCodec {
                         let key = String(trimmed[..<colon]).trimmingCharacters(in: .whitespaces).lowercased()
                         let value = String(trimmed[trimmed.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
                         if key == "properties" { continue }
-                        meta[key] = value
+                        let systemKeys: Set<String> = ["id", "title", "notebook", "type", "level", "pinned", "favorite", "tags", "tag", "created", "updated", "trashed"]
+                        if systemKeys.contains(key) {
+                            meta[key] = value
+                        } else {
+                            properties.append(NoteProperty(key: String(trimmed[..<colon]).trimmingCharacters(in: .whitespaces), value: unquote(value)))
+                        }
                     }
                 }
                 bodyText = lines.dropFirst(closing + 1).joined(separator: "\n")
@@ -76,15 +95,15 @@ enum NoteCodec {
 
         while bodyText.hasPrefix("\n") { bodyText.removeFirst() }
 
-        let id = meta["id"].map(unquote) ?? stableID(relativePath)
+        let id = meta["id"].map(unquote).flatMap { $0.isEmpty ? nil : $0 } ?? "note-\(UUID().uuidString.lowercased())"
         let notebook = meta["notebook"].map(unquote) ?? fallbackNotebook
         let title = meta["title"].map(unquote) ?? ""
-        let type = NoteKind(rawValue: meta["type"] ?? "") ?? .markdown
-        let level = EditorLevel(rawValue: meta["level"] ?? "") ?? (type == .quick ? .simple : .study)
-        let tags = meta["tags"].map(parseList) ?? []
-        let createdAt = meta["created"].flatMap(LexiDate.parse) ?? fileDate
-        let updatedAt = meta["updated"].flatMap(LexiDate.parse) ?? fileDate
-        let trashedAt = meta["trashed"].flatMap(LexiDate.parse)
+        let type = NoteKind(rawValue: unquote(meta["type"] ?? "")) ?? .markdown
+        let level = EditorLevel(rawValue: unquote(meta["level"] ?? "")) ?? (type == .quick ? .simple : .study)
+        let tags = (meta["tags"] ?? meta["tag"]).map(parseList) ?? []
+        let createdAt = meta["created"].flatMap(parseFlexDate) ?? fileDate
+        let updatedAt = meta["updated"].flatMap(parseFlexDate) ?? fileDate
+        let trashedAt = meta["trashed"].flatMap(parseFlexDate)
         let note = Note(id: id, vaultID: vaultID, notebook: notebook, type: type, level: level,
                         title: title, content: bodyText, tags: tags, properties: properties,
                         pinned: meta["pinned"]?.lowercased() == "true",
@@ -125,6 +144,15 @@ enum NoteCodec {
             let clean = unquote(piece)
             return clean.isEmpty ? nil : clean
         }
+    }
+
+    private static func parseFlexDate(_ raw: String) -> Date? {
+        let clean = unquote(raw)
+        if let d = LexiDate.parse(clean) { return d }
+        if let num = Double(clean), num > 0 {
+            return Date(timeIntervalSince1970: num > 1e11 ? num / 1000.0 : num)
+        }
+        return nil
     }
 
     private static func stableID(_ relativePath: String) -> String {

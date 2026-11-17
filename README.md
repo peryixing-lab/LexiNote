@@ -7,6 +7,7 @@
 - [HarmonyOS：鸿蒙工程](https://github.com/peryixing-lab/LexiNote/tree/HarmonyOS)
 - [Windows：Windows 工程](https://github.com/peryixing-lab/LexiNote/tree/Windows)
 - [macOS：macOS 原生工程](https://github.com/peryixing-lab/LexiNote/tree/macOS)
+- [Android：Android 手机工程](https://github.com/peryixing-lab/LexiNote/tree/Android)
 - [main：项目概览、Harness 插件和共享文档](https://github.com/peryixing-lab/LexiNote/tree/main)
 
 克隆当前平台：
@@ -32,7 +33,7 @@ cd LexiNote
 | 模块 | 已实现 |
 | --- | --- |
 | 桌面工作区 | 52pt 标题栏、56pt 图标栏、可拖动侧栏、标签页、右侧检查器、40pt 状态栏 |
-| 弹窗 | 设置与回收站为原生模态弹窗，不占用标签页；关闭后回到原文档 |
+| 弹窗 | 设置与回收站从窗口底部滑入、向下收起；支持关闭按钮、Esc 和点击遮罩关闭；关闭后回到原文档 |
 | 写作 | 源码编辑、实时渲染预览、阅读视图；标题 / 标签 / 字符数与自动保存 |
 | Markdown | 标题、段落、列表、待办、引用、`[!NOTE]` 等标注、代码块与语言高亮、表格、图片、分隔线、`$…$` / `$$…$$` 公式 |
 | 知识连接 | `[[双向链接]]`、出链、反向链接、未创建链接、可点击大纲、笔记属性 |
@@ -63,7 +64,8 @@ cd LexiNote
 
 ### Liquid Glass 与材质
 
-- macOS 26+：标题栏、命令面板与 Toast 使用 SwiftUI `GlassEffect` / Liquid Glass；可在「设置 → 外观 → 材质与动效」关闭。
+- 工作区标题栏使用不透明的浅紫色分层；原配色调下编辑区域为白色，插件面板使用与鸿蒙运行时一致的中性淡紫色。
+- macOS 26+：命令面板与 Toast 使用 SwiftUI `GlassEffect` / Liquid Glass；可在「设置 → 外观 → 材质与动效」关闭。
 - 较低版本：同一位置回退到 `NSVisualEffectView` / 系统材质。
 - HarmonyOS 的沉浸光感、HDS 模糊与渐变全部替换为 **纯色分层 + 0.5pt 发丝线**，与桌面截图中的浅紫体系一致。
 

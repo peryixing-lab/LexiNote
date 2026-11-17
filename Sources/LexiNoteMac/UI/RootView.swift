@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 // MARK: - Root
 
@@ -37,26 +38,42 @@ struct RootView: View {
                     if settings.showRibbon {
                         RailView(model: model, settings: settings)
                     }
-                    if settings.showSidebar {
-                        SidebarView(model: model, settings: settings)
-                            .frame(width: settings.sidebarWidth)
-                            .transition(.move(edge: .leading).combined(with: .opacity))
-                        ResizeHandle(onDrag: { translation in
-                            if sidebarDragStart == nil { sidebarDragStart = settings.sidebarWidth }
-                            settings.sidebarWidth = Double(clamp((sidebarDragStart ?? settings.sidebarWidth) + translation, 200, 420))
-                        }, onEnd: { sidebarDragStart = nil })
-                    }
+                    SidebarView(model: model, settings: settings)
+                        .frame(width: settings.sidebarWidth)
+                        .frame(width: settings.showSidebar ? settings.sidebarWidth : 0, alignment: .trailing)
+                        .clipped()
+                        .opacity(settings.showSidebar ? 1 : 0)
+                        .allowsHitTesting(settings.showSidebar)
+                        .accessibilityHidden(!settings.showSidebar)
+                        .overlay(alignment: .trailing) {
+                            if settings.showSidebar {
+                                ResizeHandle(onDrag: { translation in
+                                    if sidebarDragStart == nil { sidebarDragStart = settings.sidebarWidth }
+                                    settings.sidebarWidth = Double(clamp((sidebarDragStart ?? settings.sidebarWidth) + translation, 200, 420))
+                                }, onEnd: { sidebarDragStart = nil })
+                                .offset(x: 4)
+                            }
+                        }
+                        .zIndex(1)
                     MainAreaView(model: model, settings: settings)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    if settings.showInspector && showsInspector {
-                        ResizeHandle(onDrag: { translation in
-                            if inspectorDragStart == nil { inspectorDragStart = settings.inspectorWidth }
-                            settings.inspectorWidth = Double(clamp((inspectorDragStart ?? settings.inspectorWidth) - translation, 232, 420))
-                        }, onEnd: { inspectorDragStart = nil })
-                        InspectorContainer(model: model, settings: settings)
-                            .frame(width: settings.inspectorWidth)
-                            .transition(.move(edge: .trailing).combined(with: .opacity))
-                    }
+                    InspectorContainer(model: model, settings: settings)
+                        .frame(width: settings.inspectorWidth)
+                        .frame(width: (settings.showInspector && showsInspector) ? settings.inspectorWidth : 0, alignment: .leading)
+                        .clipped()
+                        .opacity((settings.showInspector && showsInspector) ? 1 : 0)
+                        .allowsHitTesting(settings.showInspector && showsInspector)
+                        .accessibilityHidden(!(settings.showInspector && showsInspector))
+                        .overlay(alignment: .leading) {
+                            if settings.showInspector && showsInspector {
+                                ResizeHandle(onDrag: { translation in
+                                    if inspectorDragStart == nil { inspectorDragStart = settings.inspectorWidth }
+                                    settings.inspectorWidth = Double(clamp((inspectorDragStart ?? settings.inspectorWidth) - translation, 232, 420))
+                                }, onEnd: { inspectorDragStart = nil })
+                                .offset(x: -4)
+                            }
+                        }
+                        .zIndex(1)
                 }
             }
             .frame(
@@ -65,8 +82,11 @@ struct RootView: View {
             )
             .scaleEffect(zoom, anchor: .topLeading)
         }
-        .animation(settings.animateAppearance && !settings.reduceMotion ? .easeInOut(duration: 0.18) : nil,
-                   value: settings.showSidebar)
+        .disabled(model.settingsVisible || model.trashVisible)
+        .accessibilityHidden(model.settingsVisible || model.trashVisible)
+        .animation(LexiMotion.drawer(settings), value: settings.showSidebar)
+        .animation(LexiMotion.drawer(settings), value: settings.showInspector)
+        .animation(LexiMotion.fast(settings), value: settings.showRibbon)
         .background(palette.workspacePage)
         .environment(\.lexiPalette, palette)
         .environment(\.lexiSnapshot, snapshotMode)
@@ -97,45 +117,44 @@ struct RootView: View {
         .overlay {
             if model.paletteVisible {
                 CommandPalettePanel(model: model, settings: settings)
-                    .transition(.opacity)
+                    .transition(LexiMotion.paletteTransition(reduced: LexiMotion.isReduced(settings)))
                     .zIndex(80)
             }
         }
         .overlay {
-            if model.settingsVisible {
-                ZStack {
-                    Color.black.opacity(isDark ? 0.45 : 0.24)
-                        .ignoresSafeArea()
-                        .onTapGesture { model.settingsVisible = false }
-                    SettingsView(model: model, settings: settings)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(palette.workspaceLine.opacity(0.9), lineWidth: 0.5)
-                        )
-                        .shadow(color: palette.shadow.opacity(1.6), radius: 28, y: 12)
-                        .padding(.horizontal, 48)
-                        .padding(.vertical, 40)
-                }
-                .transition(.opacity)
-                .zIndex(90)
-                .onExitCommand { model.settingsVisible = false }
+            WorkspaceModalSheet(isPresented: model.settingsVisible, settings: settings,
+                                onDismiss: { model.settingsVisible = false }) {
+                SettingsView(model: model, settings: settings)
             }
+            .environment(\.lexiPalette, palette)
+            .preferredColorScheme(settings.preferredColorScheme)
+            .tint(palette.brand)
         }
-        .animation(.easeOut(duration: 0.2), value: model.paletteVisible)
-        .animation(.easeOut(duration: 0.16), value: model.settingsVisible)
-        .animation(.easeOut(duration: 0.2), value: model.toast?.id)
+        .overlay {
+            WorkspaceModalSheet(isPresented: model.trashVisible, settings: settings,
+                                onDismiss: { model.trashVisible = false }) {
+                TrashSheet(model: model, settings: settings,
+                           onClose: { model.trashVisible = false })
+            }
+            .environment(\.lexiPalette, palette)
+            .preferredColorScheme(settings.preferredColorScheme)
+            .tint(palette.brand)
+        }
+        .animation(model.paletteVisible ? LexiMotion.paletteIn(settings) : nil, value: model.paletteVisible)
+        .animation(LexiMotion.fast(settings), value: model.toast?.id)
         .sheet(isPresented: $model.templatesVisible) {
             TemplatePickerSheet(model: model, settings: settings)
         }
         .sheet(isPresented: $model.welcomeVisible) {
             WelcomeSheet(model: model, settings: settings)
         }
-        .sheet(isPresented: $model.trashVisible) {
-            TrashSheet(model: model, settings: settings)
-        }
         .sheet(item: $model.workspacePromptVault) { vault in
             WorkspaceOpenPromptSheet(model: model, settings: settings, vault: vault)
+        }
+        .sheet(isPresented: $model.historyVisible) {
+            if let noteID = model.historyTargetNoteID ?? model.currentNote?.id, !noteID.isEmpty {
+                NoteHistorySheet(model: model, settings: settings, noteID: noteID)
+            }
         }
         .transaction { transaction in
             if !settings.animateAppearance || settings.reduceMotion {
@@ -155,6 +174,41 @@ struct RootView: View {
         .onReceive(NotificationCenter.default.publisher(for: .lexiOpenSettings)) { _ in
             model.presentSettings()
         }
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            handleDroppedFiles(providers)
+        }
+    }
+
+    private func handleDroppedFiles(_ providers: [NSItemProvider]) -> Bool {
+        let matching = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
+        guard !matching.isEmpty else { return false }
+        let group = DispatchGroup()
+        var urls: [URL] = []
+        let lock = NSLock()
+
+        for provider in matching {
+            group.enter()
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                defer { group.leave() }
+                if let data = item as? Data,
+                   let str = String(data: data, encoding: .utf8),
+                   let url = URL(string: str) {
+                    lock.lock()
+                    urls.append(url)
+                    lock.unlock()
+                } else if let url = item as? URL {
+                    lock.lock()
+                    urls.append(url)
+                    lock.unlock()
+                }
+            }
+        }
+        group.notify(queue: .main) {
+            if !urls.isEmpty {
+                model.openExternalFiles(urls, sourceLabel: "拖入")
+            }
+        }
+        return true
     }
 
     private var showsInspector: Bool {
@@ -179,11 +233,11 @@ struct TitleBarView: View {
     }
 
     private var sidebarTint: Color {
-        settings.useMaterial ? palette.workspaceSidebar.opacity(0.64) : palette.workspaceSidebar
+        palette.workspaceSidebar
     }
 
     private var tabsTint: Color {
-        settings.useMaterial ? palette.workspaceTabs.opacity(0.52) : palette.workspaceTabs
+        palette.workspaceTabs
     }
 
     var body: some View {
@@ -198,13 +252,13 @@ struct TitleBarView: View {
                 }
 
                 HStack(spacing: 7) {
-                    LexiLogoMark(size: 22)
+                    LexiLogoMark(size: 28)
                     Text("知萤")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: 17, weight: .bold))
                         .foregroundStyle(palette.textPrimary)
                     if settings.showSidebar {
                         Text("LexiNote")
-                            .font(.system(size: 10.5, weight: .medium))
+                            .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(palette.brandInk)
                             .padding(.top, 1)
                             .transition(.opacity)
@@ -231,10 +285,9 @@ struct TitleBarView: View {
             }
 
             HStack(spacing: 4) {
-                LexiIconButton(symbol: "list.bullet", size: 14.5, frame: 30,
-                               active: settings.showSidebar,
+                LexiIconButton(symbol: "list.bullet", size: 17, frame: 34,
                                help: settings.showSidebar ? "隐藏知识库侧栏 (⌃⌘S)" : "显示知识库侧栏 (⌃⌘S)") {
-                    withAnimation(.easeInOut(duration: 0.18)) { settings.showSidebar.toggle() }
+                    LexiMotion.perform(settings, LexiMotion.drawer(settings)) { settings.showSidebar.toggle() }
                 }
                 .padding(.leading, settings.showSidebar ? 6 : 8)
 
@@ -255,10 +308,10 @@ struct TitleBarView: View {
 
                 NewContentMenu(model: model)
 
-                LexiIconButton(symbol: "sidebar.trailing", size: 14.5, frame: 30,
+                LexiIconButton(symbol: "sidebar.trailing", size: 18, frame: 34,
                                active: settings.showInspector,
                                help: settings.showInspector ? "隐藏右侧栏 (⌥⌘S)" : "显示右侧栏 (⌥⌘S)") {
-                    withAnimation(.easeInOut(duration: 0.18)) { settings.showInspector.toggle() }
+                    LexiMotion.perform(settings, LexiMotion.drawer(settings)) { settings.showInspector.toggle() }
                 }
 
                 if !settings.showRibbon {
@@ -275,11 +328,6 @@ struct TitleBarView: View {
         }
         .frame(height: Metrics.titlebarHeight)
         .background(settings.showSidebar ? Color.clear : tabsTint)
-        .background {
-            if settings.useMaterial {
-                LiquidGlassLayer(cornerRadius: 0, tint: palette.brand.opacity(0.07))
-            }
-        }
         .overlay(alignment: .bottom) {
             Rectangle().fill(palette.workspaceLine).frame(height: 0.5)
         }
@@ -311,6 +359,7 @@ private struct TabStripView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var settings: SettingsStore
     @Environment(\.lexiPalette) private var palette
+    @Namespace private var activeTabNamespace
 
     var body: some View {
         GeometryReader { geometry in
@@ -321,31 +370,20 @@ private struct TabStripView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(alignment: .bottom, spacing: 3) {
                         ForEach(model.openTabs) { tab in
-                            TabItemView(model: model, tab: tab, width: tabWidth)
+                            TabItemView(model: model, settings: settings, tab: tab, width: tabWidth, namespace: activeTabNamespace)
                                 .id(tab.id)
                         }
                     }
-                    .padding(.top, 14)
+                    .padding(.top, 10)
                     .frame(maxHeight: .infinity, alignment: .bottom)
                 }
                 .onChange(of: model.selectedTabID) { _, selected in
                     guard !selected.isEmpty else { return }
                     let contentWidth = tabWidth * CGFloat(count) + 3 * CGFloat(max(0, count - 1))
                     guard contentWidth > geometry.size.width else { return }
-                    withAnimation(.easeOut(duration: 0.15)) {
+                    LexiMotion.perform(settings, LexiMotion.fast(settings)) {
                         proxy.scrollTo(selected, anchor: .center)
                     }
-                }
-            }
-            .overlay {
-                if model.openTabs.isEmpty {
-                    HStack {
-                        Text("没有打开的文档")
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(palette.textSecondary.opacity(0.7))
-                        Spacer()
-                    }
-                    .padding(.leading, 10)
                 }
             }
         }
@@ -356,8 +394,10 @@ private struct TabStripView: View {
 
 private struct TabItemView: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var settings: SettingsStore
     let tab: WorkspaceTab
     let width: CGFloat
+    let namespace: Namespace.ID
     @Environment(\.lexiPalette) private var palette
     @State private var hovering = false
 
@@ -383,31 +423,35 @@ private struct TabItemView: View {
                     .frame(width: 18, height: 24)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .opacity(1)
+            .buttonStyle(LexiPressButtonStyle())
+            .opacity(selected || hovering ? 1 : 0.72)
         }
         .padding(.leading, 12)
         .padding(.trailing, 6)
-        .frame(width: width, height: Metrics.titlebarHeight - 14)
+        .frame(width: width, height: Metrics.titlebarHeight - 10)
         .background {
-            UnevenRoundedRectangle(topLeadingRadius: 8, bottomLeadingRadius: 0,
-                                   bottomTrailingRadius: 0, topTrailingRadius: 8, style: .continuous)
+            UnevenRoundedRectangle(topLeadingRadius: LexiTokens.radiusSM, bottomLeadingRadius: 0,
+                                   bottomTrailingRadius: 0, topTrailingRadius: LexiTokens.radiusSM, style: .continuous)
                 .fill(selected ? palette.workspacePage : (hovering ? palette.hoverFill : Color.clear))
         }
         .overlay(alignment: .top) {
             if selected {
-                UnevenRoundedRectangle(topLeadingRadius: 8, bottomLeadingRadius: 0,
-                                       bottomTrailingRadius: 0, topTrailingRadius: 8, style: .continuous)
+                Rectangle()
                     .fill(palette.brand)
                     .frame(height: 2)
+                    .matchedGeometryEffect(id: "active-tab-bar", in: namespace)
             }
         }
-        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 8, bottomLeadingRadius: 0,
-                                          bottomTrailingRadius: 0, topTrailingRadius: 8, style: .continuous))
+        .clipShape(UnevenRoundedRectangle(topLeadingRadius: LexiTokens.radiusSM, bottomLeadingRadius: 0,
+                                          bottomTrailingRadius: 0, topTrailingRadius: LexiTokens.radiusSM, style: .continuous))
+        .animation(LexiMotion.fast(settings), value: selected)
+        .animation(LexiMotion.easeOutMicro, value: hovering)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture {
-            model.selectTab(tab.id)
+            LexiMotion.perform(settings, LexiMotion.fast(settings)) {
+                model.selectTab(tab.id)
+            }
         }
         .contextMenu {
             Button("关闭标签") { model.closeTab(tab.id) }
@@ -446,14 +490,13 @@ private struct NewContentMenu: View {
                     .font(.system(size: 12, weight: .medium))
             }
             .foregroundStyle(palette.brandInk)
-            .frame(width: 72, height: 30)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(palette.workspaceSelection)
-            )
+            .frame(width: 76, height: 34)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
+        .buttonStyle(.plain)
+        .frame(width: 76, height: 34)
+        .background(palette.workspaceSelection, in: RoundedRectangle(cornerRadius: LexiTokens.radiusSM))
         .fixedSize()
         .padding(.horizontal, 6)
     }
@@ -473,7 +516,7 @@ private struct RailView: View {
         VStack(spacing: 6) {
             if settings.isRibbonCommandVisible("vault") {
                 railButton(.library, symbol: "folder", active: activeTabKind == nil || activeTabKind == .note || activeTabKind == .map || activeTabKind == .canvas) {
-                    settings.showSidebar.toggle()
+                    LexiMotion.perform(settings, LexiMotion.drawer(settings)) { settings.showSidebar.toggle() }
                 }
             }
             if settings.isRibbonCommandVisible("switcher") {
@@ -528,7 +571,7 @@ private struct RailView: View {
                 model.presentSettings()
             }
         }
-        .padding(.top, 14)
+        .padding(.top, 16)
         .padding(.bottom, 12)
         .frame(width: Metrics.railWidth)
         .frame(maxHeight: .infinity)
@@ -570,16 +613,17 @@ private struct RailButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 17, weight: .regular))
-                .foregroundStyle(active ? palette.brandInk : (tint ?? palette.textSecondary))
-                .frame(width: 40, height: 40)
+                .font(.system(size: 19, weight: .regular))
+                .foregroundStyle(active ? palette.brand : (tint ?? palette.textSecondary))
+                .frame(width: 36, height: 36)
                 .background(
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    RoundedRectangle(cornerRadius: LexiTokens.radiusSM, style: .continuous)
                         .fill(active ? palette.workspaceSelection : (hovering ? palette.hoverFill : Color.clear))
                 )
+                .animation(LexiMotion.easeOutMicro, value: hovering)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LexiPressButtonStyle())
         .onHover { hovering = $0 }
         .help(label)
     }
@@ -594,6 +638,7 @@ struct SidebarView: View {
     @State private var collapsed: Set<String> = []
     @State private var prompt: PromptRequest?
     @State private var hoveredNotebook: String?
+    @State private var hoveredNoteID: String?
     @State private var switcherOpen = false
 
     var body: some View {
@@ -621,29 +666,31 @@ struct SidebarView: View {
                 .foregroundStyle(palette.textPrimary)
             Spacer()
             Text("\(model.visibleNotes.count)")
-                .font(.system(size: 11.5))
+                .font(.system(size: 12))
+                .monospacedDigit()
                 .foregroundStyle(palette.textSecondary)
         }
-        .frame(height: 44)
-        .padding(.horizontal, 14)
+        .frame(height: 48)
+        .padding(.leading, 18)
+        .padding(.trailing, 12)
     }
 
     private var search: some View {
         LexiSearchField(text: $model.searchText, placeholder: "搜索 · tag: type: ...")
             .padding(.horizontal, 12)
-            .padding(.bottom, 12)
+            .padding(.bottom, 14)
     }
 
     private var quickActions: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: 6) {
             Button {
                 model.openDailyNote()
             } label: {
                 Text("今日笔记")
                     .font(.system(size: 12))
                     .foregroundStyle(palette.brand)
-                    .padding(.horizontal, 4)
-                    .frame(height: 26)
+                    .padding(.horizontal, 10)
+                    .frame(height: 34)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -654,36 +701,74 @@ struct SidebarView: View {
                 Text("模板")
                     .font(.system(size: 12))
                     .foregroundStyle(palette.brand)
-                    .padding(.horizontal, 4)
-                    .frame(height: 26)
+                    .padding(.horizontal, 10)
+                    .frame(height: 34)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
-            Spacer()
+            Spacer(minLength: 0)
+            sortMenu
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
     }
 
+    private var sortMenu: some View {
+        Menu {
+            ForEach(NoteSortMode.allCases) { mode in
+                Button {
+                    settings.sidebarSortMode = mode
+                } label: {
+                    HStack {
+                        Text(mode.label)
+                        if settings.sidebarSortMode == mode {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            Text("排序：\(settings.sidebarSortMode.label)")
+                .font(.system(size: 11))
+                .foregroundStyle(palette.textSecondary)
+                .lineLimit(1)
+                .padding(.horizontal, 8)
+                .frame(height: 30)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .buttonStyle(.plain)
+        .fixedSize()
+        .help("切换笔记排序方式")
+    }
+
     private var filters: some View {
-        HStack(spacing: 6) {
-            filterPill("全部笔记", active: !model.favoritesOnly) {
-                model.favoritesOnly = false
+        let unconnectedCount = model.unconnectedNoteCount
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                filterPill("全部笔记", active: !model.favoritesOnly && !model.unconnectedOnly) {
+                    model.favoritesOnly = false
+                    model.unconnectedOnly = false
+                }
+                filterPill("收藏", active: model.favoritesOnly) {
+                    model.favoritesOnly = true
+                    model.unconnectedOnly = false
+                }
+                filterPill("未连接 (\(unconnectedCount))", active: model.unconnectedOnly) {
+                    model.unconnectedOnly.toggle()
+                    if model.unconnectedOnly { model.favoritesOnly = false }
+                }
             }
-            filterPill("收藏", active: model.favoritesOnly) {
-                model.favoritesOnly = true
-            }
-            Spacer()
         }
         .padding(.horizontal, 12)
-        .padding(.bottom, 10)
+        .padding(.bottom, 12)
     }
 
     private func filterPill(_ title: String, active: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 12, weight: active ? .medium : .regular))
+                .font(.system(size: 12))
                 .foregroundStyle(active ? palette.brandInk : palette.textSecondary)
                 .padding(.horizontal, 10)
                 .frame(height: 30)
@@ -697,21 +782,26 @@ struct SidebarView: View {
     }
 
     private var noteList: some View {
-        ScrollView {
+        let unconnectedIDs = Set(model.unconnectedNotes().map(\.id))
+        let trimmedQuery = model.searchText.trimmingCharacters(in: .whitespaces)
+        let flatRecent = settings.sidebarSortMode == .accessed && trimmedQuery.isEmpty
+        return ScrollView {
             LazyVStack(spacing: 4) {
-                if model.notebookGroups.isEmpty {
+                if model.visibleNotes.isEmpty {
                     emptyHint
+                } else if flatRecent {
+                    ForEach(model.visibleNotes) { note in
+                        noteRow(note, isUnconnected: unconnectedIDs.contains(note.id), showNotebookMeta: true)
+                    }
                 } else {
                     ForEach(model.notebookGroups) { group in
-                        notebookGroup(group)
+                        notebookGroup(group, unconnectedIDs: unconnectedIDs)
                     }
                 }
-                if !model.searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+                if !trimmedQuery.isEmpty {
                     searchSummary
                 }
-                if model.searchText.isEmpty && !model.favoritesOnly
-                    && (!model.maps.filter { $0.vaultID == model.activeVaultID && $0.trashedAt == nil }.isEmpty
-                        || !model.canvases.filter { $0.vaultID == model.activeVaultID }.isEmpty) {
+                if model.searchText.isEmpty && !model.favoritesOnly && !model.unconnectedOnly {
                     visualSection
                 }
             }
@@ -724,7 +814,8 @@ struct SidebarView: View {
 
     private var emptyHint: some View {
         Text(model.searchText.isEmpty
-             ? (model.favoritesOnly ? "收藏的笔记会出现在这里" : "写下第一条笔记")
+             ? (model.favoritesOnly ? "收藏的笔记会出现在这里"
+                : (model.unconnectedOnly ? "所有笔记都已建立连接" : "写下第一条笔记"))
              : "没有找到匹配的笔记")
             .font(.system(size: 12))
             .lineSpacing(10)
@@ -750,11 +841,11 @@ struct SidebarView: View {
         .padding(.top, 8)
     }
 
-    private func notebookGroup(_ group: NotebookGroup) -> some View {
+    private func notebookGroup(_ group: NotebookGroup, unconnectedIDs: Set<String>) -> some View {
         let isCollapsed = collapsed.contains(group.name) && model.searchText.isEmpty
         return VStack(spacing: 2) {
             Button {
-                withAnimation(.easeOut(duration: 0.15)) {
+                LexiMotion.perform(settings, LexiMotion.fast(settings)) {
                     if collapsed.contains(group.name) {
                         collapsed.remove(group.name)
                     } else {
@@ -767,10 +858,11 @@ struct SidebarView: View {
                         .font(.system(size: 8, weight: .semibold))
                         .foregroundStyle(palette.textSecondary)
                         .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+                        .animation(LexiMotion.fast(settings), value: isCollapsed)
                         .frame(width: 9)
                     Image(systemName: "folder")
                         .font(.system(size: 13.5, weight: .regular))
-                        .foregroundStyle(palette.textSecondary)
+                        .foregroundStyle(palette.brand)
                     Text(group.name)
                         .font(.system(size: 12))
                         .foregroundStyle(palette.textSecondary)
@@ -778,6 +870,7 @@ struct SidebarView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Text("\(group.notes.count)")
                         .font(.system(size: 10))
+                        .monospacedDigit()
                         .foregroundStyle(palette.textSecondary.opacity(0.8))
                 }
                 .padding(.leading, 5)
@@ -785,11 +878,12 @@ struct SidebarView: View {
                 .frame(height: 36)
                 .contentShape(Rectangle())
                 .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    RoundedRectangle(cornerRadius: LexiTokens.radiusXS, style: .continuous)
                         .fill(hoveredNotebook == group.name ? palette.hoverFill : Color.clear)
                 )
+                .animation(LexiMotion.easeOutMicro, value: hoveredNotebook)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(LexiPressButtonStyle())
             .onHover { hoveredNotebook = $0 ? group.name : nil }
             .contextMenu {
                 Button("在此新建笔记") {
@@ -802,46 +896,80 @@ struct SidebarView: View {
 
             if !isCollapsed {
                 ForEach(group.notes) { note in
-                    noteRow(note)
+                    noteRow(note, isUnconnected: unconnectedIDs.contains(note.id), showNotebookMeta: false)
                 }
             }
         }
         .padding(.bottom, 8)
     }
 
-    private func noteRow(_ note: Note) -> some View {
+    private func noteRow(_ note: Note, isUnconnected: Bool = false, showNotebookMeta: Bool = false) -> some View {
         let selected = model.currentNote?.id == note.id
+        let trimmedSearch = model.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matchSnippet = trimmedSearch.isEmpty ? "" : note.snippet(matching: trimmedSearch, maxLength: 72)
         return Button {
             model.openNote(note.id)
         } label: {
-            HStack(spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
                 Image(systemName: note.type == .quick ? "bolt" : "doc.text")
                     .font(.system(size: 13.5, weight: .regular))
                     .foregroundStyle(selected ? palette.brand : palette.textSecondary)
-                    .frame(width: 16)
-                Text(note.displayTitle)
-                    .font(.system(size: 13, weight: selected ? .medium : .regular))
-                    .foregroundStyle(selected ? palette.brandInk : palette.textPrimary)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                if note.favorite {
-                    Image(systemName: "star.fill")
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(palette.brand)
+                    .frame(width: 16, height: 18)
+                VStack(alignment: .leading, spacing: 3) {
+                    HighlightText(text: note.displayTitle,
+                                  query: trimmedSearch,
+                                  font: .system(size: 13, weight: selected ? .medium : .regular),
+                                  color: selected ? palette.brandInk : palette.textPrimary,
+                                  lineLimit: 1)
+                    if !matchSnippet.isEmpty {
+                        HighlightText(text: matchSnippet,
+                                      query: trimmedSearch,
+                                      font: .system(size: 11),
+                                      color: palette.textSecondary,
+                                      lineLimit: 2)
+                    } else if showNotebookMeta {
+                        Text("\(note.notebook) · \(LexiDate.relative(model.accessDate(for: note)))")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(palette.textSecondary)
+                            .lineLimit(1)
+                    }
                 }
+                Spacer(minLength: 4)
+                HStack(spacing: 4) {
+                    if isUnconnected {
+                        Text("未连")
+                            .font(.system(size: 9))
+                            .foregroundStyle(palette.textSecondary)
+                            .padding(.horizontal, 5)
+                            .frame(height: 16)
+                            .background(RoundedRectangle(cornerRadius: 4).fill(palette.softSurface))
+                    }
+                    if note.favorite {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(palette.brand)
+                    }
+                }
+                .padding(.top, 2)
             }
             .padding(.leading, 14)
             .padding(.trailing, 10)
-            .frame(height: 38)
+            .padding(.vertical, (matchSnippet.isEmpty && !showNotebookMeta) ? 8 : 7)
+            .frame(minHeight: 38)
             .contentShape(Rectangle())
             .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(selected ? palette.workspaceSelection : Color.clear)
+                RoundedRectangle(cornerRadius: LexiTokens.radiusXS, style: .continuous)
+                    .fill(selected ? palette.workspaceSelection : (hoveredNoteID == note.id ? palette.hoverFill : Color.clear))
             )
+            .animation(LexiMotion.easeOutMicro, value: hoveredNoteID)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LexiPressButtonStyle())
+        .onHover { inside in
+            hoveredNoteID = inside ? note.id : (hoveredNoteID == note.id ? nil : hoveredNoteID)
+        }
         .contextMenu {
             Button("打开") { model.openNote(note.id) }
+            Button("版本历史与差异对比…") { model.openVersionHistory(for: note.id) }
             Button(note.favorite ? "取消收藏" : "收藏") { model.toggleFavorite(note.id) }
             Button(note.pinned ? "取消置顶" : "置顶") { model.togglePin(note.id) }
             Button("重命名…") {
@@ -1122,20 +1250,17 @@ struct EmptyWorkspaceView: View {
     @Environment(\.lexiPalette) private var palette
 
     var body: some View {
-        VStack(spacing: 10) {
-            Spacer(minLength: 24)
+        VStack(spacing: 12) {
             Image(systemName: "doc.text")
-                .font(.system(size: 28, weight: .regular))
+                .font(.system(size: 32, weight: .regular))
                 .foregroundStyle(palette.brand)
-                .padding(.bottom, 2)
             Text("选择或新建一篇笔记")
-                .font(.system(size: 17, weight: .semibold))
+                .font(.system(size: 20, weight: .medium))
                 .foregroundStyle(palette.textPrimary)
             Text("从左侧打开已有笔记，或点击右上角“新建”开始记录。")
-                .font(.system(size: 12))
+                .font(.system(size: 13))
                 .foregroundStyle(palette.textSecondary)
                 .multilineTextAlignment(.center)
-            Spacer(minLength: 24)
         }
         .padding(.horizontal, 40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

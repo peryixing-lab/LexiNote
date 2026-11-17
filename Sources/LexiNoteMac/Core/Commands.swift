@@ -28,8 +28,8 @@ enum EditorCommand: String {
 enum CommandAction {
     case palette, quickSwitch
     case newNote, quickNote, studyNote, dailyNote, templates
-    case save, exportMarkdown, exportMarkdownBundle, exportBackup, importMarkdown, rebuildIndex
-    case closeTab, closeOthers, closeAll, duplicateNote, trashNote, copyPath, revealInFinder
+    case save, exportPDF, exportMarkdown, exportMarkdownBundle, exportBackup, importMarkdown, rebuildIndex
+    case closeTab, closeOthers, closeAll, duplicateNote, trashNote, copyPath, revealInFinder, versionHistory
     case bookmarkFile, bookmarkRemove
     case newMap, newCanvas, convertToMap
     case graph, trash
@@ -192,9 +192,11 @@ enum CommandCatalog {
         LexiCommand(id: "close-others", title: "关闭其他标签页", group: "文件", shortcut: "", symbol: "xmark.circle", action: .closeOthers),
         LexiCommand(id: "close-all", title: "关闭所有标签页", group: "文件", shortcut: "", symbol: "xmark.circle.fill", action: .closeAll),
         LexiCommand(id: "duplicate", title: "复制当前文件", group: "文件", shortcut: "⇧⌘D", symbol: "plus.square.on.square", action: .duplicateNote),
+        LexiCommand(id: "version-history", title: "版本历史与差异对比", group: "文件", shortcut: "⌥⌘H", symbol: "clock.arrow.circlepath", action: .versionHistory),
         LexiCommand(id: "delete-file", title: "删除当前文件", group: "文件", shortcut: "", symbol: "trash", action: .trashNote),
         LexiCommand(id: "reveal-file", title: "在 Finder 中显示", group: "文件", shortcut: "⇧⌘R", symbol: "folder", action: .revealInFinder),
         LexiCommand(id: "copy-path", title: "复制当前文件绝对路径", group: "文件", shortcut: "", symbol: "doc.on.clipboard", action: .copyPath),
+        LexiCommand(id: "export-pdf", title: "导出当前笔记为 PDF", group: "文件", shortcut: "⌥⌘E", symbol: "doc.richtext", action: .exportPDF),
         LexiCommand(id: "export-md", title: "导出当前笔记 Markdown", group: "文件", shortcut: "⇧⌘E", symbol: "square.and.arrow.up", action: .exportMarkdown),
         LexiCommand(id: "export-md-bundle", title: "导出 Markdown 合集", group: "文件", shortcut: "", symbol: "doc.zipper", action: .exportMarkdownBundle),
         LexiCommand(id: "backup", title: "导出工作区压缩包", group: "文件", shortcut: "", symbol: "doc.zipper", action: .exportBackup),
@@ -361,9 +363,12 @@ enum CommandRouter {
             model.templatesVisible = true
         case .save:
             if let note = model.currentNote {
-                _ = model.saveNoteNow(note.id)
-                model.showToast("已保存到本机", symbol: "checkmark.circle")
+                _ = model.saveNoteWithFeedback(note.id)
+            } else {
+                model.showToast("当前没有可保存的打开笔记", symbol: "doc.text")
             }
+        case .exportPDF:
+            model.exportCurrentPDF()
         case .exportMarkdown:
             model.exportCurrentMarkdown()
         case .exportMarkdownBundle:
@@ -388,6 +393,8 @@ enum CommandRouter {
             if let note = model.currentNote { model.copyNotePath(note.id) }
         case .revealInFinder:
             if let note = model.currentNote { model.revealNoteInFinder(note.id) } else { model.revealStorageInFinder() }
+        case .versionHistory:
+            model.openVersionHistory()
         case .bookmarkFile:
             if let note = model.currentNote, !note.favorite {
                 model.toggleFavorite(note.id)
@@ -409,11 +416,17 @@ enum CommandRouter {
         case .trash:
             model.openTrash()
         case .toggleSidebar:
-            withAnimation(.easeInOut(duration: 0.18)) { model.settings.showSidebar.toggle() }
+            LexiMotion.perform(model.settings, LexiMotion.drawer(model.settings)) {
+                model.settings.showSidebar.toggle()
+            }
         case .toggleInspector:
-            withAnimation(.easeInOut(duration: 0.18)) { model.settings.showInspector.toggle() }
+            LexiMotion.perform(model.settings, LexiMotion.drawer(model.settings)) {
+                model.settings.showInspector.toggle()
+            }
         case .toggleRibbon:
-            withAnimation(.easeInOut(duration: 0.18)) { model.settings.showRibbon.toggle() }
+            LexiMotion.perform(model.settings, LexiMotion.drawer(model.settings)) {
+                model.settings.showRibbon.toggle()
+            }
         case .zoomIn:
             model.settings.interfaceZoom = min(150, model.settings.interfaceZoom + 10)
         case .zoomOut:

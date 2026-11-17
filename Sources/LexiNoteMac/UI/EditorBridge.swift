@@ -290,6 +290,113 @@ final class EditorController: ObservableObject {
 
 // MARK: - SwiftUI wrapper
 
+/// A single AppKit document holds the title and source editor. Keeping the native
+/// text view inside this scroll view preserves caret, find and heading navigation.
+final class MarkdownEditorScrollView: NSScrollView {
+    let editorDocument = MarkdownEditorDocumentView()
+    private var layingOutDocument = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        documentView = editorDocument
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func tile() {
+        super.tile()
+        layoutDocument()
+    }
+
+    override func layout() {
+        super.layout()
+        layoutDocument()
+    }
+
+    func layoutDocument() {
+        guard !layingOutDocument, contentSize.width > 0, contentSize.height > 0 else { return }
+        layingOutDocument = true
+        defer { layingOutDocument = false }
+        editorDocument.layoutDocument(viewport: contentSize)
+        reflectScrolledClipView(contentView)
+    }
+}
+
+final class MarkdownEditorDocumentView: NSView {
+    let textView = NSTextView()
+    private let headerView = NSHostingView(rootView: AnyView(EmptyView()))
+    private let placeholder = MarkdownEditorPlaceholderField(labelWithString:
+        "从一个想法开始。支持 Markdown、#标签 与 [[双向链接]]。")
+    private var header: AnyView = AnyView(EmptyView())
+    private var headerNeedsUpdate = true
+    private var lastHeaderWidth: CGFloat = -1
+    private var contentMaxWidth: CGFloat?
+    private var horizontalPadding: CGFloat = 56
+
+    override var isFlipped: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        addSubview(headerView)
+        addSubview(textView)
+        addSubview(placeholder)
+        placeholder.maximumNumberOfLines = 0
+        placeholder.lineBreakMode = .byWordWrapping
+    }
+
+    convenience init() { self.init(frame: .zero) }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func update(header: AnyView?, contentMaxWidth: CGFloat?, horizontalPadding: CGFloat,
+                placeholderFont: NSFont, placeholderColor: NSColor) {
+        self.header = header ?? AnyView(EmptyView())
+        self.contentMaxWidth = contentMaxWidth
+        self.horizontalPadding = horizontalPadding
+        headerNeedsUpdate = true
+        placeholder.font = placeholderFont
+        placeholder.textColor = placeholderColor
+    }
+
+    func layoutDocument(viewport: NSSize) {
+        let width = viewport.width
+        if headerNeedsUpdate || lastHeaderWidth != width {
+            headerView.rootView = AnyView(header.frame(width: width).fixedSize(horizontal: false, vertical: true))
+            headerNeedsUpdate = false
+            lastHeaderWidth = width
+        }
+        let headerHeight = ceil(headerView.fittingSize.height)
+        let textWidth = max(1, min(contentMaxWidth ?? .greatestFiniteMagnitude, width - horizontalPadding * 2))
+        let textX = (width - textWidth) / 2
+        let textY = headerHeight + 2
+        let minimumTextHeight = max(40, viewport.height - textY - 20)
+        textView.minSize = NSSize(width: 0, height: minimumTextHeight)
+        if textView.frame.width != textWidth {
+            textView.setFrameSize(NSSize(width: textWidth, height: max(minimumTextHeight, textView.frame.height)))
+        }
+        textView.textContainer?.containerSize = NSSize(width: textWidth, height: .greatestFiniteMagnitude)
+        var textHeight = minimumTextHeight
+        if let manager = textView.layoutManager, let container = textView.textContainer {
+            manager.ensureLayout(for: container)
+            textHeight = max(minimumTextHeight, ceil(max(manager.usedRect(for: container).maxY,
+                                                       manager.extraLineFragmentRect.maxY)
+                                                  + textView.textContainerInset.height * 2))
+        }
+        let headerFrame = NSRect(x: 0, y: 0, width: width, height: headerHeight)
+        if headerView.frame != headerFrame { headerView.frame = headerFrame }
+        let textFrame = NSRect(x: textX, y: textY, width: textWidth, height: textHeight)
+        if textView.frame != textFrame { textView.frame = textFrame }
+        let documentSize = NSSize(width: width, height: max(viewport.height, textFrame.maxY + 20))
+        if frame.size != documentSize { setFrameSize(documentSize) }
+        placeholder.isHidden = !textView.string.isEmpty
+        placeholder.frame = NSRect(x: textX, y: textY + 12, width: textWidth, height: 54)
+    }
+}
+
+private final class MarkdownEditorPlaceholderField: NSTextField {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 struct MarkdownTextEditor: NSViewRepresentable {
     @Binding var text: String
     let palette: ThemePalette
@@ -300,13 +407,16 @@ struct MarkdownTextEditor: NSViewRepresentable {
     let controller: EditorController
     let onTextChange: (String) -> Void
     var onSelectionChange: ((NSRange) -> Void)? = nil
+    var documentHeader: AnyView? = nil
+    var contentMaxWidth: CGFloat? = nil
+    var horizontalPadding: CGFloat = 56
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
 
-    func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
+    func makeNSView(context: Context) -> MarkdownEditorScrollView {
+        let scrollView = MarkdownEditorScrollView(frame: .zero)
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
@@ -315,7 +425,7 @@ struct MarkdownTextEditor: NSViewRepresentable {
         scrollView.borderType = .noBorder
         scrollView.contentView.drawsBackground = false
 
-        let textView = NSTextView()
+        let textView = scrollView.editorDocument.textView
         textView.isRichText = false
         textView.importsGraphics = false
         textView.allowsUndo = true
@@ -324,7 +434,7 @@ struct MarkdownTextEditor: NSViewRepresentable {
         textView.drawsBackground = false
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
-        textView.autoresizingMask = [.width]
+        textView.autoresizingMask = []
         textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.lineFragmentPadding = 0
         textView.textContainerInset = NSSize(width: 0, height: 4)
@@ -341,19 +451,24 @@ struct MarkdownTextEditor: NSViewRepresentable {
         textView.delegate = context.coordinator
         textView.string = text
         textView.setSelectedRange(NSRange(location: 0, length: 0))
-        scrollView.documentView = textView
+        scrollView.editorDocument.update(header: documentHeader, contentMaxWidth: contentMaxWidth,
+                                         horizontalPadding: horizontalPadding,
+                                         placeholderFont: editorFont(size: fontSize),
+                                         placeholderColor: NSColor(palette.textSecondary).withAlphaComponent(0.65))
 
         context.coordinator.textView = textView
+        context.coordinator.scrollView = scrollView
         context.coordinator.parent = self
         controller.textView = textView
         controller.onChange = onTextChange
         EditorController.active = controller
         context.coordinator.applyStyling()
+        scrollView.layoutDocument()
         return scrollView
     }
 
-    func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        guard let textView = scrollView.documentView as? NSTextView else { return }
+    func updateNSView(_ scrollView: MarkdownEditorScrollView, context: Context) {
+        let textView = scrollView.editorDocument.textView
         context.coordinator.parent = self
         controller.textView = textView
         controller.onChange = onTextChange
@@ -372,7 +487,12 @@ struct MarkdownTextEditor: NSViewRepresentable {
             .backgroundColor: NSColor(palette.brand).withAlphaComponent(0.22),
             .foregroundColor: NSColor(palette.textPrimary)
         ]
+        scrollView.editorDocument.update(header: documentHeader, contentMaxWidth: contentMaxWidth,
+                                         horizontalPadding: horizontalPadding,
+                                         placeholderFont: editorFont(size: fontSize),
+                                         placeholderColor: NSColor(palette.textSecondary).withAlphaComponent(0.65))
         context.coordinator.applyStyling()
+        scrollView.layoutDocument()
     }
 
     private func baseAttributes() -> [NSAttributedString.Key: Any] {
@@ -407,6 +527,7 @@ struct MarkdownTextEditor: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: MarkdownTextEditor
         weak var textView: NSTextView?
+        weak var scrollView: MarkdownEditorScrollView?
         private var highlighting = false
 
         init(_ parent: MarkdownTextEditor) {
@@ -417,6 +538,7 @@ struct MarkdownTextEditor: NSViewRepresentable {
             guard let textView, !highlighting else { return }
             parent.onTextChange(textView.string)
             applyStyling()
+            scrollView?.layoutDocument()
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {

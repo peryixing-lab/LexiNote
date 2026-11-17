@@ -3,7 +3,7 @@
 本文是**移植规格提取**，不含应用代码。所有色值、数值、文案均照抄源码；文案保留中文原文（引号内），
 并在有对应英文词条时给出英文，供 SwiftUI 本地化使用。
 
-- 源码根：`entry/src/main/ets/`
+- 源码根：`/Users/thousandmiles/DevecostudioProjects/LexiNote/entry/src/main/ets/`
 - 快照时间：2026-11-12（文件 mtime 2026-11-12 21:09）
 - 约定：`vp` = ArkUI 虚拟像素；ArkUI 的 8 位色是 `#AARRGGBB`（alpha 在前）。
 

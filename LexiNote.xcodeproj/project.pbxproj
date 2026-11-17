@@ -8,11 +8,13 @@
 
 /* Begin PBXBuildFile section */
 		AA00000000000000000000B7 /* plugin-runtime in Resources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000A0 /* plugin-runtime */; };
+		AA00000000000000000000B8 /* lexi-math in Resources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000B9 /* lexi-math */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		AA00000000000000000000A0 /* plugin-runtime */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "plugin-runtime"; path = "Resources/plugin-runtime"; sourceTree = "<group>"; };
 		AA00000000000000000000A4 /* LexiNote.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LexiNote.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA00000000000000000000B9 /* lexi-math */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "lexi-math"; path = "Resources/lexi-math"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -35,6 +37,7 @@
 			children = (
 				AA00000000000000000000A2 /* Sources/LexiNoteMac */,
 				AA00000000000000000000A0 /* plugin-runtime */,
+				AA00000000000000000000B9 /* lexi-math */,
 				AA00000000000000000000A3 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -113,6 +116,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA00000000000000000000B7 /* plugin-runtime in Resources */,
+				AA00000000000000000000B8 /* lexi-math in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -271,7 +275,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.0.1;
+				MARKETING_VERSION = 2.0.0;
 				OTHER_SWIFT_FLAGS = "-disable-sandbox";
 				PRODUCT_BUNDLE_IDENTIFIER = com.lexinote.mac;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -304,7 +308,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.0.1;
+				MARKETING_VERSION = 2.0.0;
 				OTHER_SWIFT_FLAGS = "-disable-sandbox";
 				PRODUCT_BUNDLE_IDENTIFIER = com.lexinote.mac;
 				PRODUCT_NAME = "$(TARGET_NAME)";

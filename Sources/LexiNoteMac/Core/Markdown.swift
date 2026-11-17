@@ -168,6 +168,56 @@ enum MarkdownParser {
         return nil
     }
 
+    static func embeddedSection(_ source: String, anchor: String?) -> String {
+        let body = stripFrontmatter(source).trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetAnchor = (anchor ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "^#+\\s*", with: "", options: .regularExpression)
+        guard !targetAnchor.isEmpty else { return body }
+        let lines = body.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+        var inFence = false
+        var matchedLevel = 0
+        var collecting = false
+        var collected: [String] = []
+        for raw in lines {
+            let trimmed = raw.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+                inFence.toggle()
+                if collecting { collected.append(raw) }
+                continue
+            }
+            if !inFence, let heading = headingMatch(trimmed) {
+                let headingTitle = inlinePlain(parseInline(heading.text)).trimmingCharacters(in: .whitespaces)
+                if !collecting {
+                    if headingTitle.caseInsensitiveCompare(targetAnchor) == .orderedSame {
+                        collecting = true
+                        matchedLevel = heading.level
+                        collected.append(raw)
+                    }
+                    continue
+                } else if heading.level <= matchedLevel {
+                    break
+                }
+            }
+            if collecting {
+                collected.append(raw)
+            }
+        }
+        let section = collected.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return section.isEmpty ? body : section
+    }
+
+    static func previewSnippet(_ source: String, anchor: String? = nil, maxLength: Int = 180) -> String {
+        let section = embeddedSection(source, anchor: anchor)
+        let plain = plainText(section)
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !plain.isEmpty else { return "" }
+        if plain.count <= maxLength { return plain }
+        return String(plain.prefix(maxLength)) + "..."
+    }
+
     private static func plain(block: MDBlock) -> String {
         switch block.kind {
         case .heading(_, let content, _), .paragraph(let content):
@@ -220,7 +270,7 @@ private struct BlockParser {
                 blocks.append(parseFence(open: line))
                 continue
             }
-            if line == "$$" || (line.hasPrefix("$$") && line.hasSuffix("$$") && line.count > 4) {
+            if isMathBlockStart(line) {
                 blocks.append(parseMath(line: line))
                 continue
             }
@@ -314,23 +364,104 @@ private struct BlockParser {
         return make(.code(language: language, code: code.joined(separator: "\n")))
     }
 
+    private static let blockMathEnvironments: Set<String> = [
+        "equation", "equation*", "align", "align*", "aligned", "gather", "gather*", "gathered",
+        "multline", "multline*", "flalign", "flalign*", "alignat", "alignat*", "split",
+        "cases", "dcases", "rcases", "subnumcases", "numcases",
+        "matrix", "pmatrix", "bmatrix", "Bmatrix", "vmatrix", "Vmatrix", "smallmatrix", "array"
+    ]
+
+    private func mathEnvironmentName(in trimmedLine: String) -> String? {
+        guard trimmedLine.hasPrefix("\\begin{") else { return nil }
+        guard let close = trimmedLine.firstIndex(of: "}") else { return nil }
+        let start = trimmedLine.index(trimmedLine.startIndex, offsetBy: 7)
+        guard start < close else { return nil }
+        let env = String(trimmedLine[start..<close])
+        return Self.blockMathEnvironments.contains(env) ? env : nil
+    }
+
+    private func isMathBlockStart(_ trimmedLine: String) -> Bool {
+        trimmedLine.hasPrefix("$$")
+            || trimmedLine.hasPrefix("\\[")
+            || mathEnvironmentName(in: trimmedLine) != nil
+    }
+
     private mutating func parseMath(line: String) -> MDBlock {
-        if line.hasPrefix("$$") && line.hasSuffix("$$") && line.count > 4 {
-            index += 1
-            return make(.math(String(line.dropFirst(2).dropLast(2))))
-        }
-        index += 1
-        var formula: [String] = []
-        while index < lines.count {
-            let current = lines[index].trimmingCharacters(in: .whitespaces)
-            if current == "$$" {
+        if line.hasPrefix("$$") {
+            if line.hasSuffix("$$") && line.count > 4 {
                 index += 1
-                break
+                return make(.math(String(line.dropFirst(2).dropLast(2)).trimmingCharacters(in: .whitespacesAndNewlines)))
             }
-            formula.append(lines[index])
+            let tail = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
             index += 1
+            var formula: [String] = []
+            if !tail.isEmpty { formula.append(tail) }
+            while index < lines.count {
+                let current = lines[index].trimmingCharacters(in: .whitespaces)
+                if current == "$$" {
+                    index += 1
+                    break
+                }
+                if current.hasSuffix("$$") && current.count >= 2 {
+                    let before = String(lines[index].dropLast(2)).trimmingCharacters(in: .whitespaces)
+                    if !before.isEmpty { formula.append(before) }
+                    index += 1
+                    break
+                }
+                formula.append(lines[index])
+                index += 1
+            }
+            return make(.math(formula.joined(separator: "\n")))
         }
-        return make(.math(formula.joined(separator: "\n")))
+
+        if line.hasPrefix("\\[") {
+            if line.hasSuffix("\\]") && line.count > 4 {
+                index += 1
+                return make(.math(String(line.dropFirst(2).dropLast(2)).trimmingCharacters(in: .whitespacesAndNewlines)))
+            }
+            let tail = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+            index += 1
+            var formula: [String] = []
+            if !tail.isEmpty { formula.append(tail) }
+            while index < lines.count {
+                let current = lines[index].trimmingCharacters(in: .whitespaces)
+                if current == "\\]" {
+                    index += 1
+                    break
+                }
+                if current.hasSuffix("\\]") {
+                    let before = String(current.dropLast(2)).trimmingCharacters(in: .whitespaces)
+                    if !before.isEmpty { formula.append(before) }
+                    index += 1
+                    break
+                }
+                formula.append(lines[index])
+                index += 1
+            }
+            return make(.math(formula.joined(separator: "\n")))
+        }
+
+        if let env = mathEnvironmentName(in: line) {
+            let endTag = "\\end{\(env)}"
+            if line.contains(endTag) {
+                index += 1
+                return make(.math(line))
+            }
+            var formula: [String] = [lines[index]]
+            index += 1
+            while index < lines.count {
+                let current = lines[index]
+                formula.append(current)
+                index += 1
+                if current.trimmingCharacters(in: .whitespaces).contains(endTag) {
+                    break
+                }
+            }
+            return make(.math(formula.joined(separator: "\n")))
+        }
+
+        index += 1
+        return make(.math(line))
     }
 
     private mutating func parseParagraph() -> MDBlock {
@@ -339,7 +470,7 @@ private struct BlockParser {
             let raw = lines[index]
             let trimmed = raw.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty { break }
-            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") || trimmed.hasPrefix("$$") { break }
+            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") || isMathBlockStart(trimmed) { break }
             if trimmed.hasPrefix(">") || trimmed.hasPrefix("|") || isDivider(trimmed) { break }
             if MarkdownParser.headingMatch(trimmed) != nil || isListLine(raw) { break }
             parts.append(trimmed)
@@ -473,10 +604,13 @@ private struct InlineParser {
     mutating func parse() -> [MDInline] {
         while index < characters.count {
             let character = characters[index]
-            if character == "\\", index + 1 < characters.count, isEscapable(characters[index + 1]) {
-                buffer.append(characters[index + 1])
-                index += 2
-                continue
+            if character == "\\" {
+                if consumeLatexInlineMath() { continue }
+                if index + 1 < characters.count, isEscapable(characters[index + 1]) {
+                    buffer.append(characters[index + 1])
+                    index += 2
+                    continue
+                }
             }
             if character == "`" {
                 if consumeCode() { continue }
@@ -591,15 +725,79 @@ private struct InlineParser {
         return true
     }
 
+    private mutating func consumeLatexInlineMath() -> Bool {
+        guard index + 1 < characters.count else { return false }
+        let openChar = characters[index + 1]
+        let closeChar: Character
+        if openChar == "(" {
+            closeChar = ")"
+        } else if openChar == "[" {
+            closeChar = "]"
+        } else {
+            return false
+        }
+        var cursor = index + 2
+        while cursor + 1 < characters.count {
+            if characters[cursor] == "\\", characters[cursor + 1] == "\\" {
+                cursor += 2
+                continue
+            }
+            if characters[cursor] == "\\", characters[cursor + 1] == closeChar {
+                let content = String(characters[(index + 2)..<cursor]).trimmingCharacters(in: .whitespaces)
+                guard !content.isEmpty, !content.contains("\n") else { return false }
+                flush()
+                output.append(.math(content))
+                index = cursor + 2
+                return true
+            }
+            cursor += 1
+        }
+        return false
+    }
+
     private mutating func consumeMath() -> Bool {
-        if index + 1 < characters.count, characters[index + 1] == "$" { return false }
-        guard let end = find("$", from: index + 1) else { return false }
+        if index + 1 < characters.count, characters[index + 1] == "$" {
+            // Handle inline $$...$$ cleanly if present on a single line.
+            if let closeIdx = findUnescapedDollar(from: index + 2),
+               closeIdx + 1 < characters.count,
+               characters[closeIdx + 1] == "$" {
+                let content = String(characters[(index + 2)..<closeIdx]).trimmingCharacters(in: .whitespaces)
+                if !content.isEmpty, !content.contains("\n") {
+                    flush()
+                    output.append(.math(content))
+                    index = closeIdx + 2
+                    return true
+                }
+            }
+            return false
+        }
+        guard index + 1 < characters.count, !characters[index + 1].isWhitespace else { return false }
+        guard let end = findUnescapedDollar(from: index + 1) else { return false }
+        guard end > index + 1 else { return false }
+        if characters[end - 1].isWhitespace { return false }
+        if end + 1 < characters.count, characters[end + 1].isNumber { return false }
         let content = String(characters[(index + 1)..<end])
         guard !content.isEmpty, !content.contains("\n") else { return false }
         flush()
         output.append(.math(content))
         index = end + 1
         return true
+    }
+
+    private func findUnescapedDollar(from start: Int) -> Int? {
+        var cursor = start
+        while cursor < characters.count {
+            let ch = characters[cursor]
+            if ch == "\\" {
+                cursor += 2
+                continue
+            }
+            if ch == "$" {
+                return cursor
+            }
+            cursor += 1
+        }
+        return nil
     }
 
     private mutating func consumeEmphasis(character: Character) -> Bool {

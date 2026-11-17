@@ -1,8 +1,15 @@
 import Foundation
 
 final class PluginStorage {
+    private struct CredentialDocument: Codable {
+        var version: Int = 1
+        var records: [String: String] = [:]
+    }
+
     private(set) var rootURL: URL
     private let ephemeral: Bool
+    private let credentialLock = NSLock()
+    private var memorySecrets: [String: [String: String]] = [:]
     private var memoryRegistry: [PluginRecord] = []
     private var memoryEnabled: [String: [String]] = [:]
     private var memoryPermissions: [String: [String: PluginPermissionGrant]] = [:]
@@ -239,58 +246,181 @@ final class PluginStorage {
         return "{}"
     }
 
-    // MARK: - Plugin AI Bindings & Secrets (Per-Plugin Isolated)
+    // MARK: - Plugin AI Bindings & Owner-Only Credential Files (DeepSeek-Harness Model)
 
     private var aiDir: URL {
         rootURL.appendingPathComponent("ai", isDirectory: true)
     }
 
+    func credentialsFileURL(pluginId: String) -> URL {
+        aiDir.appendingPathComponent("\(Self.safeKey(pluginId)).credentials.json")
+    }
+
+    func bindingFileURL(pluginId: String) -> URL {
+        aiDir.appendingPathComponent("\(Self.safeKey(pluginId)).binding.json")
+    }
+
     func loadAiBindingRaw(pluginId: String) -> String? {
         guard !ephemeral else { return nil }
-        let url = aiDir.appendingPathComponent("\(Self.safeKey(pluginId)).binding.json")
-        return try? String(contentsOf: url, encoding: .utf8)
+        return try? String(contentsOf: bindingFileURL(pluginId: pluginId), encoding: .utf8)
     }
 
     func saveAiBindingRaw(pluginId: String, json: String) throws {
         guard !ephemeral else { return }
-        try FileManager.default.createDirectory(at: aiDir, withIntermediateDirectories: true)
-        let url = aiDir.appendingPathComponent("\(Self.safeKey(pluginId)).binding.json")
-        try json.write(to: url, atomically: true, encoding: .utf8)
+        try ensurePrivateAiDir()
+        try atomicWritePrivateFile(Data(json.utf8), to: bindingFileURL(pluginId: pluginId), mode: 0o600)
+    }
+
+    /// Resolves a credential from host private storage (`0600` owner-only file), enforcing POSIX owner-only checks.
+    func resolveStoredSecret(pluginId: String, profileId: String) throws -> String {
+        guard !pluginId.isEmpty, !profileId.isEmpty else { return "" }
+        credentialLock.lock()
+        defer { credentialLock.unlock() }
+
+        if ephemeral {
+            return memorySecrets[pluginId]?[profileId] ?? ""
+        }
+
+        let credURL = credentialsFileURL(pluginId: pluginId)
+        if FileManager.default.fileExists(atPath: credURL.path) {
+            let doc = try readCredentialDocumentLocked(url: credURL)
+            return doc.records[profileId] ?? ""
+        }
+
+        // Compatibility: fall back to legacy `.secrets.json` if present
+        let legacyURL = aiDir.appendingPathComponent("\(Self.safeKey(pluginId)).secrets.json")
+        if FileManager.default.fileExists(atPath: legacyURL.path),
+           let data = try? Data(contentsOf: legacyURL),
+           let legacyMap = try? JSONDecoder().decode([String: String].self, from: data) {
+            return legacyMap[profileId] ?? ""
+        }
+        return ""
     }
 
     func loadAiSecret(pluginId: String, profileId: String) -> String {
-        guard !ephemeral else { return "" }
-        let url = aiDir.appendingPathComponent("\(Self.safeKey(pluginId)).secrets.json")
-        guard let data = try? Data(contentsOf: url),
-              let map = try? JSONDecoder().decode([String: String].self, from: data) else {
-            return ""
-        }
-        return map[profileId] ?? ""
+        (try? resolveStoredSecret(pluginId: pluginId, profileId: profileId)) ?? ""
     }
 
-    func saveAiSecret(pluginId: String, profileId: String, secret: String) {
-        guard !ephemeral else { return }
-        try? FileManager.default.createDirectory(at: aiDir, withIntermediateDirectories: true)
-        let url = aiDir.appendingPathComponent("\(Self.safeKey(pluginId)).secrets.json")
-        var map: [String: String] = [:]
-        if let data = try? Data(contentsOf: url),
-           let existing = try? JSONDecoder().decode([String: String].self, from: data) {
-            map = existing
+    func saveAiSecret(pluginId: String, profileId: String, secret: String) throws {
+        guard !pluginId.isEmpty, !profileId.isEmpty else { return }
+        credentialLock.lock()
+        defer { credentialLock.unlock() }
+
+        if ephemeral {
+            var map = memorySecrets[pluginId] ?? [:]
+            if secret.isEmpty {
+                map.removeValue(forKey: profileId)
+            } else {
+                map[profileId] = secret
+            }
+            if map.isEmpty {
+                memorySecrets.removeValue(forKey: pluginId)
+            } else {
+                memorySecrets[pluginId] = map
+            }
+            return
         }
+
+        try ensurePrivateAiDir()
+        let credURL = credentialsFileURL(pluginId: pluginId)
+        var doc = try readCredentialDocumentLocked(url: credURL)
+        // Absorb legacy flat `.secrets.json` if transitioning from 2.0.1
+        let legacyURL = aiDir.appendingPathComponent("\(Self.safeKey(pluginId)).secrets.json")
+        if FileManager.default.fileExists(atPath: legacyURL.path),
+           let legacyData = try? Data(contentsOf: legacyURL),
+           let legacyMap = try? JSONDecoder().decode([String: String].self, from: legacyData) {
+            for (k, v) in legacyMap where !v.isEmpty && doc.records[k] == nil {
+                doc.records[k] = v
+            }
+        }
+
         if secret.isEmpty {
-            map.removeValue(forKey: profileId)
+            doc.records.removeValue(forKey: profileId)
         } else {
-            map[profileId] = secret
+            doc.records[profileId] = secret
         }
-        if let data = try? JSONEncoder().encode(map) {
-            try? data.write(to: url, options: .atomic)
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let payload = try encoder.encode(doc)
+        try atomicWritePrivateFile(payload, to: credURL, mode: 0o600)
+        if FileManager.default.fileExists(atPath: legacyURL.path) {
+            try? FileManager.default.removeItem(at: legacyURL)
         }
     }
 
     func clearAiConfig(pluginId: String) {
+        credentialLock.lock()
+        defer { credentialLock.unlock() }
+        memorySecrets.removeValue(forKey: pluginId)
         guard !ephemeral else { return }
-        try? FileManager.default.removeItem(at: aiDir.appendingPathComponent("\(Self.safeKey(pluginId)).binding.json"))
+        try? FileManager.default.removeItem(at: bindingFileURL(pluginId: pluginId))
+        try? FileManager.default.removeItem(at: credentialsFileURL(pluginId: pluginId))
         try? FileManager.default.removeItem(at: aiDir.appendingPathComponent("\(Self.safeKey(pluginId)).secrets.json"))
+    }
+
+    func clearTestSecrets() {
+        credentialLock.lock()
+        memorySecrets.removeAll()
+        credentialLock.unlock()
+    }
+
+    private func ensurePrivateAiDir() throws {
+        try FileManager.default.createDirectory(at: aiDir, withIntermediateDirectories: true)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: aiDir.path)
+    }
+
+    private func assertOwnerOnlyPermissions(url: URL) throws {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
+        if let perm = (attrs[.posixPermissions] as? NSNumber)?.uint16Value, (perm & 0o077) != 0 {
+            throw PluginHostError(
+                PluginErrorCode.io,
+                "凭据文件 \(url.lastPathComponent) 权限过于宽松（允许同组或其他用户访问），请执行 chmod 600"
+            )
+        }
+    }
+
+    private func readCredentialDocumentLocked(url: URL) throws -> CredentialDocument {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return CredentialDocument()
+        }
+        try assertOwnerOnlyPermissions(url: url)
+        let data = try Data(contentsOf: url)
+        guard !data.isEmpty else { return CredentialDocument() }
+        if let doc = try? JSONDecoder().decode(CredentialDocument.self, from: data) {
+            return doc
+        }
+        throw PluginHostError(PluginErrorCode.io, "凭据文件损坏：\(url.lastPathComponent)")
+    }
+
+    private func atomicWritePrivateFile(_ data: Data, to url: URL, mode: mode_t) throws {
+        let dir = url.deletingLastPathComponent()
+        let tempURL = dir.appendingPathComponent(".\(url.lastPathComponent).tmp.\(UUID().uuidString)")
+        let fd = open(tempURL.path, O_WRONLY | O_CREAT | O_TRUNC, mode)
+        guard fd >= 0 else {
+            throw PluginHostError(PluginErrorCode.io, "无法创建凭据临时文件")
+        }
+        let written: Bool = data.withUnsafeBytes { rawBuf in
+            guard let base = rawBuf.baseAddress else { return true }
+            var remaining = data.count
+            var offset = 0
+            while remaining > 0 {
+                let n = Darwin.write(fd, base.advanced(by: offset), remaining)
+                if n <= 0 { return false }
+                offset += n
+                remaining -= n
+            }
+            return true
+        }
+        _ = fchmod(fd, mode)
+        close(fd)
+        guard written else {
+            try? FileManager.default.removeItem(at: tempURL)
+            throw PluginHostError(PluginErrorCode.io, "写入凭据文件失败")
+        }
+        guard Darwin.rename(tempURL.path, url.path) == 0 else {
+            try? FileManager.default.removeItem(at: tempURL)
+            throw PluginHostError(PluginErrorCode.io, "原子替换凭据文件失败")
+        }
     }
 }

@@ -33,6 +33,7 @@ struct NoteWorkspaceView: View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
                 toolbar(paneWidth: geometry.size.width)
+                safetyBanners
                 if findVisible {
                     findBar
                 }
@@ -89,6 +90,13 @@ struct NoteWorkspaceView: View {
         .onChange(of: note.id) { _, _ in
             LexiEditorBridge.shared.isCurrentNoteReading = (mode == .reading)
         }
+        .onChange(of: note.content) { _, _ in
+            let tv = editorController.textView
+            let activelyEditingHere = (tv?.window?.isKeyWindow == true) || (tv?.hasMarkedText() == true)
+            if !activelyEditingHere && model.noteConflict(for: note.id) == nil {
+                model.acknowledgeExternalEdit(for: note.id)
+            }
+        }
     }
 
     // MARK: Toolbar
@@ -111,9 +119,13 @@ struct NoteWorkspaceView: View {
                 .lineLimit(1)
             Spacer(minLength: 12)
 
+            LexiToolButton(title: "版本历史", active: false, compact: true) {
+                model.openVersionHistory(for: note.id)
+            }
+
             LexiToolButton(title: mode == .source ? "实时预览" : "源码",
                            active: mode == .source, compact: true) {
-                withAnimation(.easeOut(duration: 0.15)) {
+                LexiMotion.perform(settings, LexiMotion.fast(settings)) {
                     mode = mode == .source ? .live : .source
                 }
             }
@@ -137,13 +149,15 @@ struct NoteWorkspaceView: View {
 
             Menu {
                 Button(mode == .reading ? "退出阅读视图" : "阅读视图") {
-                    withAnimation(.easeOut(duration: 0.15)) {
+                    LexiMotion.perform(settings, LexiMotion.fast(settings)) {
                         mode = mode == .reading ? .live : .reading
                     }
                 }
                 Button("查找…") { openFind() }
                 Divider()
+                Button("版本历史与差异对比…") { model.openVersionHistory(for: note.id) }
                 Button("生成思维导图") { model.convertNoteToMap(note) }
+                Button("导出 PDF…") { model.exportCurrentPDF() }
                 Button("导出 Markdown…") { model.exportCurrentMarkdown() }
                 Button("复制文件路径") { model.copyNotePath(note.id) }
                 Button("在 Finder 中显示") { model.revealNoteInFinder(note.id) }
@@ -203,24 +217,24 @@ struct NoteWorkspaceView: View {
     private func content(paneWidth: CGFloat) -> some View {
         switch mode {
         case .source:
-            VStack(spacing: 0) {
-                documentHeader(maxWidth: settings.limitEditorWidth ? 688 : nil, horizontalPadding: 56)
-                editorPane(horizontalPadding: 56)
-            }
+            editorPane(horizontalPadding: 56)
         default:
-            VStack(spacing: 0) {
-                documentHeader(maxWidth: settings.limitEditorWidth ? 688 : nil, horizontalPadding: 56)
-                MarkdownPreview(blocks: displayBlocks,
+            MarkdownPreview(blocks: displayBlocks,
                                 note: note, fontSize: CGFloat(settings.editorFontSize),
                                 vaultURL: model.activeVault.map { model.vaultFolder($0) },
                                 jumpTarget: jumpTarget,
                                 onOpenTarget: { model.openWikiLink($0) },
                                 onToggleTodo: { model.toggleTodo(noteID: note.id, line: $0) },
                                 liveEditing: mode == .live,
-                                onEditBlock: { jumpToSource($0) })
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(palette.workspacePage)
-            }
+                                onEditBlock: { jumpToSource($0) },
+                                previewProvider: { target, anchor in
+                                    model.linkTargetPreview(rawTarget: target, anchor: anchor, preferredVaultID: note.vaultID)
+                                },
+                                documentHeader: AnyView(documentHeader(
+                                    maxWidth: settings.limitEditorWidth ? Metrics.contentMaxWidth : nil)),
+                                limitContentWidth: settings.limitEditorWidth)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(palette.workspacePage)
         }
     }
 
@@ -253,17 +267,18 @@ struct NoteWorkspaceView: View {
 
             HStack(spacing: 8) {
                 Text(note.type.label)
-                    .font(.system(size: 11))
+                    .font(.system(size: LexiTokens.typeCaption))
                     .foregroundStyle(palette.brandInk)
                 Text("·")
-                    .font(.system(size: 11))
+                    .font(.system(size: LexiTokens.typeCaption))
                     .foregroundStyle(palette.textSecondary)
                 Text("\(note.characterCount) 字符")
-                    .font(.system(size: 11))
+                    .font(.system(size: LexiTokens.typeCaption))
+                    .monospacedDigit()
                     .foregroundStyle(palette.textSecondary)
                 ForEach(note.tags.prefix(3), id: \.self) { tag in
                     Text("#\(tag)")
-                        .font(.system(size: 11))
+                        .font(.system(size: LexiTokens.typeCaption))
                         .foregroundStyle(palette.brandInk)
                         .help("标签 \(tag)")
                 }
@@ -287,37 +302,26 @@ struct NoteWorkspaceView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, horizontalPadding)
-        .padding(.top, 34)
-        .padding(.bottom, 16)
+        .padding(.top, LexiTokens.space9)
+        .padding(.bottom, LexiTokens.space5)
         .frame(maxWidth: maxWidth.map { $0 + horizontalPadding * 2 } ?? .infinity, alignment: .center)
         .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private func editorPane(horizontalPadding: CGFloat) -> some View {
-        let content = model.note(note.id)?.content ?? note.content
-        return MarkdownTextEditor(text: contentBinding,
+        MarkdownTextEditor(text: contentBinding,
                                   palette: palette,
                                   fontSize: CGFloat(settings.editorFontSize),
                                   lineHeight: CGFloat(settings.editorLineHeight),
                                   design: settings.editorDesign,
                                   spellCheck: settings.spellCheck,
                                   controller: editorController,
-                                  onTextChange: { model.updateNoteContent(note.id, content: $0) })
-            .padding(.horizontal, horizontalPadding)
-            .padding(.top, 2)
-            .padding(.bottom, 20)
-            .frame(maxWidth: settings.limitEditorWidth ? 800 : .infinity, alignment: .center)
-            .frame(maxWidth: .infinity, alignment: .center)
-            .overlay(alignment: .topLeading) {
-                if content.isEmpty {
-                    Text("从一个想法开始。支持 Markdown、#标签 与 [[双向链接]]。")
-                        .font(.system(size: CGFloat(settings.editorFontSize), design: settings.editorDesign.design))
-                        .foregroundStyle(palette.textSecondary.opacity(0.65))
-                        .padding(.leading, horizontalPadding)
-                        .padding(.top, 12)
-                        .allowsHitTesting(false)
-                }
-            }
+                                  onTextChange: { model.updateNoteContent(note.id, content: $0) },
+                                  documentHeader: AnyView(documentHeader(
+                                    maxWidth: settings.limitEditorWidth ? Metrics.contentMaxWidth : nil,
+                                    horizontalPadding: horizontalPadding)),
+                                  contentMaxWidth: settings.limitEditorWidth ? Metrics.contentMaxWidth : nil,
+                                  horizontalPadding: horizontalPadding)
     }
 
     // MARK: Status bar
@@ -336,71 +340,242 @@ struct NoteWorkspaceView: View {
                 .foregroundStyle(palette.brandInk)
                 .frame(width: 104, height: 30)
                 .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    RoundedRectangle(cornerRadius: LexiTokens.radiusSM, style: .continuous)
                         .fill(palette.softSurface)
                 )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(LexiPressButtonStyle())
             .help("打开语音速记面板")
 
             if settings.editorViewStatus {
                 Button {
-                    withAnimation(.easeOut(duration: 0.15)) {
+                    LexiMotion.perform(settings, LexiMotion.fast(settings)) {
                         mode = mode == .reading ? .live : .reading
                     }
                 } label: {
                     Text(modeLabel)
-                        .font(.system(size: 11))
+                        .font(.system(size: LexiTokens.typeMicro))
                         .foregroundStyle(palette.textSecondary)
                         .frame(height: 28)
                         .padding(.horizontal, 4)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LexiPressButtonStyle())
                 .help(mode == .reading ? "回到实时预览" : "进入阅读视图")
             }
 
             if paneWidth >= 720 {
                 Text("\(model.backlinks(for: note).count) 个反向链接")
-                    .font(.system(size: 11))
+                    .font(.system(size: LexiTokens.typeMicro))
+                    .monospacedDigit()
                     .foregroundStyle(palette.textSecondary)
             }
             if paneWidth >= 520 {
                 Text("\(note.characterCount) 字符")
-                    .font(.system(size: 11))
+                    .font(.system(size: LexiTokens.typeMicro))
+                    .monospacedDigit()
                     .foregroundStyle(palette.textSecondary)
             }
             Spacer(minLength: 8)
+            let currentSaveState = model.effectiveSaveState(for: note.id)
             Button {
-                if model.saveState != .saving {
-                    _ = model.saveNoteNow(note.id)
-                    if !settings.autoSave || model.saveState == .unsaved {
-                        model.showToast("已保存到本机", symbol: "checkmark.circle")
-                    }
-                }
+                _ = model.saveNoteWithFeedback(note.id)
             } label: {
                 HStack(spacing: 5) {
-                    if model.saveState == .saving {
+                    switch currentSaveState {
+                    case .saving:
                         ProgressView().controlSize(.mini).scaleEffect(0.6)
-                    } else if model.saveState == .unsaved {
+                    case .unsaved:
                         Image(systemName: "pencil.circle")
                             .font(.system(size: 9))
                             .foregroundStyle(palette.warning)
+                    case .failed:
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(palette.error)
+                    case .saved:
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(palette.success.opacity(0.85))
                     }
-                    Text(saveLabel)
-                        .font(.system(size: 11))
-                        .foregroundStyle(palette.textSecondary)
+                    Text(currentSaveState.label)
+                        .font(.system(size: LexiTokens.typeMicro))
+                        .foregroundStyle({
+                            switch currentSaveState {
+                            case .failed: return palette.error
+                            case .unsaved: return palette.warning
+                            default: return palette.textSecondary
+                            }
+                        }())
                         .lineLimit(1)
                 }
             }
-            .buttonStyle(.plain)
-            .help("点击立即保存")
+            .buttonStyle(LexiPressButtonStyle())
+            .help({
+                if case .failed(let message) = currentSaveState {
+                    return "保存失败：\(message)（点击立即重试）"
+                }
+                return "点击立即保存到本机"
+            }())
         }
         .padding(.leading, paneWidth >= 600 ? 24 : 12)
         .padding(.trailing, paneWidth >= 600 ? 20 : 12)
         .frame(height: Metrics.editorStatusHeight)
         .overlay(alignment: .top) {
             Rectangle().fill(palette.workspaceLine).frame(height: 0.5)
+        }
+    }
+
+    @ViewBuilder
+    private var safetyBanners: some View {
+        if let conflict = model.noteConflict(for: note.id) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.warning)
+                Text("检测到\(conflict.sourceLabel)冲突，已备份双方内容")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(palette.textPrimary)
+                Spacer()
+                Button("查看差异并处理") { model.openVersionHistory(for: note.id) }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(palette.brandInk)
+                Button("保留我的") { model.resolveNoteConflict(note.id, mode: .keepMineBackupTheirs) }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(palette.inverseText)
+                    .padding(.horizontal, 8)
+                    .frame(height: 22)
+                    .background(Capsule().fill(palette.brand))
+                Button("另存副本") { model.resolveNoteConflict(note.id, mode: .saveConflictCopy) }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(palette.warning)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 7)
+            .background(palette.warning.opacity(0.11))
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(palette.workspaceLine).frame(height: 0.5)
+            }
+        }
+        if let crash = model.crashRecoveryDraft(for: note.id) {
+            let _ = crash
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.clockwise.heart")
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.brandInk)
+                Text("已恢复异常退出前未保存的内容，旧版本已备份在历史中")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(palette.textPrimary)
+                Spacer()
+                Button("对比版本") { model.openVersionHistory(for: note.id) }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(palette.brandInk)
+                Button("保留草稿") { model.dismissCrashRecovery(note.id) }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(palette.inverseText)
+                    .padding(.horizontal, 8)
+                    .frame(height: 22)
+                    .background(Capsule().fill(palette.brand))
+                Button("还原旧版") { model.revertCrashRecovery(note.id) }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11))
+                    .foregroundStyle(palette.textSecondary)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 7)
+            .background(palette.brandSoft.opacity(0.55))
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(palette.workspaceLine).frame(height: 0.5)
+            }
+        }
+        if case .failed(let message) = model.saveState, model.noteConflict(for: note.id) == nil {
+            HStack(spacing: 8) {
+                Image(systemName: "externaldrive.badge.exclamationmark")
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.error)
+                Text(message)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(palette.error)
+                    .lineLimit(1)
+                Spacer()
+                Button("重试保存") {
+                    _ = model.saveNoteWithFeedback(note.id)
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(palette.inverseText)
+                .padding(.horizontal, 8)
+                .frame(height: 22)
+                .background(Capsule().fill(palette.error))
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 7)
+            .background(palette.error.opacity(0.10))
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(palette.workspaceLine).frame(height: 0.5)
+            }
+        }
+        if note.isTrashed {
+            HStack(spacing: 8) {
+                Image(systemName: "trash")
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.warning)
+                Text("当前笔记位于回收站中，可恢复到原笔记本后继续整理")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(palette.textPrimary)
+                    .lineLimit(1)
+                Spacer()
+                Button("恢复笔记") {
+                    model.restoreNote(note.id)
+                    model.showToast("已恢复「\(note.displayTitle)」", symbol: "arrow.uturn.backward")
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(palette.inverseText)
+                .padding(.horizontal, 8)
+                .frame(height: 22)
+                .background(Capsule().fill(palette.brand))
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 7)
+            .background(palette.warning.opacity(0.10))
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(palette.workspaceLine).frame(height: 0.5)
+            }
+        }
+        if !model.library.loadWarnings.isEmpty {
+            HStack(spacing: 8) {
+                Image(systemName: "doc.badge.exclamationmark")
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.warning)
+                Text(model.library.loadWarnings.first ?? "工作区存在异常文件")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(palette.textPrimary)
+                    .lineLimit(1)
+                if model.library.loadWarnings.count > 1 {
+                    Text("等 \(model.library.loadWarnings.count) 项")
+                        .font(.system(size: 11))
+                        .foregroundStyle(palette.textSecondary)
+                }
+                Spacer()
+                Button("忽略") {
+                    model.library.clearLoadWarnings()
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11))
+                .foregroundStyle(palette.textSecondary)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 7)
+            .background(palette.warning.opacity(0.08))
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(palette.workspaceLine).frame(height: 0.5)
+            }
         }
     }
 
@@ -411,8 +586,6 @@ struct NoteWorkspaceView: View {
         case .reading: return "阅读视图"
         }
     }
-
-    private var saveLabel: String { model.saveState.label }
 
     // MARK: Find bar
 
@@ -505,7 +678,7 @@ struct NoteWorkspaceView: View {
     }
 
     private func jumpToSource(_ line: Int) {
-        withAnimation(.easeOut(duration: 0.15)) { mode = .source }
+        LexiMotion.perform(settings, LexiMotion.fast(settings)) { mode = .source }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
             editorController.selectLine(max(0, line))
         }

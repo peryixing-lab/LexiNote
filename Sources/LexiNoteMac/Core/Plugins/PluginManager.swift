@@ -140,6 +140,15 @@ final class PluginManager: ObservableObject {
         }
     }
 
+    func hasGrantedCapability(pluginId: String, capability: String) -> Bool {
+        if capability.isEmpty { return true }
+        guard let rec = record(for: pluginId), rec.manifest.capabilities.contains(capability) else {
+            return false
+        }
+        let grant = storage.loadPermissionGrant(workspaceID: workspaceID, pluginId: pluginId)
+        return grant.granted.contains(capability)
+    }
+
     // MARK: - Permissions (Deny-by-default per workspace)
 
     func setCapability(_ capability: String, granted isGranted: Bool, for pluginId: String) {
@@ -155,6 +164,9 @@ final class PluginManager: ObservableObject {
         permissionRevision &+= 1
         appendLog(pluginId: pluginId, level: "info", message: "权限 \(capability) 已\(isGranted ? "授予" : "撤销")")
 
+        if isGranted {
+            clearStalePermissionErrorIfNeeded(for: pluginId, resetCrashedToDisabled: !enabledIDs.contains(pluginId))
+        }
         if enabledIDs.contains(pluginId) {
             Task { @MainActor [weak self] in
                 await self?.bootPlugin(pluginId: pluginId)
@@ -168,11 +180,29 @@ final class PluginManager: ObservableObject {
         storage.savePermissionGrant(workspaceID: workspaceID, pluginId: pluginId, grant: grant)
         permissionRevision &+= 1
         appendLog(pluginId: pluginId, level: "info", message: "已授予当前工作区全部声明权限")
+        clearStalePermissionErrorIfNeeded(for: pluginId, resetCrashedToDisabled: !enabledIDs.contains(pluginId))
 
         if enabledIDs.contains(pluginId) {
             Task { @MainActor [weak self] in
                 await self?.bootPlugin(pluginId: pluginId)
             }
+        }
+    }
+
+    private func clearStalePermissionErrorIfNeeded(for pluginId: String, resetCrashedToDisabled: Bool) {
+        guard let idx = records.firstIndex(where: { $0.manifest.id == pluginId }) else { return }
+        let hadPermissionError = records[idx].lastError.contains(PluginErrorCode.permissionDenied)
+        var changed = false
+        if hadPermissionError {
+            records[idx].lastError = ""
+            changed = true
+        }
+        if resetCrashedToDisabled && hadPermissionError && records[idx].state == .crashed {
+            records[idx].state = .disabled
+            changed = true
+        }
+        if changed {
+            storage.saveRegistry(records)
         }
     }
 
@@ -375,7 +405,10 @@ final class PluginManager: ObservableObject {
             activeFileJson: LexiVaultBridge.activeFileJson(model: model),
             editorJson: LexiEditorBridge.shared.snapshotJson(model: model),
             settingsJson: settingsJson,
-            dataJson: storage.loadPluginDataJsonString(workspaceID: workspaceID, pluginId: pluginId),
+            dataJson: Self.sanitizedBootDataJson(
+                pluginId: pluginId,
+                raw: storage.loadPluginDataJsonString(workspaceID: workspaceID, pluginId: pluginId)
+            ),
             sourceCode: sourceCode,
             sourceName: rec.manifest.main,
             stylesCss: stylesCss,
@@ -558,13 +591,20 @@ final class PluginManager: ObservableObject {
     }
 
     private func emitEvent(_ name: String, payload: [String: Any]) {
+        if let payloadVaultId = payload["vaultId"] as? String, !payloadVaultId.isEmpty, payloadVaultId != workspaceID {
+            return
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else { return }
+        let required = PluginCapability.requiredCapability(forEvent: name)
         eventSeq &+= 1
         let seq = eventSeq
         for (pluginId, session) in sessions {
             let subs = eventSubscriptions[pluginId] ?? []
             guard subs.contains(name) || subs.contains("*") else { continue }
+            if !required.isEmpty && !hasGrantedCapability(pluginId: pluginId, capability: required) {
+                continue
+            }
             let event = PluginRpcEvent(pluginId: pluginId, event: name, seq: seq, payload: json)
             Task { @MainActor in
                 await session.sendEvent(event)
@@ -626,6 +666,25 @@ final class PluginManager: ObservableObject {
         if logs.count > 300 {
             logs.removeFirst(logs.count - 300)
         }
+    }
+
+    func clearTestSecrets() {
+        storage.clearTestSecrets()
+    }
+
+    static func sanitizedBootDataJson(pluginId: String, raw: String) -> String {
+        guard pluginId == "lexinote.harness",
+              let data = raw.data(using: .utf8),
+              var parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              parsed.keys.contains("harness.providers.v1") else {
+            return raw
+        }
+        parsed.removeValue(forKey: "harness.providers.v1")
+        guard let clean = try? JSONSerialization.data(withJSONObject: parsed, options: []),
+              let json = String(data: clean, encoding: .utf8) else {
+            return raw
+        }
+        return json
     }
 
     private func encodeSettingsJson(pluginId: String) -> String {

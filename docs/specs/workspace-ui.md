@@ -1,6 +1,6 @@
 # LexiNote 桌面工作区 · SwiftUI 复刻规格
 
-> 调研对象：`entry/src/main/ets/`
+> 调研对象：`/Users/thousandmiles/DevecostudioProjects/LexiNote/entry/src/main/ets/`
 > 核心：`components/LexiDesktopWorkspace.ets`（1287 行）、`components/LexiWorkspaceEditor.ets`（1198 行）、
 > `components/LexiWorkspaceRightSidebar.ets`、`components/LexiCommandPalette.ets`、`components/LexiEditorPanels.ets`、
 > `components/LexiNoteCard.ets`、`components/LexiLiveMarkdownEditor.ets`、`components/LexiCaptureAssistantPanel.ets`、

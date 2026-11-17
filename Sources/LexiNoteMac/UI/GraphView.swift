@@ -7,6 +7,7 @@ struct GraphWorkspaceView: View {
     @Environment(\.lexiPalette) private var palette
 
     @State private var filter = ""
+    @State private var unconnectedOnly = false
     @State private var hovered: String?
     @State private var selected: String?
     @State private var zoom: CGFloat = 1
@@ -17,12 +18,16 @@ struct GraphWorkspaceView: View {
 
     private var graph: GraphData { model.graphData() }
 
+    private var isolatedCount: Int {
+        graph.nodes.filter { $0.degree == 0 }.count
+    }
+
     private var visibleIDs: Set<String> {
-        guard !filter.trimmingCharacters(in: .whitespaces).isEmpty else {
-            return Set(graph.nodes.map(\.id))
-        }
-        return Set(graph.nodes.filter {
-            NoteSearch.rank($0.title, filter) >= 0 || $0.notebook.localizedCaseInsensitiveContains(filter)
+        let trimmed = filter.trimmingCharacters(in: .whitespaces)
+        return Set(graph.nodes.filter { node in
+            if unconnectedOnly && node.degree != 0 { return false }
+            guard !trimmed.isEmpty else { return true }
+            return NoteSearch.rank(node.title, trimmed) >= 0 || node.notebook.localizedCaseInsensitiveContains(trimmed)
         }.map(\.id))
     }
 
@@ -41,6 +46,18 @@ struct GraphWorkspaceView: View {
             .background(palette.workspacePage)
         }
         .background(palette.workspacePage)
+        .onAppear {
+            if let focus = model.graphFocusNoteID {
+                selected = focus
+                model.graphFocusNoteID = nil
+            }
+        }
+        .onChange(of: model.graphFocusNoteID) { _, focus in
+            if let focus {
+                selected = focus
+                model.graphFocusNoteID = nil
+            }
+        }
     }
 
     private var toolbar: some View {
@@ -51,6 +68,32 @@ struct GraphWorkspaceView: View {
             Text("\(graph.nodes.count) 篇笔记 · \(graph.edges.count) 条连接")
                 .font(.system(size: 11))
                 .foregroundStyle(palette.textSecondary)
+            if isolatedCount > 0 || unconnectedOnly {
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        unconnectedOnly.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(palette.warning)
+                            .frame(width: 6, height: 6)
+                        Text("未连接 \(isolatedCount)")
+                            .font(.system(size: 11, weight: unconnectedOnly ? .semibold : .medium))
+                    }
+                    .foregroundStyle(unconnectedOnly ? palette.warning : palette.textSecondary)
+                    .padding(.horizontal, 9)
+                    .frame(height: 26)
+                    .background(
+                        Capsule().fill(unconnectedOnly ? palette.warning.opacity(0.16) : palette.softSurface)
+                    )
+                    .overlay(
+                        Capsule().stroke(unconnectedOnly ? palette.warning.opacity(0.55) : palette.workspaceLine.opacity(0.6), lineWidth: 0.75)
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("只看尚无双链连接的孤立笔记")
+            }
             Spacer()
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
@@ -127,7 +170,8 @@ struct GraphWorkspaceView: View {
                                   palette: palette,
                                   highlighted: focused == node.id,
                                   dimmed: !visibleIDs.contains(node.id) || (focused != nil && !neighbors(of: focused).contains(node.id) && focused != node.id),
-                                  isSelected: selected == node.id)
+                                  isSelected: selected == node.id,
+                                  isUnconnected: node.degree == 0)
                         .position(position)
                         .gesture(nodeDrag(node.id))
                         .onHover { inside in
@@ -139,8 +183,29 @@ struct GraphWorkspaceView: View {
                         .onTapGesture {
                             selected = selected == node.id ? nil : node.id
                         }
-                        .help("\(node.title) · \(node.notebook) · 双击打开")
+                        .help("\(node.title) · \(node.notebook)\(node.degree == 0 ? " · 未连接" : "") · 单击快速预览 · 双击打开")
                 }
+            }
+
+            if let activeID = selected ?? hovered,
+               let activeNode = graph.nodes.first(where: { $0.id == activeID }) {
+                VStack {
+                    HStack {
+                        Spacer()
+                        graphPreviewPanel(node: activeNode, pinned: selected == activeID)
+                    }
+                    Spacer()
+                }
+                .padding(16)
+            } else if unconnectedOnly && isolatedCount > 0 {
+                VStack {
+                    HStack {
+                        Spacer()
+                        unconnectedSummaryPanel
+                    }
+                    Spacer()
+                }
+                .padding(16)
             }
 
             VStack {
@@ -233,6 +298,141 @@ struct GraphWorkspaceView: View {
         return result
     }
 
+    private func graphPreviewPanel(node: GraphNode, pinned: Bool) -> some View {
+        let preview = model.linkTargetPreview(rawTarget: node.id)
+        let targetNote = model.note(node.id)
+        let candidates = (node.degree == 0 && targetNote != nil)
+            ? model.suggestLinkCandidates(for: targetNote!, limit: 3)
+            : []
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                if node.degree == 0 {
+                    Label("未连接笔记", systemImage: "link.badge.plus")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(palette.warning)
+                        .padding(.horizontal, 7)
+                        .frame(height: 20)
+                        .background(Capsule().fill(palette.warning.opacity(0.15)))
+                } else {
+                    Text(pinned ? "节点详情" : "悬停快速预览")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(palette.textSecondary)
+                }
+                Spacer()
+                if pinned {
+                    Button {
+                        selected = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(palette.textSecondary)
+                            .frame(width: 20, height: 20)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            LinkPreviewCard(preview: preview, onOpen: {
+                model.openNote(node.id)
+            })
+            if !candidates.isEmpty, let targetNote {
+                Divider()
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("推荐连接")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(palette.textSecondary)
+                    ForEach(candidates) { candidate in
+                        HStack(spacing: 6) {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(candidate.title)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(palette.textPrimary)
+                                    .lineLimit(1)
+                                Text(candidate.reason)
+                                    .font(.system(size: 9.5))
+                                    .foregroundStyle(palette.textSecondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            Button {
+                                model.insertWikiLink(candidate.title, into: targetNote.id)
+                            } label: {
+                                Text("+ 链接")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(palette.brandInk)
+                                    .padding(.horizontal, 7)
+                                    .frame(height: 20)
+                                    .background(Capsule().fill(palette.brandSoft))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.bottom, 12)
+            }
+        }
+        .frame(width: 300, alignment: .leading)
+        .padding(.top, 10)
+        .padding(.horizontal, 2)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(palette.surface.opacity(0.96))
+                .shadow(color: palette.shadow, radius: 14, y: 6)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(palette.workspaceLine.opacity(0.85), lineWidth: 0.75)
+        )
+    }
+
+    private var unconnectedSummaryPanel: some View {
+        let isolated = graph.nodes.filter { $0.degree == 0 }.prefix(6)
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Image(systemName: "link.badge.plus")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(palette.warning)
+                Text("已筛选 \(isolatedCount) 篇孤立笔记")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(palette.textPrimary)
+            }
+            Text("点击节点可快速预览并添加推荐双链。")
+                .font(.system(size: 10.5))
+                .foregroundStyle(palette.textSecondary)
+            ForEach(isolated) { node in
+                Button {
+                    selected = node.id
+                } label: {
+                    HStack(spacing: 6) {
+                        Circle().fill(palette.warning).frame(width: 5, height: 5)
+                        Text(node.title)
+                            .font(.system(size: 11))
+                            .foregroundStyle(palette.brandInk)
+                            .lineLimit(1)
+                        Spacer()
+                        Text(node.notebook)
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(palette.textSecondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(12)
+        .frame(width: 240, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(palette.surface.opacity(0.95))
+                .shadow(color: palette.shadow, radius: 10, y: 4)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(palette.workspaceLine.opacity(0.8), lineWidth: 0.75)
+        )
+    }
+
     private func nodeDrag(_ id: String) -> some Gesture {
         DragGesture()
             .onChanged { value in
@@ -253,10 +453,17 @@ private struct GraphNodeView: View {
     let highlighted: Bool
     let dimmed: Bool
     let isSelected: Bool
+    let isUnconnected: Bool
 
     var body: some View {
         VStack(spacing: 4) {
             ZStack {
+                if isUnconnected {
+                    Circle()
+                        .stroke(palette.warning.opacity(highlighted || isSelected ? 0.95 : 0.72),
+                                style: StrokeStyle(lineWidth: 1.5, dash: [3, 2]))
+                        .frame(width: radius * 2 + 7, height: radius * 2 + 7)
+                }
                 Circle()
                     .fill(node.colorTag.color.opacity(highlighted || isSelected ? 1 : 0.82))
                     .frame(width: radius * 2, height: radius * 2)

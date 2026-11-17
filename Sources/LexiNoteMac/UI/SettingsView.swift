@@ -61,14 +61,18 @@ struct SettingsView: View {
                     Button("关闭") {
                         model.settingsVisible = false
                     }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 12))
+                    .buttonStyle(LexiPressButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+                    .font(.system(size: LexiTokens.typeCaption))
                     .foregroundStyle(palette.textSecondary)
+                    .padding(.horizontal, LexiTokens.space2)
+                    .padding(.vertical, 4)
+                    .contentShape(Rectangle())
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, LexiTokens.space5)
             }
             .frame(height: 38)
-            .background(palette.surface)
+            .background(palette.workspaceSidebar)
             .overlay(alignment: .bottom) {
                 Rectangle().fill(palette.workspaceLine).frame(height: 0.5)
             }
@@ -1203,6 +1207,104 @@ private struct DataSettingsView: View {
                     }
                     .buttonStyle(.plain)
                 }
+            }
+
+            SettingsGroupHeader(text: "版本历史与自动清理")
+
+            SettingsGroupCard {
+                HistoryRetentionSettingsBlock(model: model, settings: settings)
+            }
+        }
+    }
+}
+
+private struct HistoryRetentionSettingsBlock: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var settings: SettingsStore
+    @Environment(\.lexiPalette) private var palette
+
+    var body: some View {
+        let _ = model.historyRevisionTick
+        let usage = model.historyUsageSummary()
+
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("已保存 \(usage.revisionCount) 条快照 · 覆盖 \(usage.noteCount) 篇笔记")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(palette.textPrimary)
+                    Text("恢复任意历史版本前都会自动备份当前版本；超过保留时间或容量上限时自动清理最早快照。")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(palette.textSecondary)
+                }
+                Spacer()
+                Text(NoteHistoryHash.formatBytes(usage.totalBytes))
+                    .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(palette.brandInk)
+                    .padding(.horizontal, 10)
+                    .frame(height: 26)
+                    .background(Capsule().fill(palette.brandSoft))
+            }
+
+            HStack {
+                Text("最长保留天数")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(palette.textPrimary)
+                Spacer()
+                pillRow(options: [7, 30, 90], current: settings.historyMaxAgeDays, suffix: " 天") {
+                    settings.historyMaxAgeDays = $0
+                }
+            }
+
+            HStack {
+                Text("单篇快照上限")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(palette.textPrimary)
+                Spacer()
+                pillRow(options: [20, 30, 50], current: settings.historyMaxCountPerNote, suffix: " 条") {
+                    settings.historyMaxCountPerNote = $0
+                }
+            }
+
+            HStack {
+                Text("总历史空间上限")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(palette.textPrimary)
+                Spacer()
+                pillRow(options: [20, 50, 100], current: settings.historyMaxTotalMB, suffix: " MB") {
+                    settings.historyMaxTotalMB = $0
+                }
+            }
+
+            Button {
+                model.pruneHistoryNow()
+            } label: {
+                Text("立即清理过期与超限快照")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(palette.brand)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 36)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(palette.brandSoft))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func pillRow(options: [Int], current: Int, suffix: String, select: @escaping (Int) -> Void) -> some View {
+        HStack(spacing: 6) {
+            ForEach(options, id: \.self) { value in
+                let active = current == value
+                Button {
+                    select(value)
+                } label: {
+                    Text("\(value)\(suffix)")
+                        .font(.system(size: 11.5, weight: active ? .semibold : .regular))
+                        .foregroundStyle(active ? palette.inverseText : palette.textPrimary)
+                        .padding(.horizontal, 10)
+                        .frame(height: 26)
+                        .background(Capsule().fill(active ? palette.brand : palette.workspacePage))
+                }
+                .buttonStyle(.plain)
             }
         }
     }

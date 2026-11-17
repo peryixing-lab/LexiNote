@@ -1,7 +1,7 @@
 # LexiNote 核心功能与数据规格（HarmonyOS → macOS 移植基线）
 
 - 版本：v1（2026-11-12）
-- 源码基线：`entry/src/main/ets/`
+- 源码基线：`/Users/thousandmiles/DevecostudioProjects/LexiNote/entry/src/main/ets/`
 - 目标读者：macOS（SwiftUI）移植实现者
 - 说明：本文只做事实抽取与规格记录，不含应用代码。字段名、默认值、阈值、文案均按源码原样记录；凡属“源码未实现/仅占位”的地方会显式标注。
 

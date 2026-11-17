@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src blob: data:;">
+  <link rel="stylesheet" href="katex/katex.min.css">
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: transparent !important;
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+    #stage {
+      position: fixed;
+      left: 0;
+      top: 0;
+      padding: 10px 14px;
+      background: transparent;
+      white-space: nowrap;
+      line-height: normal;
+    }
+    #strut {
+      display: inline;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+    }
+    #baseline-anchor {
+      display: inline-block;
+      width: 0;
+      height: 0;
+      overflow: hidden;
+      vertical-align: baseline;
+    }
+    #formula {
+      display: inline;
+      line-height: 1.2;
+    }
+    #formula.block-mode {
+      display: inline-block;
+    }
+    #formula .katex-display {
+      margin: 0 !important;
+      padding: 0 !important;
+      text-align: left !important;
+    }
+    #formula .katex-display > .katex {
+      display: inline-block !important;
+      text-align: initial;
+    }
+    #formula mjx-container {
+      margin: 0 !important;
+      padding: 0 !important;
+      display: inline-block !important;
+    }
+    #formula mjx-container > svg {
+      overflow: visible;
+    }
+  </style>
+  <script src="katex/katex.min.js"></script>
+  <script src="svg/config.js"></script>
+  <script src="svg/mathjax.js"></script>
+  <script src="svg/bitmap.js"></script>
+  <script src="mac-renderer.js"></script>
+</head>
+<body>
+  <div id="stage">
+    <span id="strut">&#8203;</span><span id="baseline-anchor"></span><span id="formula"></span>
+  </div>
+</body>
+</html>

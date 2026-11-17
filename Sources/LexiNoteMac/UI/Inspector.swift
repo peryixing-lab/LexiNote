@@ -71,7 +71,7 @@ struct InspectorContainer: View {
                     help: "大纲与知识索引",
                     active: activePluginSelection == nil
                 ) {
-                    withAnimation(.easeOut(duration: 0.12)) {
+                    LexiMotion.perform(settings, LexiMotion.fast(settings)) {
                         settings.inspectorMode = "outline"
                     }
                 }
@@ -87,7 +87,7 @@ struct InspectorContainer: View {
                 }
             }
             .padding(.horizontal, 12)
-            .frame(minWidth: max(0, settings.inspectorWidth), minHeight: 48, maxHeight: 48, alignment: .center)
+            .frame(minWidth: max(0, settings.inspectorWidth - 24), minHeight: 48, maxHeight: 48, alignment: .center)
         }
         .frame(height: 48)
         .overlay(alignment: .bottom) {
@@ -98,8 +98,8 @@ struct InspectorContainer: View {
     private func toolbarTabButton(symbol: String, help: String, active: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 15, weight: .regular))
-                .foregroundStyle(active ? palette.brandInk : palette.textSecondary)
+                .font(.system(size: 18, weight: .regular))
+                .foregroundStyle(palette.textSecondary)
                 .frame(width: 30, height: 30)
                 .background(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -131,7 +131,8 @@ struct InspectorContainer: View {
     private func pluginContent(pluginId: String, viewId: String) -> some View {
         if let record = plugins.record(for: pluginId) {
             let missing = plugins.missingCapabilities(for: pluginId)
-            let isRunning = record.state == .running && plugins.session(for: pluginId) != nil && missing.isEmpty
+            let hasAnyGrant = !plugins.capabilityGrant(for: pluginId).granted.isEmpty || record.manifest.capabilities.isEmpty
+            let isRunning = record.state == .running && plugins.session(for: pluginId) != nil
 
             if isRunning {
                 PluginWebHostView(manager: plugins, pluginId: pluginId, viewId: viewId)
@@ -154,71 +155,63 @@ struct InspectorContainer: View {
                         }
 
                         if !record.lastError.isEmpty {
-                            Text(record.lastError)
+                            let isPermissionError = record.lastError.contains(PluginErrorCode.permissionDenied)
+                            let displayError = isPermissionError
+                                ? record.lastError.replacingOccurrences(of: "E_PLUGIN_FAILED: ", with: "")
+                                : record.lastError
+                            let tint = isPermissionError ? palette.warning : palette.error
+                            Text(displayError)
                                 .font(.system(size: 11.5))
-                                .foregroundStyle(palette.error)
+                                .foregroundStyle(tint)
                                 .padding(10)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .background(
                                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .fill(palette.error.opacity(0.08))
+                                        .fill(tint.opacity(0.08))
                                 )
                         }
 
-                        if !missing.isEmpty {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("此插件需要授予以下工作区权限才能完整运行：")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(palette.textPrimary)
-                                ForEach(missing) { cap in
-                                    HStack(alignment: .top, spacing: 6) {
-                                        Image(systemName: "shield.lefthalf.filled")
-                                            .font(.system(size: 11))
-                                            .foregroundStyle(cap.risk == .high ? palette.warning : palette.brand)
-                                            .padding(.top, 2)
-                                        VStack(alignment: .leading, spacing: 1) {
-                                            Text(cap.title)
-                                                .font(.system(size: 11.5, weight: .medium))
-                                                .foregroundStyle(palette.textPrimary)
-                                            Text(cap.risk.rawValue)
-                                                .font(.system(size: 10))
-                                                .foregroundStyle(palette.textSecondary)
-                                        }
-                                    }
-                                }
-                            }
-                            .padding(12)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(palette.softSurface)
-                            )
-
-                            LexiPrimaryButton(title: "授予权限并启用", symbol: "checkmark.shield") {
-                                plugins.grantAllCapabilities(for: pluginId)
-                                Task { @MainActor in
-                                    try? await plugins.enable(pluginId: pluginId)
-                                    await plugins.presentView(pluginId: pluginId, viewId: defaultViewId(for: pluginId))
-                                }
-                            }
-                        } else if !plugins.isEnabled(pluginId) {
-                            Text("该插件在当前工作区尚未启用。")
-                                .font(.system(size: 12))
-                                .foregroundStyle(palette.textSecondary)
-                            LexiPrimaryButton(title: "在当前工作区启用", symbol: "play.fill") {
-                                Task { @MainActor in
-                                    try? await plugins.enable(pluginId: pluginId)
-                                    await plugins.presentView(pluginId: pluginId, viewId: defaultViewId(for: pluginId))
-                                }
-                            }
-                        } else if record.state == .loading {
+                        if record.state == .loading {
                             HStack(spacing: 8) {
                                 ProgressView().controlSize(.small)
                                 Text("正在沙盒中启动插件…")
                                     .font(.system(size: 12))
                                     .foregroundStyle(palette.textSecondary)
                             }
+                        } else if !plugins.isEnabled(pluginId) {
+                            Text(!missing.isEmpty && !hasAnyGrant
+                                 ? "该插件在当前工作区尚未授权或启用；授予核心或全部能力即可使用。"
+                                 : "该插件在当前工作区尚未启用。")
+                                .font(.system(size: 12))
+                                .foregroundStyle(palette.textSecondary)
+
+                            if !missing.isEmpty {
+                                LexiPrimaryButton(title: "授予全部权限并启用", symbol: "checkmark.shield") {
+                                    plugins.grantAllCapabilities(for: pluginId)
+                                    Task { @MainActor in
+                                        try? await plugins.enable(pluginId: pluginId)
+                                        await plugins.presentView(pluginId: pluginId, viewId: defaultViewId(for: pluginId))
+                                    }
+                                }
+                            }
+                            if missing.isEmpty || hasAnyGrant {
+                                LexiPrimaryButton(title: "在当前工作区启用", symbol: "play.fill") {
+                                    Task { @MainActor in
+                                        try? await plugins.enable(pluginId: pluginId)
+                                        await plugins.presentView(pluginId: pluginId, viewId: defaultViewId(for: pluginId))
+                                    }
+                                }
+                            }
                         } else {
+                            if !missing.isEmpty {
+                                LexiPrimaryButton(title: "授予全部权限并重载", symbol: "checkmark.shield") {
+                                    plugins.grantAllCapabilities(for: pluginId)
+                                    Task { @MainActor in
+                                        try? await plugins.enable(pluginId: pluginId)
+                                        await plugins.presentView(pluginId: pluginId, viewId: defaultViewId(for: pluginId))
+                                    }
+                                }
+                            }
                             LexiPrimaryButton(title: "重新加载插件", symbol: "arrow.clockwise") {
                                 Task { @MainActor in
                                     try? await plugins.enable(pluginId: pluginId)
@@ -251,7 +244,8 @@ struct InspectorContainer: View {
         withAnimation(.easeOut(duration: 0.12)) {
             settings.inspectorMode = "plugin:\(record.id):\(vid)"
         }
-        if plugins.missingCapabilities(for: record.id).isEmpty {
+        let hasAnyGrant = !plugins.capabilityGrant(for: record.id).granted.isEmpty || record.manifest.capabilities.isEmpty
+        if record.state == .running || hasAnyGrant {
             Task { @MainActor in
                 if !plugins.isEnabled(record.id) || plugins.session(for: record.id) == nil {
                     try? await plugins.enable(pluginId: record.id)
@@ -293,6 +287,7 @@ private struct NoteInspectorBodyView: View {
     @State private var newPropertyKey = ""
     @State private var newPropertyValue = ""
     @State private var newTag = ""
+    @Namespace private var subTabNamespace
 
     private var mode: String {
         switch settings.inspectorMode {
@@ -343,19 +338,25 @@ private struct NoteInspectorBodyView: View {
     private func subTab(_ title: String, id: String) -> some View {
         let active = mode == id
         return Button {
-            withAnimation(.easeOut(duration: 0.12)) { settings.inspectorMode = id }
+            LexiMotion.perform(settings, LexiMotion.fast(settings)) { settings.inspectorMode = id }
         } label: {
             Text(title)
                 .font(.system(size: 11, weight: active ? .semibold : .regular))
                 .foregroundStyle(active ? palette.brandInk : palette.textSecondary)
-                .padding(.horizontal, 9)
+                .padding(.horizontal, 10)
                 .frame(height: 24)
-                .background(
-                    Capsule()
-                        .fill(active ? palette.workspaceSelection : palette.softSurface.opacity(0.6))
-                )
+                .background {
+                    ZStack {
+                        Capsule().fill(palette.softSurface.opacity(0.6))
+                        if active {
+                            Capsule()
+                                .fill(palette.workspaceSelection)
+                                .matchedGeometryEffect(id: "inspector-subtab-pill", in: subTabNamespace)
+                        }
+                    }
+                }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LexiPressButtonStyle())
     }
 
     private var outlineContent: some View {
@@ -393,7 +394,14 @@ private struct NoteInspectorBodyView: View {
     private var linksSection: some View {
         let outgoing = model.outgoingLinks(for: note)
         let backlinks = model.backlinks(for: note)
+        let isUnconnected = model.isNoteUnconnected(note)
+        let candidates = isUnconnected ? model.suggestLinkCandidates(for: note, limit: 4) : []
         return VStack(alignment: .leading, spacing: 4) {
+            if isUnconnected {
+                unconnectedPromptBanner(candidates: candidates)
+                    .padding(.bottom, 12)
+            }
+
             sectionHeader("出链", count: outgoing.count)
             if outgoing.isEmpty {
                 Text("这篇笔记还没有引用其他笔记。")
@@ -402,7 +410,7 @@ private struct NoteInspectorBodyView: View {
                     .padding(.vertical, 3)
             } else {
                 ForEach(outgoing, id: \.id) { link in
-                    outgoingLinkRow(link)
+                    InspectorOutgoingLinkRow(link: link, noteVaultID: note.vaultID, model: model)
                 }
             }
 
@@ -414,59 +422,57 @@ private struct NoteInspectorBodyView: View {
                     .padding(.vertical, 3)
             } else {
                 ForEach(backlinks, id: \.id) { link in
-                    Button {
-                        model.openNote(link.sourceID)
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "arrow.uturn.backward")
-                                .font(.system(size: 9.5))
-                                .foregroundStyle(palette.brand)
-                            Text(link.sourceTitle)
-                                .font(.system(size: 12))
-                                .foregroundStyle(palette.brandInk)
-                                .lineLimit(1)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 8)
-                        .frame(height: 32)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
+                    InspectorBacklinkRow(link: link, noteVaultID: note.vaultID, model: model)
                 }
             }
         }
     }
 
-    private func outgoingLinkRow(_ link: NoteLink) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: link.targetID.isEmpty ? "plus.circle" : "arrow.up.right")
-                .font(.system(size: 9.5))
-                .foregroundStyle(link.targetID.isEmpty ? palette.textSecondary : palette.brand)
-            Button {
-                if link.targetID.isEmpty {
-                    model.openWikiLink(link.targetTitle)
-                } else {
-                    model.openNote(link.targetID)
-                }
-            } label: {
-                Text(link.targetTitle)
-                    .font(.system(size: 12))
-                    .foregroundStyle(link.targetID.isEmpty ? palette.textSecondary : palette.brandInk)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+    private func unconnectedPromptBanner(candidates: [LinkCandidate]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "link.badge.plus")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(palette.warning)
+                Text("当前笔记尚未建立连接")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(palette.textPrimary)
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
-            if link.targetID.isEmpty {
-                Text("未创建")
-                    .font(.system(size: 9))
-                    .foregroundStyle(palette.textSecondary)
-                    .padding(.horizontal, 5)
-                    .frame(height: 16)
-                    .background(Capsule().fill(palette.controlFill))
+            Text("添加 [[双向链接]] 或一键插入推荐关联，避免形成孤立笔记。")
+                .font(.system(size: 10.5))
+                .foregroundStyle(palette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !candidates.isEmpty {
+                VStack(spacing: 5) {
+                    ForEach(candidates) { candidate in
+                        InspectorLinkCandidateRow(candidate: candidate, sourceNote: note, model: model)
+                    }
+                }
+            }
+
+            HStack(spacing: 8) {
+                Button {
+                    model.openGraph(focus: note.id)
+                } label: {
+                    Label("在图谱中查看", systemImage: "point.3.connected.trianglepath.dotted")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(palette.brandInk)
+                }
+                .buttonStyle(.plain)
+                Spacer()
             }
         }
-        .padding(.horizontal, 8)
-        .frame(height: 32)
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(palette.warning.opacity(palette.isDark ? 0.14 : 0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(palette.warning.opacity(0.32), lineWidth: 0.75)
+        )
     }
 
     private var propertiesContent: some View {
@@ -654,6 +660,205 @@ private struct NoteInspectorBodyView: View {
                 .buttonStyle(.plain)
                 .help("复制绝对路径")
             }
+            HStack {
+                Text("版本历史")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(palette.textSecondary)
+                Spacer()
+                Button {
+                    model.openVersionHistory(for: note.id)
+                } label: {
+                    let count = model.noteRevisions(for: note.id).count
+                    Text(count > 0 ? "查看对比（\(count) 条快照）" : "查看与保存快照")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(palette.brandInk)
+                }
+                .buttonStyle(.plain)
+            }
         }
+    }
+}
+
+private struct InspectorOutgoingLinkRow: View {
+    @Environment(\.lexiPalette) private var palette
+    let link: NoteLink
+    let noteVaultID: String
+    @ObservedObject var model: AppModel
+    @State private var showPreview = false
+
+    private var previewProvider: () -> LinkTargetPreview {
+        let raw = link.targetID.isEmpty ? link.targetTitle : link.targetID
+        let anchor = link.anchor.isEmpty ? nil : link.anchor
+        return {
+            model.linkTargetPreview(rawTarget: raw, anchor: anchor, preferredVaultID: noteVaultID)
+        }
+    }
+
+    private func openTarget() {
+        if link.targetID.isEmpty {
+            model.openWikiLink(link.targetTitle)
+        } else if !link.anchor.isEmpty {
+            model.openWikiLink("\(link.targetTitle)#\(link.anchor)")
+        } else {
+            model.openNote(link.targetID)
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: link.targetID.isEmpty ? "plus.circle" : "arrow.up.right")
+                .font(.system(size: 9.5))
+                .foregroundStyle(link.targetID.isEmpty ? palette.warning : palette.brand)
+            Button {
+                openTarget()
+            } label: {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(link.targetTitle)
+                        .font(.system(size: 12))
+                        .foregroundStyle(link.targetID.isEmpty ? palette.textSecondary : palette.brandInk)
+                        .lineLimit(1)
+                    if !link.anchor.isEmpty {
+                        Text("#\(link.anchor)")
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(palette.textSecondary)
+                            .lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+
+            if link.targetID.isEmpty {
+                Text("未创建")
+                    .font(.system(size: 9))
+                    .foregroundStyle(palette.warning)
+                    .padding(.horizontal, 5)
+                    .frame(height: 16)
+                    .background(Capsule().fill(palette.warning.opacity(0.14)))
+            }
+            Button {
+                showPreview.toggle()
+            } label: {
+                Image(systemName: "eye")
+                    .font(.system(size: 10))
+                    .foregroundStyle(palette.textSecondary)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("快速预览链接目标")
+        }
+        .padding(.horizontal, 8)
+        .frame(minHeight: 32)
+        .modifier(LinkHoverPreviewModifier(previewProvider: previewProvider,
+                                           arrowEdge: .leading,
+                                           onOpen: openTarget,
+                                           isPresented: $showPreview))
+    }
+}
+
+private struct InspectorBacklinkRow: View {
+    @Environment(\.lexiPalette) private var palette
+    let link: NoteLink
+    let noteVaultID: String
+    @ObservedObject var model: AppModel
+    @State private var showPreview = false
+
+    private var previewProvider: () -> LinkTargetPreview {
+        { model.linkTargetPreview(rawTarget: link.sourceID, anchor: nil, preferredVaultID: noteVaultID) }
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button {
+                model.openNote(link.sourceID)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(palette.brand)
+                    Text(link.sourceTitle)
+                        .font(.system(size: 12))
+                        .foregroundStyle(palette.brandInk)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                showPreview.toggle()
+            } label: {
+                Image(systemName: "eye")
+                    .font(.system(size: 10))
+                    .foregroundStyle(palette.textSecondary)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("快速预览来源笔记")
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 32)
+        .modifier(LinkHoverPreviewModifier(previewProvider: previewProvider,
+                                           arrowEdge: .leading,
+                                           onOpen: { model.openNote(link.sourceID) },
+                                           isPresented: $showPreview))
+    }
+}
+
+private struct InspectorLinkCandidateRow: View {
+    @Environment(\.lexiPalette) private var palette
+    let candidate: LinkCandidate
+    let sourceNote: Note
+    @ObservedObject var model: AppModel
+    @State private var showPreview = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button {
+                showPreview.toggle()
+            } label: {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(candidate.title)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(palette.textPrimary)
+                        .lineLimit(1)
+                    Text(candidate.reason)
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(palette.textSecondary)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                model.insertWikiLink(candidate.title, into: sourceNote.id)
+            } label: {
+                Text("+ 链接")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(palette.brandInk)
+                    .padding(.horizontal, 7)
+                    .frame(height: 20)
+                    .background(Capsule().fill(palette.brandSoft))
+            }
+            .buttonStyle(.plain)
+            .help("向正文添加 [[\(candidate.title)]]")
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(palette.surface.opacity(0.85))
+        )
+        .modifier(LinkHoverPreviewModifier(
+            previewProvider: { model.linkTargetPreview(rawTarget: candidate.noteID, preferredVaultID: sourceNote.vaultID) },
+            arrowEdge: .leading,
+            onOpen: { model.openNote(candidate.noteID) },
+            isPresented: $showPreview
+        ))
     }
 }

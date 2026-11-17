@@ -28,7 +28,7 @@ struct CommandPalettePanel: View {
     var body: some View {
         ZStack {
             Rectangle()
-                .fill(Color.black.opacity(palette.isDark ? 0.42 : 0.28))
+                .fill(palette.scrim)
                 .ignoresSafeArea()
                 .onTapGesture { close() }
 
@@ -68,7 +68,7 @@ struct CommandPalettePanel: View {
                                 ? commands[safe: value]?.id
                                 : quickResults[safe: value]?.id
                             guard let identifier else { return }
-                            withAnimation(.easeOut(duration: 0.1)) {
+                            withAnimation(LexiMotion.micro(settings)) {
                                 proxy.scrollTo(identifier, anchor: .center)
                             }
                         }
@@ -88,9 +88,9 @@ struct CommandPalettePanel: View {
                     LiquidGlassLayer(cornerRadius: 16, tint: palette.brand.opacity(0.06))
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: LexiTokens.radiusLG, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                RoundedRectangle(cornerRadius: LexiTokens.radiusLG, style: .continuous)
                     .stroke(palette.workspaceLine, lineWidth: 1)
             )
             .shadow(color: palette.shadow, radius: 34, x: 0, y: 20)
@@ -99,7 +99,7 @@ struct CommandPalettePanel: View {
         .onAppear {
             query = ""
             selected = 0
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                 searchFocused = true
             }
             installMonitor()
@@ -120,6 +120,7 @@ struct CommandPalettePanel: View {
                     .foregroundStyle(palette.textPrimary)
                 Text(isCommands ? "\(resultCount) 个命令" : "\(resultCount) 个文档")
                     .font(.system(size: 11))
+                    .monospacedDigit()
                     .foregroundStyle(palette.textSecondary)
             }
             Spacer()
@@ -132,7 +133,7 @@ struct CommandPalettePanel: View {
                     .frame(width: 34, height: 34)
                     .background(Circle().fill(palette.hoverFill))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(LexiPressButtonStyle())
             .help("关闭命令面板")
         }
         .padding(.leading, 24)
@@ -162,14 +163,19 @@ struct CommandPalettePanel: View {
                         .font(.system(size: 12))
                         .foregroundStyle(palette.textSecondary)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LexiPressButtonStyle())
             }
         }
         .padding(.horizontal, 14)
         .frame(height: 44)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: LexiTokens.radiusMD, style: .continuous)
                 .fill(palette.softSurface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: LexiTokens.radiusMD, style: .continuous)
+                        .stroke(searchFocused ? palette.focusRing : palette.workspaceLine.opacity(0.6),
+                                lineWidth: searchFocused ? 1.5 : 0.5)
+                )
         )
     }
 
@@ -188,27 +194,25 @@ struct CommandPalettePanel: View {
                         .font(.system(size: 14, weight: active ? .medium : .regular))
                         .foregroundStyle(palette.textPrimary)
                         .lineLimit(1)
-                    if !command.shortcut.isEmpty {
-                        Text("\(command.group) · \(command.shortcut)")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(palette.textSecondary)
-                    } else {
-                        Text(command.group)
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(palette.textSecondary)
-                    }
+                    Text(command.group)
+                        .font(.system(size: 11))
+                        .foregroundStyle(palette.textSecondary)
                 }
                 Spacer(minLength: 8)
+                if !command.shortcut.isEmpty {
+                    KeyboardHint(text: command.shortcut)
+                }
             }
             .padding(.horizontal, 12)
             .frame(height: 52)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: LexiTokens.radiusSM, style: .continuous)
                     .fill(active ? palette.brandSoft : Color.clear)
             )
+            .animation(LexiMotion.easeOutMicro, value: active)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LexiPressButtonStyle())
         .onHover { inside in
             if inside { selected = index }
         }
@@ -225,14 +229,16 @@ struct CommandPalettePanel: View {
                     .foregroundStyle(active ? palette.brandInk : palette.textSecondary)
                     .frame(width: 22)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(result.title)
-                        .font(.system(size: 14, weight: active ? .medium : .regular))
-                        .foregroundStyle(palette.textPrimary)
-                        .lineLimit(1)
-                    Text(result.subtitle)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(palette.textSecondary)
-                        .lineLimit(1)
+                    HighlightText(text: result.title,
+                                  query: isCommands ? "" : query,
+                                  font: .system(size: 14, weight: active ? .medium : .regular),
+                                  color: palette.textPrimary,
+                                  lineLimit: 1)
+                    HighlightText(text: result.subtitle,
+                                  query: isCommands ? "" : query,
+                                  font: .system(size: 10.5),
+                                  color: palette.textSecondary,
+                                  lineLimit: 1)
                 }
                 Spacer(minLength: 8)
                 if result.kind == .create {

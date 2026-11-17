@@ -52,6 +52,7 @@ struct Note: Identifiable, Codable, Hashable {
     var favorite: Bool
     var createdAt: Date
     var updatedAt: Date
+    var lastAccessedAt: Date? = nil
     var trashedAt: Date?
     /// Path relative to the vault folder, e.g. "计算机课程/时间复杂度.md".
     var path: String
@@ -69,6 +70,7 @@ struct Note: Identifiable, Codable, Hashable {
          favorite: Bool = false,
          createdAt: Date = Date(),
          updatedAt: Date = Date(),
+         lastAccessedAt: Date? = nil,
          trashedAt: Date? = nil,
          path: String = "") {
         self.id = id
@@ -84,6 +86,7 @@ struct Note: Identifiable, Codable, Hashable {
         self.favorite = favorite
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.lastAccessedAt = lastAccessedAt
         self.trashedAt = trashedAt
         self.path = path
     }
@@ -117,7 +120,87 @@ struct Note: Identifiable, Codable, Hashable {
         return String(text.prefix(110))
     }
 
+    func snippet(matching query: String, maxLength: Int = 110) -> String {
+        let normalized = plainText
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return "" }
+        let terms = NoteSearch.highlightTerms(query)
+        guard !terms.isEmpty else {
+            return normalized.count > maxLength ? String(normalized.prefix(maxLength)) + "..." : normalized
+        }
+        var earliestMatch: String.Index?
+        for term in terms {
+            if let range = normalized.range(of: term, options: [.caseInsensitive]),
+               earliestMatch == nil || range.lowerBound < earliestMatch! {
+                earliestMatch = range.lowerBound
+            }
+        }
+        guard let hit = earliestMatch else {
+            return normalized.count > maxLength ? String(normalized.prefix(maxLength)) + "..." : normalized
+        }
+        let hitOffset = normalized.distance(from: normalized.startIndex, to: hit)
+        if hitOffset <= 24 {
+            return normalized.count > maxLength ? String(normalized.prefix(maxLength)) + "..." : normalized
+        }
+        let startIdx = normalized.index(hit, offsetBy: -24, limitedBy: normalized.startIndex) ?? normalized.startIndex
+        let endIdx = normalized.index(startIdx, offsetBy: maxLength, limitedBy: normalized.endIndex) ?? normalized.endIndex
+        let prefix = startIdx > normalized.startIndex ? "..." : ""
+        let suffix = endIdx < normalized.endIndex ? "..." : ""
+        return prefix + String(normalized[startIdx..<endIdx]) + suffix
+    }
+
     var isTrashed: Bool { trashedAt != nil }
+}
+
+enum NoteSortMode: String, Codable, CaseIterable, Identifiable {
+    case updated
+    case accessed
+    case created
+    case title
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .updated: return "最近编辑"
+        case .accessed: return "最近访问"
+        case .created: return "最近创建"
+        case .title: return "按标题"
+        }
+    }
+}
+
+struct SearchHighlightSegment: Identifiable, Hashable {
+    let id: Int
+    let text: String
+    let highlighted: Bool
+}
+
+struct LinkTargetPreview: Identifiable, Hashable {
+    var id: String { noteID ?? "missing:\(targetName)#\(anchor)" }
+    let exists: Bool
+    let noteID: String?
+    let title: String
+    let targetName: String
+    let anchor: String
+    let notebook: String
+    let tags: [String]
+    let snippet: String
+    let outgoingCount: Int
+    let backlinkCount: Int
+    let updatedAt: Date?
+    let lastAccessedAt: Date?
+}
+
+struct LinkCandidate: Identifiable, Hashable {
+    var id: String { noteID }
+    let noteID: String
+    let title: String
+    let notebook: String
+    let reason: String
+    let score: Int
 }
 
 struct OutlineHeading: Identifiable, Hashable {
@@ -179,6 +262,47 @@ enum MindMapLayout: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+private enum CrossPlatformJSON {
+    struct AnyKey: CodingKey {
+        var stringValue: String
+        var intValue: Int?
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { self.stringValue = String(intValue); self.intValue = intValue }
+    }
+
+    static func string(_ c: KeyedDecodingContainer<AnyKey>, _ keys: String..., default fallback: String = "") -> String {
+        for k in keys {
+            if let key = AnyKey(stringValue: k), let v = try? c.decodeIfPresent(String.self, forKey: key) {
+                return v
+            }
+        }
+        return fallback
+    }
+
+    static func optionalString(_ c: KeyedDecodingContainer<AnyKey>, _ keys: String...) -> String? {
+        for k in keys {
+            if let key = AnyKey(stringValue: k), let v = try? c.decodeIfPresent(String.self, forKey: key), !v.isEmpty {
+                return v
+            }
+        }
+        return nil
+    }
+
+    static func date(_ c: KeyedDecodingContainer<AnyKey>, _ keys: String..., default fallback: Date? = nil) -> Date? {
+        for k in keys {
+            guard let key = AnyKey(stringValue: k) else { continue }
+            if let num = try? c.decodeIfPresent(Double.self, forKey: key) {
+                if num <= 0 { continue }
+                return Date(timeIntervalSince1970: num > 1e11 ? num / 1000.0 : num)
+            }
+            if let str = try? c.decodeIfPresent(String.self, forKey: key), let d = LexiDate.parse(str) {
+                return d
+            }
+        }
+        return fallback
+    }
+}
+
 struct MindNode: Identifiable, Codable, Hashable {
     var id: String
     var parentID: String
@@ -211,16 +335,28 @@ struct MindNode: Identifiable, Codable, Hashable {
     }
 
     init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(String.self, forKey: .id)
-        parentID = try container.decode(String.self, forKey: .parentID)
-        text = try container.decode(String.self, forKey: .text)
-        order = try container.decode(Int.self, forKey: .order)
-        colorTag = try container.decode(NoteColorTag.self, forKey: .colorTag)
-        noteRefID = try container.decodeIfPresent(String.self, forKey: .noteRefID)
-        noteRefTitle = try container.decodeIfPresent(String.self, forKey: .noteRefTitle)
-        note = try container.decodeIfPresent(String.self, forKey: .note)
-        collapsed = try container.decodeIfPresent(Bool.self, forKey: .collapsed) ?? false
+        let c = try decoder.container(keyedBy: CrossPlatformJSON.AnyKey.self)
+        id = CrossPlatformJSON.string(c, "id", default: "node-\(UUID().uuidString.lowercased())")
+        parentID = CrossPlatformJSON.string(c, "parentID", "parentId")
+        text = CrossPlatformJSON.string(c, "text")
+        if let k = CrossPlatformJSON.AnyKey(stringValue: "order"), let o = try? c.decode(Int.self, forKey: k) {
+            order = o
+        } else {
+            order = 0
+        }
+        if let k = CrossPlatformJSON.AnyKey(stringValue: "colorTag"), let tag = try? c.decode(NoteColorTag.self, forKey: k) {
+            colorTag = tag
+        } else {
+            colorTag = .purple
+        }
+        noteRefID = CrossPlatformJSON.optionalString(c, "noteRefID", "noteRefId")
+        noteRefTitle = CrossPlatformJSON.optionalString(c, "noteRefTitle")
+        note = CrossPlatformJSON.optionalString(c, "note")
+        if let k = CrossPlatformJSON.AnyKey(stringValue: "collapsed"), let col = try? c.decodeIfPresent(Bool.self, forKey: k) {
+            collapsed = col
+        } else {
+            collapsed = false
+        }
     }
 }
 
@@ -235,6 +371,43 @@ struct MindMap: Identifiable, Codable, Hashable {
     var createdAt: Date
     var updatedAt: Date
     var trashedAt: Date?
+
+    init(id: String, vaultID: String, title: String, layout: MindMapLayout, rootNodeID: String,
+         nodes: [MindNode], favorite: Bool, createdAt: Date, updatedAt: Date, trashedAt: Date? = nil) {
+        self.id = id
+        self.vaultID = vaultID
+        self.title = title
+        self.layout = layout
+        self.rootNodeID = rootNodeID
+        self.nodes = nodes
+        self.favorite = favorite
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.trashedAt = trashedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CrossPlatformJSON.AnyKey.self)
+        id = CrossPlatformJSON.string(c, "id", default: "map-\(UUID().uuidString.lowercased())")
+        vaultID = CrossPlatformJSON.string(c, "vaultID", "vaultId")
+        title = CrossPlatformJSON.string(c, "title", default: "未命名导图")
+        let layoutRaw = CrossPlatformJSON.string(c, "layout", "layoutKind", default: "right")
+        layout = MindMapLayout(rawValue: layoutRaw) ?? .right
+        if let k = CrossPlatformJSON.AnyKey(stringValue: "nodes"), let decodedNodes = try? c.decode([MindNode].self, forKey: k) {
+            nodes = decodedNodes
+        } else {
+            nodes = []
+        }
+        rootNodeID = CrossPlatformJSON.string(c, "rootNodeID", "rootNodeId", default: nodes.first?.id ?? "")
+        if let k = CrossPlatformJSON.AnyKey(stringValue: "favorite"), let fav = try? c.decodeIfPresent(Bool.self, forKey: k) {
+            favorite = fav
+        } else {
+            favorite = false
+        }
+        createdAt = CrossPlatformJSON.date(c, "createdAt", default: Date()) ?? Date()
+        updatedAt = CrossPlatformJSON.date(c, "updatedAt", default: createdAt) ?? createdAt
+        trashedAt = CrossPlatformJSON.date(c, "trashedAt")
+    }
 
     func children(of nodeID: String) -> [MindNode] {
         nodes.filter { $0.parentID == nodeID }.sorted { $0.order < $1.order }
@@ -252,6 +425,30 @@ struct CanvasCard: Identifiable, Codable, Hashable {
     var x: Double
     var y: Double
     var colorTag: NoteColorTag
+
+    init(id: String, title: String, content: String, noteRefID: String? = nil, noteRefTitle: String? = nil,
+         x: Double, y: Double, colorTag: NoteColorTag = .purple) {
+        self.id = id
+        self.title = title
+        self.content = content
+        self.noteRefID = noteRefID
+        self.noteRefTitle = noteRefTitle
+        self.x = x
+        self.y = y
+        self.colorTag = colorTag
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CrossPlatformJSON.AnyKey.self)
+        id = CrossPlatformJSON.string(c, "id", default: "card-\(UUID().uuidString.lowercased())")
+        title = CrossPlatformJSON.string(c, "title")
+        content = CrossPlatformJSON.string(c, "content")
+        noteRefID = CrossPlatformJSON.optionalString(c, "noteRefID", "noteRefId")
+        noteRefTitle = CrossPlatformJSON.optionalString(c, "noteRefTitle")
+        x = (CrossPlatformJSON.AnyKey(stringValue: "x").flatMap { try? c.decode(Double.self, forKey: $0) }) ?? 0
+        y = (CrossPlatformJSON.AnyKey(stringValue: "y").flatMap { try? c.decode(Double.self, forKey: $0) }) ?? 0
+        colorTag = (CrossPlatformJSON.AnyKey(stringValue: "colorTag").flatMap { try? c.decode(NoteColorTag.self, forKey: $0) }) ?? .purple
+    }
 }
 
 struct CanvasEdge: Identifiable, Codable, Hashable {
@@ -259,6 +456,21 @@ struct CanvasEdge: Identifiable, Codable, Hashable {
     var fromID: String
     var toID: String
     var label: String
+
+    init(id: String, fromID: String, toID: String, label: String) {
+        self.id = id
+        self.fromID = fromID
+        self.toID = toID
+        self.label = label
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CrossPlatformJSON.AnyKey.self)
+        id = CrossPlatformJSON.string(c, "id", default: "edge-\(UUID().uuidString.lowercased())")
+        fromID = CrossPlatformJSON.string(c, "fromID", "fromId")
+        toID = CrossPlatformJSON.string(c, "toID", "toId")
+        label = CrossPlatformJSON.string(c, "label")
+    }
 }
 
 struct CanvasBoard: Identifiable, Codable, Hashable {
@@ -269,6 +481,27 @@ struct CanvasBoard: Identifiable, Codable, Hashable {
     var edges: [CanvasEdge]
     var createdAt: Date
     var updatedAt: Date
+
+    init(id: String, vaultID: String, title: String, cards: [CanvasCard], edges: [CanvasEdge], createdAt: Date, updatedAt: Date) {
+        self.id = id
+        self.vaultID = vaultID
+        self.title = title
+        self.cards = cards
+        self.edges = edges
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CrossPlatformJSON.AnyKey.self)
+        id = CrossPlatformJSON.string(c, "id", default: "canvas-\(UUID().uuidString.lowercased())")
+        vaultID = CrossPlatformJSON.string(c, "vaultID", "vaultId")
+        title = CrossPlatformJSON.string(c, "title", default: "未命名白板")
+        cards = (CrossPlatformJSON.AnyKey(stringValue: "cards").flatMap { try? c.decode([CanvasCard].self, forKey: $0) }) ?? []
+        edges = (CrossPlatformJSON.AnyKey(stringValue: "edges").flatMap { try? c.decode([CanvasEdge].self, forKey: $0) }) ?? []
+        createdAt = CrossPlatformJSON.date(c, "createdAt", default: Date()) ?? Date()
+        updatedAt = CrossPlatformJSON.date(c, "updatedAt", default: createdAt) ?? createdAt
+    }
 }
 
 // MARK: - Tabs
@@ -364,6 +597,107 @@ enum NoteSearch {
             cursor = text.index(after: next)
         }
         return 100 + gaps
+    }
+
+    static func highlightTerms(_ query: String) -> [String] {
+        let parsed = parse(query)
+        var seen: Set<String> = []
+        var result: [String] = []
+        for term in parsed {
+            guard !term.excluded else { continue }
+            var token = term.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if term.field == "tag" {
+                if token.hasPrefix("#") { token = String(token.dropFirst()) }
+            } else if term.field.isEmpty {
+                if token.hasPrefix("#") && token.count > 1 {
+                    token = String(token.dropFirst())
+                }
+            } else {
+                continue
+            }
+            guard !token.isEmpty else { continue }
+            let key = token.lowercased()
+            if seen.insert(key).inserted {
+                result.append(token)
+            }
+        }
+        return result.sorted {
+            if $0.count != $1.count { return $0.count > $1.count }
+            return $0.lowercased() < $1.lowercased()
+        }
+    }
+
+    static func highlightSegments(_ text: String, query: String) -> [SearchHighlightSegment] {
+        guard !text.isEmpty else { return [] }
+        let terms = highlightTerms(query)
+        guard !terms.isEmpty else {
+            return [SearchHighlightSegment(id: 0, text: text, highlighted: false)]
+        }
+        var segments: [SearchHighlightSegment] = []
+        var cursor = text.startIndex
+        var nextID = 0
+        while cursor < text.endIndex {
+            var bestRange: Range<String.Index>?
+            for term in terms {
+                guard let range = text.range(of: term, options: [.caseInsensitive], range: cursor..<text.endIndex),
+                      !range.isEmpty else { continue }
+                if let current = bestRange {
+                    if range.lowerBound < current.lowerBound ||
+                        (range.lowerBound == current.lowerBound &&
+                         text.distance(from: range.lowerBound, to: range.upperBound) >
+                         text.distance(from: current.lowerBound, to: current.upperBound)) {
+                        bestRange = range
+                    }
+                } else {
+                    bestRange = range
+                }
+            }
+            guard let hit = bestRange else {
+                segments.append(SearchHighlightSegment(id: nextID, text: String(text[cursor..<text.endIndex]), highlighted: false))
+                break
+            }
+            if hit.lowerBound > cursor {
+                segments.append(SearchHighlightSegment(id: nextID, text: String(text[cursor..<hit.lowerBound]), highlighted: false))
+                nextID += 1
+            }
+            segments.append(SearchHighlightSegment(id: nextID, text: String(text[hit]), highlighted: true))
+            nextID += 1
+            cursor = hit.upperBound
+        }
+        return segments
+    }
+
+    static func accessDate(for note: Note, accessedAt: [String: Date] = [:]) -> Date {
+        accessedAt[note.id] ?? note.lastAccessedAt ?? note.updatedAt
+    }
+
+    static func sortNotes(_ notes: [Note],
+                          mode: NoteSortMode,
+                          accessedAt: [String: Date] = [:],
+                          pinnedFirst: Bool = true) -> [Note] {
+        notes.sorted { lhs, rhs in
+            if pinnedFirst && lhs.pinned != rhs.pinned {
+                return lhs.pinned && !rhs.pinned
+            }
+            switch mode {
+            case .accessed:
+                let la = accessDate(for: lhs, accessedAt: accessedAt)
+                let ra = accessDate(for: rhs, accessedAt: accessedAt)
+                if la != ra { return la > ra }
+                if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
+                return lhs.displayTitle.localizedStandardCompare(rhs.displayTitle) == .orderedAscending
+            case .updated:
+                if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
+                return lhs.displayTitle.localizedStandardCompare(rhs.displayTitle) == .orderedAscending
+            case .created:
+                if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt }
+                return lhs.displayTitle.localizedStandardCompare(rhs.displayTitle) == .orderedAscending
+            case .title:
+                let cmp = lhs.displayTitle.localizedStandardCompare(rhs.displayTitle)
+                if cmp != .orderedSame { return cmp == .orderedAscending }
+                return lhs.updatedAt > rhs.updatedAt
+            }
+        }
     }
 }
 

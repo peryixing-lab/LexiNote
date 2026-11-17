@@ -12,8 +12,6 @@ struct PluginSettingsPanel: View {
     @State private var statusMessage = ""
     @State private var expandedPluginIDs: Set<String> = []
     @State private var aiExpandedPluginIDs: Set<String> = []
-    @State private var pendingGrantAllPlugin: PluginRecord?
-    @State private var uninstallCandidate: PluginRecord?
 
     init(model: AppModel, settings: SettingsStore) {
         self.model = model
@@ -114,33 +112,6 @@ struct PluginSettingsPanel: View {
             }
             .padding(.top, 4)
         }
-        .alert(item: $pendingGrantAllPlugin) { record in
-            let titles = record.manifest.capabilities
-                .compactMap { PluginCapability(rawValue: $0)?.title }
-                .joined(separator: "、")
-            return Alert(
-                title: Text("授予「\(record.manifest.name)」全部权限？"),
-                message: Text("将允许此插件在工作区「\(model.activeVault?.name ?? "我的工作区")」中使用：\(titles)。\n\n请只为您信任的插件开启写入或 AI 代理能力。"),
-                primaryButton: .destructive(Text("确认授予")) {
-                    plugins.grantAllCapabilities(for: record.id)
-                    statusMessage = "已授予「\(record.manifest.name)」全部声明权限。"
-                },
-                secondaryButton: .cancel(Text("取消"))
-            )
-        }
-        .alert(item: $uninstallCandidate) { record in
-            Alert(
-                title: Text("卸载「\(record.manifest.name)」？"),
-                message: Text("将移除插件代码、所有工作区授权及该插件的私有配置与模型密钥。此操作不可恢复。"),
-                primaryButton: .destructive(Text("卸载")) {
-                    Task { @MainActor in
-                        await plugins.uninstall(pluginId: record.id)
-                        statusMessage = "已卸载 \(record.manifest.name)"
-                    }
-                },
-                secondaryButton: .cancel(Text("取消"))
-            )
-        }
     }
 
     // MARK: - Plugin Card
@@ -232,7 +203,9 @@ struct PluginSettingsPanel: View {
                         get: { allGranted },
                         set: { newValue in
                             if newValue {
-                                pendingGrantAllPlugin = record
+                                DispatchQueue.main.async {
+                                    confirmGrantAll(for: record)
+                                }
                             } else {
                                 plugins.revokeAllCapabilities(for: record.id)
                                 statusMessage = "已撤回「\(record.manifest.name)」在当前工作区的全部权限。"
@@ -253,9 +226,13 @@ struct PluginSettingsPanel: View {
             }
 
             if !record.lastError.isEmpty {
-                Text(record.lastError)
+                let isPermissionError = record.lastError.contains(PluginErrorCode.permissionDenied)
+                let cleanMessage = isPermissionError
+                    ? record.lastError.replacingOccurrences(of: "E_PLUGIN_FAILED: ", with: "")
+                    : record.lastError
+                Text(cleanMessage)
                     .font(.system(size: 11))
-                    .foregroundStyle(palette.error)
+                    .foregroundStyle(isPermissionError ? palette.warning : palette.error)
                     .lineLimit(3)
             }
 
@@ -325,7 +302,7 @@ struct PluginSettingsPanel: View {
                 Spacer()
 
                 Button {
-                    uninstallCandidate = record
+                    confirmUninstall(for: record)
                 } label: {
                     Text("卸载")
                         .font(.system(size: 11.5))
@@ -357,17 +334,24 @@ struct PluginSettingsPanel: View {
 
     @ViewBuilder
     private func statePill(record: PluginRecord, enabled: Bool, allGranted: Bool) -> some View {
+        let isPermissionError = record.lastError.contains(PluginErrorCode.permissionDenied)
         let label: String = {
             if record.state == .running { return "运行中" }
             if record.state == .loading { return "启动中" }
             if record.state == .crashed {
+                if isPermissionError {
+                    return allGranted ? "需重载" : "待授权"
+                }
                 return allGranted ? "需重载" : "异常"
             }
             return enabled ? "已启用" : "已停用"
         }()
         let color: Color = {
             if record.state == .running { return palette.success }
-            if record.state == .crashed && !allGranted { return palette.error }
+            if record.state == .crashed {
+                if isPermissionError { return palette.warning }
+                return allGranted ? palette.textSecondary : palette.error
+            }
             return palette.textSecondary
         }()
         Text(label)
@@ -376,6 +360,71 @@ struct PluginSettingsPanel: View {
             .padding(.horizontal, 9)
             .frame(minWidth: 52, minHeight: 22, maxHeight: 22)
             .background(Capsule().fill(palette.surface))
+    }
+
+    @MainActor
+    private func confirmGrantAll(for record: PluginRecord) {
+        let titles = record.manifest.capabilities
+            .compactMap { PluginCapability(rawValue: $0)?.title }
+            .joined(separator: "、")
+        let vaultName = model.activeVault?.name ?? "我的工作区"
+        presentConfirmationAlert(
+            title: "授予「\(record.manifest.name)」全部权限？",
+            message: "将允许此插件在工作区「\(vaultName)」中使用：\(titles)。\n\n请只为您信任的插件开启写入或 AI 代理能力。",
+            confirmTitle: "确认授予",
+            destructive: false
+        ) {
+            plugins.grantAllCapabilities(for: record.id)
+            statusMessage = "已授予「\(record.manifest.name)」全部声明权限。"
+        }
+    }
+
+    @MainActor
+    private func confirmUninstall(for record: PluginRecord) {
+        presentConfirmationAlert(
+            title: "卸载「\(record.manifest.name)」？",
+            message: "将移除插件代码、所有工作区授权及该插件的私有配置与模型密钥。此操作不可恢复。",
+            confirmTitle: "卸载",
+            destructive: true
+        ) {
+            Task { @MainActor in
+                await plugins.uninstall(pluginId: record.id)
+                statusMessage = "已卸载 \(record.manifest.name)"
+            }
+        }
+    }
+
+    @MainActor
+    private func presentConfirmationAlert(
+        title: String,
+        message: String,
+        confirmTitle: String,
+        destructive: Bool,
+        onConfirm: @escaping @MainActor () -> Void
+    ) {
+        let alert = NSAlert()
+        alert.alertStyle = destructive ? .critical : .informational
+        alert.messageText = title
+        alert.informativeText = message
+        let confirmButton = alert.addButton(withTitle: confirmTitle)
+        if destructive {
+            confirmButton.hasDestructiveAction = true
+        }
+        alert.addButton(withTitle: "取消")
+        let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible })
+        if let window {
+            alert.beginSheetModal(for: window) { response in
+                if response == .alertFirstButtonReturn {
+                    Task { @MainActor in
+                        onConfirm()
+                    }
+                }
+            }
+        } else {
+            if alert.runModal() == .alertFirstButtonReturn {
+                onConfirm()
+            }
+        }
     }
 
     private func expandedDetails(record: PluginRecord, grant: PluginPermissionGrant) -> some View {

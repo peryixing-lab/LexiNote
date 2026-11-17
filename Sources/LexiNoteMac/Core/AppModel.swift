@@ -60,12 +60,30 @@ enum SaveState: Equatable {
     case unsaved
     case failed(String)
 
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+
+    var formattedTime: String? {
+        if case .saved(let date) = self {
+            return Self.timeFormatter.string(from: date)
+        }
+        return nil
+    }
+
     var label: String {
         switch self {
-        case .saved: return "已保存到本机"
-        case .saving: return "正在自动保存…"
-        case .unsaved: return "尚未保存 · ⌘S"
-        case .failed: return "保存失败 · 点击重试"
+        case .saved(let date):
+            return "已保存到本机 \(Self.timeFormatter.string(from: date))"
+        case .saving:
+            return "正在自动保存…"
+        case .unsaved:
+            return "尚未保存 · ⌘S"
+        case .failed:
+            return "保存失败 · 点击重试"
         }
     }
 }
@@ -137,6 +155,7 @@ final class AppModel: ObservableObject {
 
     @Published var searchText: String = ""
     @Published var favoritesOnly: Bool = false
+    @Published var unconnectedOnly: Bool = false
     @Published var collapsedNotebooks: Set<String> = []
     @Published var toast: ToastMessage?
     @Published var paletteVisible: Bool = false
@@ -150,9 +169,13 @@ final class AppModel: ObservableObject {
     @Published var graphFocusNoteID: String?
     @Published var quickLookTab: WorkspaceTab?
     @Published var dataStatusMessage: String = ""
+    @Published var historyVisible: Bool = false
+    @Published var historyTargetNoteID: String?
+    @Published var historyRevisionTick: Int = 0
     /// Used by snapshot rendering and previews to force a presentation for the next editor identity.
     @Published var presentationOverride: EditorPresentation?
 
+    let windowID = UUID()
     let plugins: PluginManager
     var onOpenNewWindow: ((String) -> Void)?
 
@@ -160,6 +183,9 @@ final class AppModel: ObservableObject {
     private let initialVaultID: String?
     private var paletteTimer: Timer?
     private var libraryCancellable: AnyCancellable?
+    private var settingsCancellable: AnyCancellable?
+    private var windowNoteHashes: [String: String] = [:]
+    private var pendingExternalOpenURLs: [URL] = []
 
     init(settings: SettingsStore,
          storageRoot: URL? = nil,
@@ -174,6 +200,7 @@ final class AppModel: ObservableObject {
         self.initialVaultID = initialVaultID
         self.isPrimaryWindow = isPrimaryWindow
         self.plugins = plugins ?? (inMemory ? PluginManager(ephemeral: true) : PluginManager.shared)
+        self.library.historyPolicy = settings.historyPolicy
 
         let resolvedVaultID: String
         if let requested = initialVaultID, library.vault(requested) != nil {
@@ -184,8 +211,20 @@ final class AppModel: ObservableObject {
         self.activeVaultID = resolvedVaultID
         self.settings.bind(to: resolvedVaultID)
 
+        for note in self.library.notes {
+            self.windowNoteHashes[note.id] = NoteHistoryHash.computeNoteHash(note)
+        }
+
         self.libraryCancellable = self.library.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
+        }
+        self.settingsCancellable = Publishers.CombineLatest3(
+            self.settings.$historyMaxAgeDays,
+            self.settings.$historyMaxCountPerNote,
+            self.settings.$historyMaxTotalMB
+        ).sink { [weak self] days, count, mb in
+            guard let self else { return }
+            self.library.historyPolicy = SettingsStore.historyPolicy(days: days, count: count, mb: mb)
         }
         if !inMemory {
             self.plugins.attach(model: self)
@@ -308,6 +347,7 @@ final class AppModel: ObservableObject {
     func bootstrapSession() {
         guard !sessionLoaded else { return }
         sessionLoaded = true
+        defer { flushPendingExternalOpensAndWarnings() }
 
         let session = library.readSession()
         if let requested = initialVaultID, library.vault(requested) != nil {
@@ -388,13 +428,79 @@ final class AppModel: ObservableObject {
         saveSession()
     }
 
+    func flushCrashWalNow() {
+        library.flushCrashWalNow()
+    }
+
     private func scheduleSave(_ id: String) {
-        library.scheduleSave(id, autoSave: settings.autoSave, fallbackNotebook: settings.newNoteNotebook)
+        library.scheduleSave(id,
+                             autoSave: settings.autoSave,
+                             fallbackNotebook: settings.newNoteNotebook,
+                             windowID: windowID)
     }
 
     @discardableResult
     func saveNoteNow(_ id: String) -> Bool {
-        library.saveNoteNow(id, fallbackNotebook: settings.newNoteNotebook)
+        if let current = note(id),
+           let conflict = library.checkConcurrentWindowEdit(
+               noteID: id,
+               windowID: windowID,
+               expectedBaseHash: windowNoteHashes[id],
+               proposedTitle: current.title,
+               proposedContent: current.content,
+               proposedTags: current.tags,
+               proposedProperties: current.properties
+           ) {
+            _ = conflict
+            showToast("检测到其他窗口并发修改，已保留双方版本等待处理", symbol: "exclamationmark.triangle")
+            historyRevisionTick &+= 1
+            return false
+        }
+        let ok = library.saveNoteNow(id, fallbackNotebook: settings.newNoteNotebook)
+        if ok {
+            syncWindowHash(for: id)
+            historyRevisionTick &+= 1
+        }
+        return ok
+    }
+
+    func syncWindowHash(for id: String) {
+        if let hash = library.noteHash(for: id) {
+            windowNoteHashes[id] = hash
+        }
+    }
+
+    func acknowledgeExternalEdit(for id: String) {
+        syncWindowHash(for: id)
+    }
+
+    func hasUnsavedDirty(_ id: String) -> Bool {
+        library.hasDirtyNote(id)
+    }
+
+    func effectiveSaveState(for noteID: String) -> SaveState {
+        if case .failed = saveState { return saveState }
+        if saveState == .saving, library.hasDirtyNote(noteID) { return .saving }
+        if library.hasDirtyNote(noteID) { return .unsaved }
+        if let noteSaved = library.noteLastSavedDate(for: noteID) {
+            return .saved(noteSaved)
+        }
+        if case .saved(let date) = saveState {
+            return .saved(date)
+        }
+        return .saved(library.lastSavedDate)
+    }
+
+    @discardableResult
+    func saveNoteWithFeedback(_ id: String) -> Bool {
+        let ok = saveNoteNow(id)
+        if ok {
+            let state = effectiveSaveState(for: id)
+            showToast(state.label, symbol: "checkmark.circle")
+        } else if case .failed(let msg) = saveState {
+            showToast(msg, symbol: "exclamationmark.triangle")
+        }
+        return ok
     }
 
     // MARK: Lookups
@@ -425,19 +531,26 @@ final class AppModel: ObservableObject {
 
     var activeVault: Vault? { vault(activeVaultID) ?? vaults.first }
 
+    func accessDate(for note: Note) -> Date {
+        library.accessDate(for: note)
+    }
+
     var visibleNotes: [Note] {
-        notes.filter { note in
+        let connected = unconnectedOnly ? connectedNoteIDs() : []
+        let trimmedSearch = searchText.trimmingCharacters(in: .whitespaces)
+        let filtered = notes.filter { note in
             guard !note.isTrashed, note.vaultID == activeVaultID else { return false }
             if favoritesOnly && !note.favorite { return false }
-            if !searchText.trimmingCharacters(in: .whitespaces).isEmpty {
-                return NoteSearch.matches(note, query: searchText)
+            if unconnectedOnly && connected.contains(note.id) { return false }
+            if !trimmedSearch.isEmpty {
+                return NoteSearch.matches(note, query: trimmedSearch)
             }
             return true
         }
-        .sorted { first, second in
-            if first.pinned != second.pinned { return first.pinned && !second.pinned }
-            return first.updatedAt > second.updatedAt
-        }
+        return NoteSearch.sortNotes(filtered,
+                                    mode: settings.sidebarSortMode,
+                                    accessedAt: library.noteAccessedAt,
+                                    pinnedFirst: true)
     }
 
     var notebookGroups: [NotebookGroup] {
@@ -458,6 +571,10 @@ final class AppModel: ObservableObject {
         notes.filter { !$0.isTrashed && $0.vaultID == activeVaultID }.count
     }
 
+    var unconnectedNoteCount: Int {
+        unconnectedNotes().count
+    }
+
     var allTags: [(tag: String, count: Int)] {
         var counts: [String: Int] = [:]
         for note in notes where !note.isTrashed && note.vaultID == activeVaultID {
@@ -467,10 +584,14 @@ final class AppModel: ObservableObject {
     }
 
     func recentNotes(limit: Int = 8) -> [Note] {
-        notes.filter { !$0.isTrashed && $0.vaultID == activeVaultID }
-            .sorted { $0.updatedAt > $1.updatedAt }
-            .prefix(limit)
-            .map { $0 }
+        let active = notes.filter { !$0.isTrashed && $0.vaultID == activeVaultID }
+        return Array(
+            NoteSearch.sortNotes(active,
+                                 mode: .accessed,
+                                 accessedAt: library.noteAccessedAt,
+                                 pinnedFirst: false)
+                .prefix(limit)
+        )
     }
 
     // MARK: Tabs
@@ -496,15 +617,24 @@ final class AppModel: ObservableObject {
     }
 
     func openNote(_ id: String, revealSidebar: Bool = true) {
-        guard let note = note(id) else { return }
+        guard let note = note(id) else {
+            showToast("无法打开笔记：目标文档不存在或已被移除", symbol: "exclamationmark.triangle")
+            return
+        }
         if note.vaultID != activeVaultID {
             setActiveVault(note.vaultID)
         }
+        syncWindowHash(for: id)
+        library.syncBaseFromNote(note, windowID: windowID)
+        library.recordNoteOpened(id)
         let tab = WorkspaceTab(kind: .note, refID: id)
         if !openTabs.contains(tab) { openTabs.append(tab) }
         selectedTabID = tab.id
         saveSession()
         plugins.notifyActiveLeafChanged()
+        if note.isTrashed {
+            showToast("已打开回收站中的笔记「\(note.displayTitle)」", symbol: "trash")
+        }
     }
 
     func openMap(_ id: String) {
@@ -539,17 +669,22 @@ final class AppModel: ObservableObject {
     }
 
     func presentSettings() {
+        trashVisible = false
         settingsVisible = true
     }
 
     func openTrash() {
         searchText = ""
+        settingsVisible = false
         trashVisible = true
     }
 
     func selectTab(_ id: String) {
         guard openTabs.contains(where: { $0.id == id }) else { return }
         selectedTabID = id
+        if let tab = openTabs.first(where: { $0.id == id }), tab.kind == .note {
+            syncWindowHash(for: tab.refID)
+        }
         saveSession()
         plugins.notifyActiveLeafChanged()
     }
@@ -646,51 +781,85 @@ final class AppModel: ObservableObject {
         return note
     }
 
-    func updateNoteContent(_ id: String, content: String) {
-        guard let index = notes.firstIndex(where: { $0.id == id }) else { return }
-        guard notes[index].content != content else { return }
-        notes[index].content = content
-        notes[index].updatedAt = Date()
+    private func applyNoteMutation(_ id: String,
+                                   saveImmediately: Bool = false,
+                                   mutate: (inout Note) -> Bool) -> Note? {
+        guard let index = notes.firstIndex(where: { $0.id == id }) else { return nil }
+        var candidate = notes[index]
+        guard mutate(&candidate) else { return nil }
+
+        if let conflict = library.checkConcurrentWindowEdit(
+            noteID: id,
+            windowID: windowID,
+            expectedBaseHash: windowNoteHashes[id],
+            proposedTitle: candidate.title,
+            proposedContent: candidate.content,
+            proposedTags: candidate.tags,
+            proposedProperties: candidate.properties
+        ) {
+            _ = conflict
+            showToast("检测到其他窗口并发修改「\(candidate.displayTitle)」，已保留双方版本", symbol: "exclamationmark.triangle")
+            historyRevisionTick &+= 1
+            return nil
+        }
+
+        candidate.updatedAt = Date()
+        notes[index] = candidate
+        windowNoteHashes[id] = NoteHistoryHash.computeNoteHash(candidate)
         scheduleSave(id)
-        plugins.notifyVaultModify(note: notes[index])
+        if saveImmediately {
+            _ = saveNoteNow(id)
+        }
+        return notes.first(where: { $0.id == id }) ?? candidate
+    }
+
+    func updateNoteContent(_ id: String, content: String) {
+        guard let updated = applyNoteMutation(id, mutate: { note in
+            guard note.content != content else { return false }
+            note.content = content
+            return true
+        }) else { return }
+        plugins.notifyVaultModify(note: updated)
     }
 
     func updateNoteTitle(_ id: String, title: String) {
-        guard let index = notes.firstIndex(where: { $0.id == id }) else { return }
-        let oldPath = notes[index].path
+        let oldPath = note(id)?.path ?? ""
         let clean = title.replacingOccurrences(of: "\n", with: " ")
-        guard notes[index].title != clean else { return }
-        notes[index].title = clean
-        notes[index].updatedAt = Date()
-        scheduleSave(id)
-        _ = saveNoteNow(id)
-        if oldPath != notes[index].path {
-            plugins.notifyVaultRename(note: notes[index], oldPath: oldPath)
+        guard let updated = applyNoteMutation(id, saveImmediately: true, mutate: { note in
+            guard note.title != clean else { return false }
+            note.title = clean
+            return true
+        }) else { return }
+        if oldPath != updated.path {
+            plugins.notifyVaultRename(note: updated, oldPath: oldPath)
         } else {
-            plugins.notifyVaultModify(note: notes[index])
+            plugins.notifyVaultModify(note: updated)
         }
     }
 
     func updateNoteTags(_ id: String, tags: [String]) {
-        guard let index = notes.firstIndex(where: { $0.id == id }) else { return }
-        notes[index].tags = tags
-        notes[index].updatedAt = Date()
-        scheduleSave(id)
+        _ = applyNoteMutation(id, mutate: { note in
+            guard note.tags != tags else { return false }
+            note.tags = tags
+            return true
+        })
     }
 
     func updateNoteProperties(_ id: String, properties: [NoteProperty]) {
-        guard let index = notes.firstIndex(where: { $0.id == id }) else { return }
-        notes[index].properties = properties
-        notes[index].updatedAt = Date()
-        scheduleSave(id)
+        _ = applyNoteMutation(id, mutate: { note in
+            guard note.properties != properties else { return false }
+            note.properties = properties
+            return true
+        })
     }
 
     func updateNoteNotebook(_ id: String, notebook: String) {
-        guard let index = notes.firstIndex(where: { $0.id == id }), !notebook.isEmpty else { return }
-        notes[index].notebook = notebook
-        notes[index].updatedAt = Date()
-        scheduleSave(id)
-        _ = saveNoteNow(id)
+        guard !notebook.isEmpty else { return }
+        _ = applyNoteMutation(id, saveImmediately: true, mutate: { note in
+            guard note.notebook != notebook else { return false }
+            note.notebook = notebook
+            return true
+        })
     }
 
     func toggleFavorite(_ id: String) {
@@ -769,10 +938,129 @@ final class AppModel: ObservableObject {
             let url = vaultFolder(vault).appendingPathComponent(notes[index].path)
             try? FileManager.default.removeItem(at: url)
         }
+        library.deleteHistory(for: id)
+        windowNoteHashes.removeValue(forKey: id)
         notes.remove(at: index)
         openTabs.removeAll { $0.kind == .note && $0.refID == id }
         saveSession()
         showToast("已永久删除", symbol: "trash.slash")
+    }
+
+    // MARK: Version History, Diff, Conflict & Crash Recovery
+
+    var recoveredCrashDrafts: [CrashRecoveryDraft] { library.recoveredDrafts }
+    var pendingNoteConflicts: [String: NoteConflictInfo] { library.pendingConflicts }
+
+    func crashRecoveryDraft(for noteID: String) -> CrashRecoveryDraft? {
+        library.recoveredDrafts.first { $0.noteID == noteID }
+    }
+
+    func noteConflict(for noteID: String) -> NoteConflictInfo? {
+        library.pendingConflicts[noteID]
+    }
+
+    func openVersionHistory(for noteID: String? = nil) {
+        let targetID = noteID ?? currentNote?.id
+        guard let targetID, note(targetID) != nil else {
+            showToast("请先打开或选择一篇笔记", symbol: "clock.arrow.circlepath")
+            return
+        }
+        library.historyPolicy = settings.historyPolicy
+        historyTargetNoteID = targetID
+        historyVisible = true
+    }
+
+    func noteRevisions(for noteID: String) -> [NoteRevision] {
+        library.revisions(for: noteID)
+    }
+
+    @discardableResult
+    func createManualSnapshot(for noteID: String) -> Bool {
+        library.historyPolicy = settings.historyPolicy
+        let (rev, warning) = library.createManualSnapshot(for: noteID)
+        historyRevisionTick &+= 1
+        if let warning {
+            showToast(warning, symbol: "exclamationmark.triangle")
+            return false
+        }
+        if rev != nil {
+            showToast("已保存手动快照", symbol: "camera")
+            return true
+        }
+        return false
+    }
+
+    @discardableResult
+    func restoreNoteVersion(noteID: String, revisionID: String) -> Bool {
+        library.historyPolicy = settings.historyPolicy
+        let (ok, error) = library.restoreNoteRevision(noteID: noteID,
+                                                      revisionID: revisionID,
+                                                      fallbackNotebook: settings.newNoteNotebook)
+        historyRevisionTick &+= 1
+        if ok {
+            syncWindowHash(for: noteID)
+            if let restored = note(noteID) {
+                plugins.notifyVaultModify(note: restored)
+            }
+            showToast("已自动备份当前内容，并恢复到历史版本", symbol: "clock.arrow.circlepath")
+            return true
+        }
+        showToast(error ?? "恢复版本失败", symbol: "exclamationmark.triangle")
+        return false
+    }
+
+    @discardableResult
+    func resolveNoteConflict(_ noteID: String, mode: ConflictResolutionMode) -> Note? {
+        library.historyPolicy = settings.historyPolicy
+        let resolved = library.resolveConflict(noteID: noteID,
+                                               mode: mode,
+                                               fallbackNotebook: settings.newNoteNotebook,
+                                               windowID: windowID)
+        syncWindowHash(for: noteID)
+        historyRevisionTick &+= 1
+        if let resolved {
+            if mode == .saveConflictCopy {
+                openNote(resolved.id)
+                showToast("已保存冲突副本「\(resolved.displayTitle)」", symbol: "doc.on.doc")
+            } else {
+                showToast("冲突已解决并安全写入磁盘", symbol: "checkmark.circle")
+            }
+        } else {
+            showToast("冲突解决时写入失败，请检查磁盘空间或权限", symbol: "exclamationmark.triangle")
+        }
+        return resolved
+    }
+
+    func dismissCrashRecovery(_ noteID: String) {
+        library.dismissCrashRecovery(for: noteID)
+        _ = saveNoteNow(noteID)
+        syncWindowHash(for: noteID)
+        showToast("已保留恢复的草稿", symbol: "checkmark.circle")
+    }
+
+    func revertCrashRecovery(_ noteID: String) {
+        if library.revertCrashRecovery(for: noteID, fallbackNotebook: settings.newNoteNotebook) {
+            syncWindowHash(for: noteID)
+            historyRevisionTick &+= 1
+            showToast("已还原为崩溃前版本，异常草稿已保留在历史中", symbol: "arrow.uturn.backward")
+        } else {
+            library.dismissCrashRecovery(for: noteID)
+            showToast("已保留恢复内容", symbol: "checkmark.circle")
+        }
+    }
+
+    func historyUsageSummary() -> HistoryUsageSummary {
+        library.historyUsage()
+    }
+
+    @discardableResult
+    func pruneHistoryNow() -> HistoryUsageSummary {
+        library.historyPolicy = settings.historyPolicy
+        let summary = library.pruneHistoryNow()
+        historyRevisionTick &+= 1
+        dataStatusMessage = "历史快照已清理，当前保留 \(summary.revisionCount) 条快照（\(NoteHistoryHash.formatBytes(summary.totalBytes))）"
+        showToast("已清理过期及超限快照", symbol: "sparkles")
+        return summary
     }
 
     func emptyTrash() {
@@ -876,13 +1164,155 @@ final class AppModel: ObservableObject {
         return .green
     }
 
-    func openWikiLink(_ target: String) {
-        if let existing = resolveNote(target: target) {
+    func openWikiLink(_ rawTarget: String) {
+        let cleanRaw = rawTarget.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = cleanRaw.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+        let targetName = (parts.first ?? cleanRaw).trimmingCharacters(in: .whitespacesAndNewlines)
+        let anchorName = (parts.count > 1 ? parts[1] : "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if let existing = resolveNote(target: targetName) {
             openNote(existing.id)
+            if !anchorName.isEmpty,
+               let heading = existing.outline.first(where: { $0.title.caseInsensitiveCompare(anchorName) == .orderedSame }) {
+                pendingJump = JumpRequest(noteID: existing.id, line: heading.line, headingID: heading.id, token: UUID())
+            }
         } else {
-            let title = target.trimmingCharacters(in: .whitespaces)
+            let title = targetName.isEmpty ? cleanRaw : targetName
+            guard !title.isEmpty else { return }
             createNote(title: title, content: "# \(title)\n\n", notebook: settings.newNoteNotebook)
         }
+    }
+
+    func connectedNoteIDs(vaultID: String? = nil) -> Set<String> {
+        let scope = vaultID ?? activeVaultID
+        let scoped = notes.filter { !$0.isTrashed && $0.vaultID == scope }
+        var connected: Set<String> = []
+        for note in scoped {
+            for link in note.wikiLinks {
+                guard let target = resolveNote(target: link.target, preferredVaultID: scope),
+                      target.vaultID == scope, target.id != note.id else { continue }
+                connected.insert(note.id)
+                connected.insert(target.id)
+            }
+        }
+        return connected
+    }
+
+    func unconnectedNotes(vaultID: String? = nil) -> [Note] {
+        let scope = vaultID ?? activeVaultID
+        let connected = connectedNoteIDs(vaultID: scope)
+        let active = notes.filter { !$0.isTrashed && $0.vaultID == scope && !connected.contains($0.id) }
+        return NoteSearch.sortNotes(active, mode: settings.sidebarSortMode, accessedAt: library.noteAccessedAt, pinnedFirst: false)
+    }
+
+    func isNoteUnconnected(_ note: Note) -> Bool {
+        guard !note.isTrashed else { return false }
+        return !connectedNoteIDs(vaultID: note.vaultID).contains(note.id)
+    }
+
+    func linkTargetPreview(rawTarget: String, anchor: String? = nil, preferredVaultID: String? = nil) -> LinkTargetPreview {
+        let withoutAlias = rawTarget.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? rawTarget
+        let parts = withoutAlias.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+        let targetName = (parts.first ?? withoutAlias).trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedAnchor = (anchor ?? (parts.count > 1 ? parts[1] : "")).trimmingCharacters(in: .whitespacesAndNewlines)
+        if let target = resolveNote(target: targetName, preferredVaultID: preferredVaultID) {
+            let outgoing = outgoingLinks(for: target).filter { !$0.targetID.isEmpty }.count
+            let backlinkCount = backlinks(for: target).count
+            let snippet = MarkdownParser.previewSnippet(target.content,
+                                                        anchor: resolvedAnchor.isEmpty ? nil : resolvedAnchor,
+                                                        maxLength: 180)
+            return LinkTargetPreview(exists: true,
+                                     noteID: target.id,
+                                     title: target.displayTitle,
+                                     targetName: targetName,
+                                     anchor: resolvedAnchor,
+                                     notebook: target.notebook,
+                                     tags: target.tags,
+                                     snippet: snippet.isEmpty ? "（暂无正文摘要）" : snippet,
+                                     outgoingCount: outgoing,
+                                     backlinkCount: backlinkCount,
+                                     updatedAt: target.updatedAt,
+                                     lastAccessedAt: accessDate(for: target))
+        }
+        return LinkTargetPreview(exists: false,
+                                 noteID: nil,
+                                 title: targetName.isEmpty ? "未命名笔记" : targetName,
+                                 targetName: targetName,
+                                 anchor: resolvedAnchor,
+                                 notebook: settings.newNoteNotebook,
+                                 tags: [],
+                                 snippet: "当前工作区尚未找到同名笔记，可直接点击下方按钮创建并打开。",
+                                 outgoingCount: 0,
+                                 backlinkCount: 0,
+                                 updatedAt: nil,
+                                 lastAccessedAt: nil)
+    }
+
+    func suggestLinkCandidates(for note: Note, limit: Int = 5) -> [LinkCandidate] {
+        guard !note.isTrashed else { return [] }
+        let linkedIDs = Set(
+            outgoingLinks(for: note).map(\.targetID).filter { !$0.isEmpty } +
+            backlinks(for: note).map(\.sourceID).filter { !$0.isEmpty }
+        )
+        let noteTags = Set(note.tags)
+        let noteBodyLower = note.content.lowercased()
+        let noteTitleClean = note.displayTitle.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        var candidates: [LinkCandidate] = []
+        for other in notes where !other.isTrashed && other.vaultID == note.vaultID && other.id != note.id && !linkedIDs.contains(other.id) {
+            var score = 0
+            var reason = ""
+            let otherTitle = other.displayTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            if otherTitle.count >= 2 && noteBodyLower.contains(otherTitle.lowercased()) {
+                score += 60
+                reason = "正文中提及「\(otherTitle)」"
+            } else if noteTitleClean.count >= 2 && other.content.lowercased().contains(noteTitleClean) {
+                score += 45
+                reason = "对方正文中提及当前笔记"
+            }
+            let sharedTags = Array(noteTags.intersection(other.tags)).sorted()
+            if !sharedTags.isEmpty {
+                score += sharedTags.count * 25
+                if reason.isEmpty {
+                    let previewTags = sharedTags.prefix(2).map { "#\($0)" }.joined(separator: " ")
+                    reason = "共同标签 \(previewTags)"
+                }
+            }
+            if !note.notebook.isEmpty && other.notebook == note.notebook {
+                score += 15
+                if reason.isEmpty {
+                    reason = "同一笔记本「\(note.notebook)」"
+                }
+            }
+            if score > 0 {
+                candidates.append(LinkCandidate(noteID: other.id,
+                                                title: other.displayTitle,
+                                                notebook: other.notebook,
+                                                reason: reason,
+                                                score: score))
+            }
+        }
+        let ordered = candidates.sorted { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            let la = self.note(lhs.noteID).map { accessDate(for: $0) } ?? .distantPast
+            let ra = self.note(rhs.noteID).map { accessDate(for: $0) } ?? .distantPast
+            if la != ra { return la > ra }
+            return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
+        }
+        return Array(ordered.prefix(limit))
+    }
+
+    func insertWikiLink(_ targetTitle: String, into noteID: String) {
+        let cleanTitle = targetTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanTitle.isEmpty, let current = note(noteID) else { return }
+        if current.wikiLinks.contains(where: { $0.target.caseInsensitiveCompare(cleanTitle) == .orderedSame }) {
+            showToast("已存在到「\(cleanTitle)」的链接", symbol: "link")
+            return
+        }
+        let body = current.content
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        let separator = trimmed.isEmpty ? "" : (body.hasSuffix("\n") ? "\n" : "\n\n")
+        updateNoteContent(noteID, content: body + separator + "相关笔记：[[\(cleanTitle)]]")
+        showToast("已添加双链 [[\(cleanTitle)]]", symbol: "link.badge.plus")
     }
 
     // MARK: Search
@@ -890,21 +1320,32 @@ final class AppModel: ObservableObject {
     func quickResults(_ query: String) -> [QuickResult] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         var results: [QuickResult] = []
-        for note in notes where !note.isTrashed && note.vaultID == activeVaultID {
-            if trimmed.isEmpty {
-                results.append(QuickResult(id: note.id, title: note.displayTitle,
-                                           subtitle: "笔记 · \(note.notebook)",
-                                           kind: .note, symbol: note.type.symbol,
-                                           score: 500 - Int(note.updatedAt.timeIntervalSince1970 / 86400)))
-                continue
+        let scopedNotes = notes.filter { !$0.isTrashed && $0.vaultID == activeVaultID }
+        if trimmed.isEmpty {
+            let recent = NoteSearch.sortNotes(scopedNotes,
+                                              mode: .accessed,
+                                              accessedAt: library.noteAccessedAt,
+                                              pinnedFirst: false)
+            for (idx, note) in recent.enumerated() {
+                results.append(QuickResult(id: note.id,
+                                           title: note.displayTitle,
+                                           subtitle: "最近访问 · \(note.notebook)",
+                                           kind: .note,
+                                           symbol: note.type.symbol,
+                                           score: min(idx, 499)))
             }
-            let rank = NoteSearch.rank(note.displayTitle, trimmed)
-            let matches = NoteSearch.matches(note, query: trimmed)
-            guard rank >= 0 || matches else { continue }
-            results.append(QuickResult(id: note.id, title: note.displayTitle,
-                                       subtitle: "笔记 · \(note.notebook)",
-                                       kind: .note, symbol: note.type.symbol,
-                                       score: matches ? (rank < 0 ? 60 : rank) : rank))
+        } else {
+            for note in scopedNotes {
+                let rank = NoteSearch.rank(note.displayTitle, trimmed)
+                let matches = NoteSearch.matches(note, query: trimmed)
+                guard rank >= 0 || matches else { continue }
+                let snippet = note.snippet(matching: trimmed, maxLength: 58)
+                let subtitle = snippet.isEmpty ? "笔记 · \(note.notebook)" : "\(note.notebook) · \(snippet)"
+                results.append(QuickResult(id: note.id, title: note.displayTitle,
+                                           subtitle: subtitle,
+                                           kind: .note, symbol: note.type.symbol,
+                                           score: matches ? (rank < 0 ? 60 : rank) : rank))
+            }
         }
         for map in maps where map.trashedAt == nil && map.vaultID == activeVaultID {
             let rank = NoteSearch.rank(map.title, trimmed)
@@ -1168,10 +1609,41 @@ final class AppModel: ObservableObject {
         panel.canCreateDirectories = true
         if panel.runModal() == .OK, let url = panel.url {
             do {
-                try note.content.write(to: url, atomically: true, encoding: .utf8)
-                showToast("已导出 Markdown", symbol: "square.and.arrow.up")
+                try NoteCodec.encode(note).write(to: url, atomically: true, encoding: .utf8)
+                dataStatusMessage = "已导出 Markdown 到 \(url.lastPathComponent)"
+                showToast("已导出 Markdown：\(url.lastPathComponent)", symbol: "square.and.arrow.up")
             } catch {
+                dataStatusMessage = "导出 Markdown 失败：\(error.localizedDescription)"
                 showToast("导出失败：\(error.localizedDescription)", symbol: "exclamationmark.triangle")
+            }
+        }
+    }
+
+    func exportCurrentPDF() {
+        guard let note = currentNote else {
+            showToast("请先打开要导出的笔记", symbol: "doc.richtext")
+            return
+        }
+        _ = saveNoteNow(note.id)
+
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = sanitizeFileName(note.displayTitle) + ".pdf"
+        panel.allowedContentTypes = [.pdf]
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let destURL = panel.url else { return }
+
+        let vaultURL = vault(note.vaultID).map { library.vaultFolder($0) }
+        showToast("正在生成 PDF…", symbol: "doc.richtext")
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let data = try await LexiPdfExportService.shared.exportPDF(note: note, vaultURL: vaultURL, to: destURL)
+                let sizeKB = max(1, Int((Double(data.count) / 1024.0).rounded()))
+                self.dataStatusMessage = "已导出 PDF 到 \(destURL.lastPathComponent)（\(sizeKB) KB）"
+                self.showToast("已导出 PDF：\(destURL.lastPathComponent)", symbol: "checkmark.circle")
+            } catch {
+                self.dataStatusMessage = "导出 PDF 失败：\(error.localizedDescription)"
+                self.showToast("导出 PDF 失败：\(error.localizedDescription)", symbol: "exclamationmark.triangle")
             }
         }
     }
@@ -1189,8 +1661,13 @@ final class AppModel: ObservableObject {
         panel.prompt = "选择工作区文件夹"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         library.bindVaultFolder(vaultID: activeVaultID, folderURL: url)
-        dataStatusMessage = "工作区文件夹已设为 \(url.path)"
-        showToast("已绑定工作区文件夹", symbol: "folder")
+        if !library.loadWarnings.isEmpty {
+            dataStatusMessage = library.loadWarnings.joined(separator: "；")
+            showToast("工作区已切换（有 \(library.loadWarnings.count) 条读取提醒）", symbol: "exclamationmark.triangle")
+        } else {
+            dataStatusMessage = "工作区文件夹已设为 \(url.path)"
+            showToast("已绑定工作区文件夹", symbol: "folder")
+        }
     }
 
     func exportSettingsAndPlugins() {
@@ -1352,6 +1829,20 @@ final class AppModel: ObservableObject {
         guard panel.runModal() == .OK, let destURL = panel.url else { return }
 
         let folder = activeWorkspaceFolder
+        if let vault = activeVault {
+            let manifest: [String: Any] = [
+                "format": "LexiNote.Workspace",
+                "version": 1,
+                "vaultId": vault.id,
+                "vaultName": vault.name,
+                "description": vault.detail,
+                "exportedAt": LexiDate.iso(Date()),
+                "platform": "macos"
+            ]
+            if let data = try? JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted]) {
+                try? data.write(to: folder.appendingPathComponent("lexinote-manifest.json"), options: .atomic)
+            }
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
         process.arguments = ["-c", "-k", "--norsrc", folder.path, destURL.path]
@@ -1396,9 +1887,16 @@ final class AppModel: ObservableObject {
                 try entry.data.write(to: target, options: .atomic)
                 written += 1
             }
-            let registered = library.registerFolderWorkspace(name: destFolder.lastPathComponent, folderURL: destFolder)
+            var vaultName = destFolder.lastPathComponent
+            let manifestURL = destFolder.appendingPathComponent("lexinote-manifest.json")
+            if let mData = try? Data(contentsOf: manifestURL),
+               let mObj = try? JSONSerialization.jsonObject(with: mData) as? [String: Any],
+               let name = mObj["vaultName"] as? String, !name.trimmingCharacters(in: .whitespaces).isEmpty {
+                vaultName = name
+            }
+            let registered = library.registerFolderWorkspace(name: vaultName, folderURL: destFolder)
             setActiveVault(registered.id)
-            dataStatusMessage = "已解压 \(written) 个文件到「\(destFolder.lastPathComponent)」"
+            dataStatusMessage = "已解压 \(written) 个文件到「\(vaultName)」"
             showToast("已解压 \(written) 个文件并打开工作区", symbol: "folder.badge.plus")
         } catch {
             showToast("解压失败：\(error.localizedDescription)", symbol: "exclamationmark.triangle")
@@ -1415,13 +1913,40 @@ final class AppModel: ObservableObject {
         let dest = dir.appendingPathComponent("LexiNote-Markdown-\(LexiDate.dayKey())", isDirectory: true)
         var exported = 0
         do {
-            try FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
+            let fm = FileManager.default
+            try fm.createDirectory(at: dest, withIntermediateDirectories: true)
             for note in notes where !note.isTrashed && note.vaultID == activeVaultID {
                 let nbFolder = dest.appendingPathComponent(sanitizeFolder(note.notebook), isDirectory: true)
-                try FileManager.default.createDirectory(at: nbFolder, withIntermediateDirectories: true)
+                try fm.createDirectory(at: nbFolder, withIntermediateDirectories: true)
                 let fileURL = nbFolder.appendingPathComponent(sanitizeFileName(note.displayTitle) + ".md")
                 try NoteCodec.encode(note).write(to: fileURL, atomically: true, encoding: .utf8)
                 exported += 1
+            }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            let vaultMaps = maps.filter { $0.trashedAt == nil && $0.vaultID == activeVaultID }
+            if !vaultMaps.isEmpty {
+                let mapDir = dest.appendingPathComponent("思维导图", isDirectory: true)
+                try fm.createDirectory(at: mapDir, withIntermediateDirectories: true)
+                for m in vaultMaps {
+                    let url = mapDir.appendingPathComponent("\(m.id).mindmap.json")
+                    try encoder.encode(m).write(to: url, options: .atomic)
+                }
+            }
+            let vaultCanvases = canvases.filter { $0.vaultID == activeVaultID }
+            if !vaultCanvases.isEmpty {
+                let canvasDir = dest.appendingPathComponent("白板", isDirectory: true)
+                try fm.createDirectory(at: canvasDir, withIntermediateDirectories: true)
+                for board in vaultCanvases {
+                    let url = canvasDir.appendingPathComponent("\(board.id).canvas.json")
+                    try encoder.encode(board).write(to: url, options: .atomic)
+                }
+            }
+            let attachmentsSrc = activeWorkspaceFolder.appendingPathComponent("attachments", isDirectory: true)
+            if fm.fileExists(atPath: attachmentsSrc.path) {
+                let attachmentsDst = dest.appendingPathComponent("attachments", isDirectory: true)
+                try? fm.copyItem(at: attachmentsSrc, to: attachmentsDst)
             }
             dataStatusMessage = "已导出 \(exported) 篇 Markdown 笔记"
             showToast("已导出 \(exported) 篇 Markdown", symbol: "square.and.arrow.up")
@@ -1430,16 +1955,68 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func importBackupOrMarkdown() {
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
-        panel.allowedContentTypes = [UTType.json, UTType(filenameExtension: "md")].compactMap { $0 }
-        guard panel.runModal() == .OK else { return }
-        var importedNotes = 0
-        for url in panel.urls {
-            if url.pathExtension.lowercased() == "json",
-               let data = try? Data(contentsOf: url) {
+    func openExternalFiles(_ urls: [URL], sourceLabel: String = "打开文件") {
+        guard !urls.isEmpty else { return }
+        if !sessionLoaded {
+            pendingExternalOpenURLs.append(contentsOf: urls)
+            return
+        }
+        _ = ingestExternalFiles(urls, includeJsonBackups: true, sourceLabel: sourceLabel)
+    }
+
+    private func flushPendingExternalOpensAndWarnings() {
+        if !pendingExternalOpenURLs.isEmpty {
+            let queued = pendingExternalOpenURLs
+            pendingExternalOpenURLs.removeAll()
+            _ = ingestExternalFiles(queued, includeJsonBackups: true, sourceLabel: "打开文件")
+            return
+        }
+        if !library.loadWarnings.isEmpty {
+            dataStatusMessage = library.loadWarnings.joined(separator: "；")
+            showToast("工作区加载存在 \(library.loadWarnings.count) 条异常，详情见顶部横幅", symbol: "exclamationmark.triangle")
+        }
+    }
+
+    @discardableResult
+    func ingestExternalFiles(_ urls: [URL],
+                             includeJsonBackups: Bool,
+                             sourceLabel: String) -> (openedNotes: Int, failedCount: Int) {
+        var openedNotes = 0
+        var reusedNotes = 0
+        var openedExtras = 0
+        var skippedUnsupported: [String] = []
+        var failedFiles: [(name: String, reason: String)] = []
+        var firstNoteID: String?
+        var firstTitle: String = ""
+
+        let activeFolder = activeWorkspaceFolder.standardizedFileURL
+
+        for rawURL in urls {
+            let url = rawURL.standardizedFileURL
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer {
+                if scoped { url.stopAccessingSecurityScopedResource() }
+            }
+
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else {
+                failedFiles.append((url.lastPathComponent, "文件不存在或已移动"))
+                continue
+            }
+            if isDir.boolValue {
+                skippedUnsupported.append("\(url.lastPathComponent)（文件夹）")
+                continue
+            }
+
+            let ext = url.pathExtension.lowercased()
+            if ext == "json" && includeJsonBackups {
+                let data: Data
+                do {
+                    data = try Data(contentsOf: url)
+                } catch {
+                    failedFiles.append((url.lastPathComponent, friendlyReadError(error)))
+                    continue
+                }
                 struct Backup: Codable {
                     var version: Int?
                     var vaults: [Vault]?
@@ -1447,7 +2024,8 @@ final class AppModel: ObservableObject {
                     var maps: [MindMap]?
                     var canvases: [CanvasBoard]?
                 }
-                if let backup = try? JSONDecoder().decode(Backup.self, from: data) {
+                if let backup = try? JSONDecoder().decode(Backup.self, from: data),
+                   (backup.notes != nil || backup.vaults != nil || backup.maps != nil || backup.canvases != nil) {
                     var added = 0
                     for v in backup.vaults ?? [] where vault(v.id) == nil {
                         vaults.append(v)
@@ -1458,34 +2036,183 @@ final class AppModel: ObservableObject {
                         if vault(copy.vaultID) == nil { copy.vaultID = activeVaultID }
                         notes.append(copy)
                         _ = library.persist(copy, fallbackNotebook: settings.newNoteNotebook)
+                        if firstNoteID == nil {
+                            firstNoteID = copy.id
+                            firstTitle = copy.displayTitle
+                        }
                         added += 1
                     }
                     for m in backup.maps ?? [] where map(m.id) == nil {
-                        maps.append(m)
-                        saveMap(m)
+                        var copy = m
+                        if vault(copy.vaultID) == nil { copy.vaultID = activeVaultID }
+                        maps.append(copy)
+                        saveMap(copy)
+                        openedExtras += 1
                     }
+                    for c in backup.canvases ?? [] where canvases.first(where: { $0.id == c.id }) == nil {
+                        var copy = c
+                        if vault(copy.vaultID) == nil { copy.vaultID = activeVaultID }
+                        canvases.append(copy)
+                        library.saveCanvas(copy)
+                        openedExtras += 1
+                    }
+                    openedNotes += added
                     dataStatusMessage = "已从备份恢复 \(added) 篇笔记"
-                    showToast("已恢复备份（\(added) 篇笔记）", symbol: "arrow.down.doc")
-                    return
+                    continue
+                }
+                if var mindMap = try? JSONDecoder().decode(MindMap.self, from: data) {
+                    if let existing = map(mindMap.id) {
+                        openMap(existing.id)
+                    } else {
+                        mindMap.vaultID = activeVaultID
+                        maps.append(mindMap)
+                        saveMap(mindMap)
+                        openMap(mindMap.id)
+                    }
+                    openedExtras += 1
+                    if firstTitle.isEmpty { firstTitle = mindMap.title }
+                    continue
+                }
+                if var board = try? JSONDecoder().decode(CanvasBoard.self, from: data) {
+                    if let existing = canvas(board.id) {
+                        openCanvas(existing.id)
+                    } else {
+                        board.vaultID = activeVaultID
+                        canvases.append(board)
+                        library.saveCanvas(board)
+                        openCanvas(board.id)
+                    }
+                    openedExtras += 1
+                    if firstTitle.isEmpty { firstTitle = board.title }
+                    continue
+                }
+                failedFiles.append((url.lastPathComponent, "无法识别的 JSON 文件格式"))
+                continue
+            }
+
+            let supportedTextExts: Set<String> = ["md", "markdown", "txt", "text"]
+            guard supportedTextExts.contains(ext) else {
+                skippedUnsupported.append(url.lastPathComponent)
+                continue
+            }
+
+            // If the Markdown file already belongs to the active vault folder, open that note in-place.
+            if url.path.hasPrefix(activeFolder.path + "/") {
+                let rel = String(url.path.dropFirst(activeFolder.path.count + 1))
+                if let existing = notes.first(where: { $0.vaultID == activeVaultID && !$0.isTrashed && $0.path == rel }) {
+                    reusedNotes += 1
+                    if firstNoteID == nil {
+                        firstNoteID = existing.id
+                        firstTitle = existing.displayTitle
+                    }
+                    continue
                 }
             }
-            if let text = try? String(contentsOf: url, encoding: .utf8) {
-                let title = url.deletingPathExtension().lastPathComponent
-                createNote(title: title, content: text, notebook: "导入", open: importedNotes == 0)
-                importedNotes += 1
+
+            let text: String
+            do {
+                text = try String(contentsOf: url, encoding: .utf8)
+            } catch {
+                failedFiles.append((url.lastPathComponent, friendlyReadError(error)))
+                continue
+            }
+
+            let fallbackTitle = url.deletingPathExtension().lastPathComponent
+            if var decoded = NoteCodec.decode(text: text, relativePath: "", vaultID: activeVaultID, fallbackNotebook: "导入", fileDate: Date()) {
+                if decoded.title.isEmpty { decoded.title = fallbackTitle }
+                if note(decoded.id) != nil { decoded.id = "note-\(UUID().uuidString.lowercased())" }
+                decoded.path = ""
+                notes.insert(decoded, at: 0)
+                let saved = library.persist(decoded, fallbackNotebook: settings.newNoteNotebook)
+                if let idx = notes.firstIndex(where: { $0.id == saved.id }) {
+                    notes[idx] = saved
+                }
+                if firstNoteID == nil {
+                    firstNoteID = saved.id
+                    firstTitle = saved.displayTitle
+                }
+            } else {
+                let created = createNote(title: fallbackTitle, content: text, notebook: "导入", open: false)
+                if firstNoteID == nil {
+                    firstNoteID = created.id
+                    firstTitle = created.displayTitle
+                }
+            }
+            openedNotes += 1
+        }
+
+        if let firstNoteID {
+            openNote(firstNoteID)
+        }
+
+        let totalSucceeded = openedNotes + reusedNotes + openedExtras
+        if totalSucceeded > 0 && failedFiles.isEmpty && skippedUnsupported.isEmpty {
+            let summary: String
+            if totalSucceeded == 1 && !firstTitle.isEmpty {
+                summary = reusedNotes == 1 ? "已打开「\(firstTitle)」" : "已打开并导入「\(firstTitle)」"
+            } else if openedNotes == totalSucceeded {
+                summary = "已\(sourceLabel) \(openedNotes) 篇笔记"
+            } else {
+                summary = "已打开 \(totalSucceeded) 个文件"
+            }
+            dataStatusMessage = summary
+            showToast(summary, symbol: "checkmark.circle")
+        } else if totalSucceeded > 0 {
+            var details: [String] = []
+            if let first = failedFiles.first {
+                details.append("失败 \(failedFiles.count) 个（如 \(first.name)：\(first.reason)）")
+            }
+            if !skippedUnsupported.isEmpty {
+                details.append("已跳过 \(skippedUnsupported.count) 个不支持项")
+            }
+            let summary = "已打开 \(totalSucceeded) 个，\(details.joined(separator: "；"))"
+            dataStatusMessage = summary
+            showToast(summary, symbol: "exclamationmark.triangle")
+        } else if let firstFailed = failedFiles.first {
+            let summary = "无法打开「\(firstFailed.name)」：\(firstFailed.reason)"
+            dataStatusMessage = summary
+            showToast(summary, symbol: "exclamationmark.triangle")
+        } else if !skippedUnsupported.isEmpty {
+            let summary = "不支持打开：\(skippedUnsupported.prefix(2).joined(separator: "、"))"
+            dataStatusMessage = summary
+            showToast(summary, symbol: "exclamationmark.triangle")
+        }
+
+        return (totalSucceeded, failedFiles.count)
+    }
+
+    private func friendlyReadError(_ error: Error) -> String {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain {
+            switch nsError.code {
+            case NSFileReadNoSuchFileError: return "文件不存在"
+            case NSFileReadNoPermissionError: return "没有读取权限"
+            case NSFileReadInapplicableStringEncodingError: return "不是有效的 UTF-8 文本"
+            default: break
             }
         }
-        if importedNotes > 0 {
-            dataStatusMessage = "已导入 \(importedNotes) 篇 Markdown"
-            showToast("已导入 \(importedNotes) 篇笔记", symbol: "square.and.arrow.down")
-        }
+        return error.localizedDescription
+    }
+
+    func importBackupOrMarkdown() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [UTType.json, UTType(filenameExtension: "md"), UTType(filenameExtension: "markdown"), .plainText].compactMap { $0 }
+        guard panel.runModal() == .OK else { return }
+        _ = ingestExternalFiles(panel.urls, includeJsonBackups: true, sourceLabel: "导入")
     }
 
     func rebuildIndex() {
         library.rebuildIndex()
         let count = notes.filter { !$0.isTrashed && $0.vaultID == activeVaultID }.count
-        dataStatusMessage = "索引已重建，共 \(count) 篇笔记"
-        showToast("索引已重建（\(count) 篇笔记）", symbol: "arrow.triangle.2.circlepath")
+        if !library.loadWarnings.isEmpty {
+            dataStatusMessage = "索引已重建（\(count) 篇笔记），但有 \(library.loadWarnings.count) 个读取异常：\(library.loadWarnings.first ?? "")"
+            showToast("索引已重建，发现 \(library.loadWarnings.count) 个异常文件", symbol: "exclamationmark.triangle")
+        } else {
+            dataStatusMessage = "索引已重建，共 \(count) 篇笔记"
+            showToast("索引已重建（\(count) 篇笔记）", symbol: "arrow.triangle.2.circlepath")
+        }
     }
 
     func chooseStorageFolder() {
@@ -1504,18 +2231,27 @@ final class AppModel: ObservableObject {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
-        panel.allowedContentTypes = [.init(filenameExtension: "md")].compactMap { $0 }
+        panel.allowedContentTypes = [UTType(filenameExtension: "md"), UTType(filenameExtension: "markdown"), .plainText].compactMap { $0 }
         guard panel.runModal() == .OK else { return }
-        var imported = 0
-        for url in panel.urls {
-            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
-            let title = url.deletingPathExtension().lastPathComponent
-            createNote(title: title, content: text, notebook: "导入", open: imported == 0)
-            imported += 1
+        _ = ingestExternalFiles(panel.urls, includeJsonBackups: false, sourceLabel: "导入")
+    }
+
+    func insertAttachmentForCurrentNote() {
+        guard let note = currentNote, let vault = vault(note.vaultID) else { return }
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let imported = library.importAttachment(from: url, for: note, in: vault) else {
+            showToast("附件导入失败", symbol: "exclamationmark.triangle")
+            return
         }
-        if imported > 0 {
-            showToast("已导入 \(imported) 篇笔记", symbol: "square.and.arrow.down")
-        }
+        let snippet = imported.isImage
+            ? "![\(imported.fileName)](\(imported.relativePath))"
+            : "[\(imported.fileName)](\(imported.relativePath))"
+        let updatedContent = note.content.isEmpty ? snippet : "\(note.content.trimmingCharacters(in: .newlines))\n\n\(snippet)\n"
+        updateNoteContent(note.id, content: updatedContent)
+        showToast("已插入附件「\(imported.fileName)」", symbol: "paperclip")
     }
 
     func revealNoteInFinder(_ id: String) {

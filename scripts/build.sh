@@ -18,7 +18,7 @@ TMPDIR="$CACHE" xcrun swiftc \
   -target arm64-apple-macos14.0 \
   -disable-sandbox \
   -module-cache-path "$CACHE/modcache" \
-  -framework SwiftUI -framework AppKit -framework WebKit \
+  -framework SwiftUI -framework AppKit -framework WebKit -framework PDFKit -framework UniformTypeIdentifiers \
   $SOURCES \
   -o "$APP/Contents/MacOS/LexiNote"
 
@@ -26,6 +26,8 @@ cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/Assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 rm -rf "$APP/Contents/Resources/plugin-runtime"
 cp -R "$ROOT/Resources/plugin-runtime" "$APP/Contents/Resources/plugin-runtime"
+rm -rf "$APP/Contents/Resources/lexi-math"
+cp -R "$ROOT/Resources/lexi-math" "$APP/Contents/Resources/lexi-math"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
 echo "▸ Built $APP"

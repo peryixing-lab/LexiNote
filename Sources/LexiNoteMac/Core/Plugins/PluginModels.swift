@@ -43,7 +43,7 @@ enum PluginErrorCode {
     static let unknown = "E_UNKNOWN"
 }
 
-struct PluginHostError: Error {
+struct PluginHostError: Error, LocalizedError {
     let code: String
     let message: String
     let details: String
@@ -52,6 +52,10 @@ struct PluginHostError: Error {
         self.code = code
         self.message = message
         self.details = details
+    }
+
+    var errorDescription: String? {
+        message
     }
 }
 
@@ -172,6 +176,15 @@ enum PluginCapability: String, CaseIterable, Codable, Identifiable {
         if method.hasPrefix("ai.") { return aiInference.rawValue }
         if method.hasPrefix("views.") { return uiViews.rawValue }
         if method.hasPrefix("storage.") { return pluginStorage.rawValue }
+        return ""
+    }
+
+    static func requiredCapability(forEvent eventName: String) -> String {
+        let name = eventName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.hasPrefix("vault.") { return vaultRead.rawValue }
+        if name.hasPrefix("workspace.") { return workspaceViews.rawValue }
+        if name.hasPrefix("editor.") { return editorRead.rawValue }
+        if name.hasPrefix("metadata.") { return notesMetadataRead.rawValue }
         return ""
     }
 }
@@ -392,6 +405,17 @@ struct PluginRpcEvent: Encodable {
 
 // MARK: - Plugin AI Models
 
+struct PluginAiCompatConfig: Codable, Hashable {
+    var maxTokensField: String?
+    var thinkingFormat: String?
+    var supportsDeveloperRole: Bool?
+}
+
+struct PluginAiRetryPolicy: Codable, Hashable {
+    var mode: String?
+    var maxRetries: Int?
+}
+
 struct PluginAiProfile: Codable, Hashable, Identifiable {
     var profileId: String
     var name: String
@@ -400,8 +424,35 @@ struct PluginAiProfile: Codable, Hashable, Identifiable {
     var model: String
     var maxTokens: Int
     var temperature: Double
+    var credentialRef: String?
+    var compat: PluginAiCompatConfig?
+    var retryPolicy: PluginAiRetryPolicy?
 
     var id: String { profileId }
+
+    init(
+        profileId: String,
+        name: String,
+        provider: String,
+        baseUrl: String,
+        model: String,
+        maxTokens: Int,
+        temperature: Double,
+        credentialRef: String? = nil,
+        compat: PluginAiCompatConfig? = nil,
+        retryPolicy: PluginAiRetryPolicy? = nil
+    ) {
+        self.profileId = profileId
+        self.name = name
+        self.provider = provider
+        self.baseUrl = baseUrl
+        self.model = model
+        self.maxTokens = maxTokens
+        self.temperature = temperature
+        self.credentialRef = credentialRef
+        self.compat = compat
+        self.retryPolicy = retryPolicy
+    }
 }
 
 struct PluginAiBinding: Codable {

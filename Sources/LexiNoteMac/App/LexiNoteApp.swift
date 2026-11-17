@@ -79,7 +79,14 @@ final class WindowRegistry: ObservableObject {
                 self?.handleWillClose(window)
             }
         }
-        appObservers = [keyObserver, closeObserver]
+        let resignObserver = center.addObserver(forName: NSApplication.willResignActiveNotification,
+                                                object: nil,
+                                                queue: .main) { _ in
+            Task { @MainActor in
+                AppEnvironment.library.flushCrashWalNow()
+            }
+        }
+        appObservers = [keyObserver, closeObserver, resignObserver]
     }
 
     var currentModel: AppModel {
@@ -278,6 +285,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let passed = SelfTest.run(root: root)
             exit(passed ? 0 : 1)
         }
+        if let index = arguments.firstIndex(of: "--history-selftest"), index + 1 < arguments.count {
+            snapshotting = true
+            let root = URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
+            let passed = SelfTest.runHistorySafetyOnly(root: root)
+            exit(passed ? 0 : 1)
+        }
+        if let index = arguments.firstIndex(of: "--discovery-selftest"), index + 1 < arguments.count {
+            snapshotting = true
+            let root = URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
+            let passed = SelfTest.runDiscoveryFeaturesOnly(root: root)
+            exit(passed ? 0 : 1)
+        }
         if let index = arguments.firstIndex(of: "--window-shot"), index + 1 < arguments.count {
             let url = URL(fileURLWithPath: arguments[index + 1])
             let showEmpty = arguments.contains("--empty")
@@ -349,6 +368,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         !snapshotting
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard !snapshotting else { return }
+        Task { @MainActor in
+            WindowRegistry.shared.currentModel.openExternalFiles(urls, sourceLabel: "打开文件")
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -464,8 +490,12 @@ struct LexiMenuCommands: Commands {
             Divider()
             Button("导入 Markdown…") { CommandRouter.perform(.importMarkdown, model: model) }
                 .keyboardShortcut("o", modifiers: .command)
+            Button("导出为 PDF…") { CommandRouter.perform(.exportPDF, model: model) }
+                .keyboardShortcut("e", modifiers: [.command, .option])
+                .disabled(model.currentNote == nil)
             Button("导出当前 Markdown…") { CommandRouter.perform(.exportMarkdown, model: model) }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
+                .disabled(model.currentNote == nil)
             Button("导出完整备份…") { CommandRouter.perform(.exportBackup, model: model) }
         }
 
@@ -510,6 +540,9 @@ struct LexiMenuCommands: Commands {
             Divider()
             Button("生成副本") { CommandRouter.perform(.duplicateNote, model: model) }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
+                .disabled(model.currentNote == nil)
+            Button("版本历史与差异对比…") { CommandRouter.perform(.versionHistory, model: model) }
+                .keyboardShortcut("h", modifiers: [.command, .option])
                 .disabled(model.currentNote == nil)
             Button("在 Finder 中显示") { CommandRouter.perform(.revealInFinder, model: model) }
                 .keyboardShortcut("r", modifiers: [.command, .shift])

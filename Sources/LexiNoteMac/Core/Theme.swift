@@ -165,8 +165,14 @@ struct ThemePalette: Equatable {
 
     /// A subtle elevated fill for cards and hover rows.
     var subtleFill: Color { isDark ? workspaceSelection.opacity(0.55) : softSurface.opacity(0.7) }
-    var hoverFill: Color { isDark ? Color.white.opacity(0.055) : Color.black.opacity(0.035) }
+    var hoverFill: Color { isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.05) }
+    var pressedFill: Color { isDark ? Color.white.opacity(0.14) : Color.black.opacity(0.09) }
     var controlFill: Color { isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.045) }
+    var focusRing: Color { brand.opacity(0.40) }
+    var lineStrong: Color { isDark ? Color.white.opacity(0.16) : Color.black.opacity(0.14) }
+    var scrim: Color { isDark ? Color.black.opacity(0.52) : Color(hex: "#120F1B").opacity(0.28) }
+    var calloutBackground: Color { brandSoft.opacity(isDark ? 0.30 : 0.62) }
+    var calloutBorder: Color { brand.opacity(isDark ? 0.28 : 0.18) }
     var shadow: Color { Color.black.opacity(isDark ? 0.45 : 0.10) }
 }
 
@@ -354,14 +360,14 @@ extension EnvironmentValues {
 // MARK: - Shared metrics
 
 enum Metrics {
-    static let titlebarHeight: CGFloat = 50
-    static let railWidth: CGFloat = 56
+    static let titlebarHeight: CGFloat = 52
+    static let railWidth: CGFloat = 52
     static let sidebarMin: CGFloat = 212
     static let sidebarMax: CGFloat = 360
     static let inspectorMin: CGFloat = 240
     static let inspectorMax: CGFloat = 400
     static let editorToolbarHeight: CGFloat = 48
-    static let editorStatusHeight: CGFloat = 40
+    static let editorStatusHeight: CGFloat = 32
     static let contentMaxWidth: CGFloat = 760
     static let corner: CGFloat = 8
 }

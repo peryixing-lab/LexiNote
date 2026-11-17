@@ -71,6 +71,9 @@ final class SettingsStore: ObservableObject {
         static let interfaceLanguage = "lexi.mac.interfaceLanguage"
         static let hotkeyOverrides = "lexi.mac.hotkeyOverrides"
         static let customStoragePath = "lexi.mac.customStoragePath"
+        static let historyMaxAgeDays = "lexi.mac.historyMaxAgeDays"
+        static let historyMaxCountPerNote = "lexi.mac.historyMaxCountPerNote"
+        static let historyMaxTotalMB = "lexi.mac.historyMaxTotalMB"
         static let migrationFlag = "lexi.mac.workspacePrefsMigrated.v1"
         static let legacyPrefix = "lexi.mac."
     }
@@ -111,6 +114,7 @@ final class SettingsStore: ObservableObject {
         case dailyNotebook
         case newNoteNotebook
         case inspectorMode
+        case sidebarSortMode
     }
 
     private enum SyncScope {
@@ -150,7 +154,7 @@ final class SettingsStore: ObservableObject {
     @Published var useMaterial: Bool = true {
         didSet { writeScoped(useMaterial, key: .useMaterial) }
     }
-    @Published var sidebarWidth: Double = 248 {
+    @Published var sidebarWidth: Double = 244 {
         didSet { writeScoped(sidebarWidth, key: .sidebarWidth) }
     }
     @Published var inspectorWidth: Double = 280 {
@@ -252,6 +256,9 @@ final class SettingsStore: ObservableObject {
     @Published var inspectorMode: String = "outline" {
         didSet { writeScoped(inspectorMode, key: .inspectorMode) }
     }
+    @Published var sidebarSortMode: NoteSortMode = .updated {
+        didSet { writeScoped(sidebarSortMode.rawValue, key: .sidebarSortMode) }
+    }
 
     // Global app-level settings (not bound to individual workspaces)
     @Published var showWelcome: Bool = true {
@@ -272,6 +279,15 @@ final class SettingsStore: ObservableObject {
     }
     @Published var customStoragePath: String = "" {
         didSet { writeGlobal(customStoragePath, key: GlobalKey.customStoragePath) }
+    }
+    @Published var historyMaxAgeDays: Int = 30 {
+        didSet { writeGlobal(historyMaxAgeDays, key: GlobalKey.historyMaxAgeDays) }
+    }
+    @Published var historyMaxCountPerNote: Int = 30 {
+        didSet { writeGlobal(historyMaxCountPerNote, key: GlobalKey.historyMaxCountPerNote) }
+    }
+    @Published var historyMaxTotalMB: Int = 50 {
+        didSet { writeGlobal(historyMaxTotalMB, key: GlobalKey.historyMaxTotalMB) }
     }
 
     init(defaults: UserDefaults = .standard, vaultID: String = "default-vault") {
@@ -337,7 +353,7 @@ final class SettingsStore: ObservableObject {
             customBackgroundHex = defaults.string(forKey: Self.scopedKey(.customBackground, vaultID: v)) ?? "#F6F4FB"
             customForegroundHex = defaults.string(forKey: Self.scopedKey(.customForeground, vaultID: v)) ?? "#231B36"
             useMaterial = defaults.object(forKey: Self.scopedKey(.useMaterial, vaultID: v)) as? Bool ?? true
-            sidebarWidth = defaults.object(forKey: Self.scopedKey(.sidebarWidth, vaultID: v)) as? Double ?? 248
+            sidebarWidth = defaults.object(forKey: Self.scopedKey(.sidebarWidth, vaultID: v)) as? Double ?? 244
             inspectorWidth = defaults.object(forKey: Self.scopedKey(.inspectorWidth, vaultID: v)) as? Double ?? 280
             showSidebar = defaults.object(forKey: Self.scopedKey(.showSidebar, vaultID: v)) as? Bool ?? true
             showInspector = defaults.object(forKey: Self.scopedKey(.showInspector, vaultID: v)) as? Bool ?? true
@@ -372,6 +388,7 @@ final class SettingsStore: ObservableObject {
             dailyNotebook = defaults.string(forKey: Self.scopedKey(.dailyNotebook, vaultID: v)) ?? "每日笔记"
             newNoteNotebook = defaults.string(forKey: Self.scopedKey(.newNoteNotebook, vaultID: v)) ?? "笔记"
             inspectorMode = defaults.string(forKey: Self.scopedKey(.inspectorMode, vaultID: v)) ?? "outline"
+            sidebarSortMode = NoteSortMode(rawValue: defaults.string(forKey: Self.scopedKey(.sidebarSortMode, vaultID: v)) ?? "") ?? .updated
         }
 
         if scope == .global || scope == .all {
@@ -379,6 +396,9 @@ final class SettingsStore: ObservableObject {
             workspaceOpenMode = WorkspaceOpenMode(rawValue: defaults.string(forKey: GlobalKey.workspaceOpenMode) ?? "") ?? .ask
             interfaceLanguage = defaults.string(forKey: GlobalKey.interfaceLanguage) ?? "zh-Hans"
             customStoragePath = defaults.string(forKey: GlobalKey.customStoragePath) ?? ""
+            historyMaxAgeDays = defaults.object(forKey: GlobalKey.historyMaxAgeDays) as? Int ?? 30
+            historyMaxCountPerNote = defaults.object(forKey: GlobalKey.historyMaxCountPerNote) as? Int ?? 30
+            historyMaxTotalMB = defaults.object(forKey: GlobalKey.historyMaxTotalMB) as? Int ?? 50
             if let data = defaults.data(forKey: GlobalKey.hotkeyOverrides),
                let decoded = try? JSONDecoder().decode([String: [String]].self, from: data) {
                 hotkeyOverrides = decoded
@@ -418,19 +438,24 @@ final class SettingsStore: ObservableObject {
         syncObserver = NotificationCenter.default.addObserver(
             forName: Self.syncNotification,
             object: defaults,
-            queue: .main
+            queue: nil
         ) { [weak self] notification in
             guard let info = notification.userInfo,
                   (info["sender"] as? UInt) != sender,
                   let scope = info["scope"] as? String else { return }
             let changedVaultID = info["vaultID"] as? String
-            Task { @MainActor [weak self] in
+            let apply: @MainActor () -> Void = { [weak self] in
                 guard let self else { return }
                 if scope == "global" {
                     self.reload(scope: .global)
                 } else if scope == "workspace", changedVaultID == self.vaultID {
                     self.reload(scope: .workspace)
                 }
+            }
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { apply() }
+            } else {
+                Task { @MainActor in apply() }
             }
         }
     }
@@ -495,6 +520,19 @@ final class SettingsStore: ObservableObject {
         editorShowTitle = true
         editorDefaultTier = .simple
         defaultPresentation = .live
+    }
+
+    static func historyPolicy(days: Int, count: Int, mb: Int) -> HistoryRetentionPolicy {
+        HistoryRetentionPolicy(
+            maxAgeDays: days,
+            maxCountPerNote: count,
+            maxBytesPerNote: max(2 * 1024 * 1024, (mb * 1024 * 1024) / 10),
+            maxTotalBytes: mb * 1024 * 1024
+        ).clamped()
+    }
+
+    var historyPolicy: HistoryRetentionPolicy {
+        Self.historyPolicy(days: historyMaxAgeDays, count: historyMaxCountPerNote, mb: historyMaxTotalMB)
     }
 
     func markWelcomeSeen() {

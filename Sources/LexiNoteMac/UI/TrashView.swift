@@ -1,10 +1,10 @@
 import SwiftUI
 
-/// Trash is a modal panel on macOS, matching the desktop mockup. It is not a document tab.
+/// Trash content is presented by the same bottom-up overlay as workspace settings.
 struct TrashSheet: View {
     @ObservedObject var model: AppModel
     @ObservedObject var settings: SettingsStore
-    @Environment(\.dismiss) private var dismiss
+    var onClose: () -> Void = {}
     @Environment(\.lexiPalette) private var palette
     @State private var confirmEmpty = false
 
@@ -70,10 +70,11 @@ struct TrashSheet: View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("回收站")
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: LexiTokens.typeH3, weight: .semibold))
                     .foregroundStyle(palette.textPrimary)
                 Text("\(model.trashedNotes.count) 篇已删除笔记")
-                    .font(.system(size: 10.5))
+                    .font(.system(size: LexiTokens.typeMicro))
+                    .monospacedDigit()
                     .foregroundStyle(palette.textSecondary)
             }
             Spacer()
@@ -82,27 +83,29 @@ struct TrashSheet: View {
                     confirmEmpty = true
                 } label: {
                     Text("清空")
-                        .font(.system(size: 11.5, weight: .medium))
+                        .font(.system(size: LexiTokens.typeCaption, weight: .medium))
                         .foregroundStyle(palette.error)
-                        .padding(.horizontal, 13)
+                        .padding(.horizontal, LexiTokens.space4)
                         .frame(height: 28)
                         .background(Capsule().fill(palette.error.opacity(0.09)))
+                        .overlay(Capsule().strokeBorder(palette.error.opacity(0.22), lineWidth: 0.5))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LexiPressButtonStyle())
             }
             Button {
-                dismiss()
+                onClose()
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: LexiTokens.typeMicro, weight: .medium))
                     .foregroundStyle(palette.textSecondary)
                     .frame(width: 28, height: 28)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(LexiPressButtonStyle())
+            .keyboardShortcut(.cancelAction)
             .help("关闭")
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, LexiTokens.space6)
         .frame(height: 64)
         .background(palette.workspaceSidebar)
         .overlay(alignment: .bottom) {

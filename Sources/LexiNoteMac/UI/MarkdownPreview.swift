@@ -23,9 +23,75 @@ struct MarkdownInlineText: View {
     var struck: Bool = false
 
     var body: some View {
-        let attributed = MarkdownInlineBuilder.build(inlines, size: size, palette: palette,
-                                                    baseColor: color ?? palette.textPrimary, bold: bold, struck: struck)
-        Text(attributed)
+        if MarkdownInlineBuilder.containsMath(inlines) {
+            InlineMathRichText(
+                inlines: inlines,
+                size: size,
+                palette: palette,
+                baseColor: color ?? palette.textPrimary,
+                useSecondaryForMath: color == palette.textSecondary || struck,
+                bold: bold,
+                lineSpacing: lineSpacing,
+                alignment: alignment,
+                struck: struck
+            )
+        } else {
+            let attributed = MarkdownInlineBuilder.build(inlines, size: size, palette: palette,
+                                                         baseColor: color ?? palette.textPrimary, bold: bold, struck: struck)
+            Text(attributed)
+                .lineSpacing(lineSpacing)
+                .multilineTextAlignment(alignment)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+private struct InlineMathRichText: View {
+    @ObservedObject private var mathService = LexiMathService.shared
+    let inlines: [MDInline]
+    let size: CGFloat
+    let palette: ThemePalette
+    let baseColor: Color
+    let useSecondaryForMath: Bool
+    let bold: Bool
+    let lineSpacing: CGFloat
+    let alignment: TextAlignment
+    let struck: Bool
+
+    var body: some View {
+        let _ = mathService.revision
+        let segments = MarkdownInlineBuilder.buildSegments(
+            inlines,
+            size: size,
+            palette: palette,
+            baseColor: baseColor,
+            bold: bold,
+            struck: struck
+        )
+        let composed = segments.reduce(Text("")) { partial, segment in
+            switch segment {
+            case .attributed(let attr):
+                return partial + Text(attr)
+            case .math(let formula, let style):
+                let colorHex = (style.muted || useSecondaryForMath) ? palette.textSecondaryHex : palette.textPrimaryHex
+                switch mathService.lookup(latex: formula, displayMode: false, fontSize: style.size, colorHex: colorHex) {
+                case .ready(let bitmap):
+                    return partial + Text(Image(nsImage: bitmap.image)).baselineOffset(-bitmap.descent)
+                case .pending:
+                    var run = AttributedString(" \(LatexRenderer.unicode(formula)) ")
+                    run.font = .system(size: style.size + 1, design: .serif).italic()
+                    run.foregroundColor = palette.textSecondary
+                    return partial + Text(run)
+                case .failed:
+                    var run = AttributedString(" \(LatexRenderer.unicode(formula)) ")
+                    run.font = .system(size: max(11, style.size - 0.5), design: .monospaced)
+                    run.foregroundColor = palette.error
+                    return partial + Text(run)
+                }
+            }
+        }
+        composed
             .lineSpacing(lineSpacing)
             .multilineTextAlignment(alignment)
             .textSelection(.enabled)
@@ -33,13 +99,78 @@ struct MarkdownInlineText: View {
     }
 }
 
+enum MarkdownInlineSegment {
+    case attributed(AttributedString)
+    case math(String, InlineStyle)
+}
+
 enum MarkdownInlineBuilder {
+    static func containsMath(_ inlines: [MDInline]) -> Bool {
+        for inline in inlines {
+            switch inline {
+            case .math:
+                return true
+            case .bold(let c), .italic(let c), .strike(let c), .highlight(let c), .link(let c, _):
+                if containsMath(c) { return true }
+            default:
+                continue
+            }
+        }
+        return false
+    }
+
     static func build(_ inlines: [MDInline], size: CGFloat, palette: ThemePalette,
                       baseColor: Color, bold: Bool = false, struck: Bool = false) -> AttributedString {
         var result = AttributedString()
         var style = InlineStyle(size: size, bold: bold, strike: struck)
         append(inlines, style: &style, palette: palette, baseColor: baseColor, into: &result)
         return result
+    }
+
+    static func buildSegments(_ inlines: [MDInline], size: CGFloat, palette: ThemePalette,
+                              baseColor: Color, bold: Bool = false, struck: Bool = false) -> [MarkdownInlineSegment] {
+        var segments: [MarkdownInlineSegment] = []
+        var buffer = AttributedString()
+        var style = InlineStyle(size: size, bold: bold, strike: struck)
+        appendSegments(inlines, style: &style, palette: palette, baseColor: baseColor, buffer: &buffer, into: &segments)
+        if !buffer.characters.isEmpty {
+            segments.append(.attributed(buffer))
+        }
+        return segments
+    }
+
+    private static func appendSegments(_ inlines: [MDInline], style: inout InlineStyle, palette: ThemePalette,
+                                       baseColor: Color, buffer: inout AttributedString, into segments: inout [MarkdownInlineSegment]) {
+        for inline in inlines {
+            if case .math(let value) = inline {
+                if !buffer.characters.isEmpty {
+                    segments.append(.attributed(buffer))
+                    buffer = AttributedString()
+                }
+                segments.append(.math(value, style))
+                continue
+            }
+            switch inline {
+            case .bold(let children):
+                var next = style
+                next.bold = true
+                appendSegments(children, style: &next, palette: palette, baseColor: baseColor, buffer: &buffer, into: &segments)
+            case .italic(let children):
+                var next = style
+                next.italic = true
+                appendSegments(children, style: &next, palette: palette, baseColor: baseColor, buffer: &buffer, into: &segments)
+            case .strike(let children):
+                var next = style
+                next.strike = true
+                appendSegments(children, style: &next, palette: palette, baseColor: baseColor, buffer: &buffer, into: &segments)
+            case .highlight(let children):
+                var next = style
+                next.highlight = true
+                appendSegments(children, style: &next, palette: palette, baseColor: baseColor, buffer: &buffer, into: &segments)
+            default:
+                append([inline], style: &style, palette: palette, baseColor: baseColor, into: &buffer)
+            }
+        }
     }
 
     private static func font(for style: InlineStyle, design: Font.Design = .default) -> Font {
@@ -216,35 +347,48 @@ struct MarkdownPreview: View {
     var onOpenExternal: (URL) -> Void = { NSWorkspace.shared.open($0) }
     var liveEditing: Bool = false
     var onEditBlock: ((Int) -> Void)? = nil
+    var previewProvider: ((String, String?) -> LinkTargetPreview)? = nil
+    var documentHeader: AnyView? = nil
+    var limitContentWidth: Bool = true
 
     @State private var copiedBlock: String?
+    @State private var inlinePreviewTarget: LinkTargetPreview?
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView(.vertical) {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    if blocks.isEmpty {
-                        if showsEmptyHint {
-                            emptyHint
-                        }
-                    } else {
-                        ForEach(blocks) { block in
-                            LiveBlockContainer(palette: palette,
-                                               onEdit: liveEditing ? { onEditBlock?(block.line) } : nil) {
-                                BlockView(block: block, note: note, fontSize: fontSize, vaultURL: vaultURL,
-                                          copiedBlock: $copiedBlock,
-                                          onOpenTarget: onOpenTarget, onToggleTodo: onToggleTodo)
-                            }
-                            .id(blockAnchor(block))
-                        }
+                VStack(spacing: 0) {
+                    if let documentHeader {
+                        documentHeader
                     }
-                    Color.clear.frame(height: 36)
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        if blocks.isEmpty {
+                            if showsEmptyHint {
+                                emptyHint
+                            }
+                        } else {
+                            ForEach(blocks) { block in
+                                LiveBlockContainer(palette: palette,
+                                                   onEdit: liveEditing ? { onEditBlock?(block.line) } : nil) {
+                                    BlockView(block: block, note: note, fontSize: fontSize, vaultURL: vaultURL,
+                                              copiedBlock: $copiedBlock,
+                                              onOpenTarget: onOpenTarget, onToggleTodo: onToggleTodo)
+                                }
+                                .id(blockAnchor(block))
+                            }
+                        }
+                        if let previewProvider, !note.wikiLinks.isEmpty {
+                            wikiLinksQuickBar(links: note.wikiLinks, previewProvider: previewProvider)
+                                .padding(.top, 8)
+                        }
+                        Color.clear.frame(height: 36)
+                    }
+                    .padding(.horizontal, 56)
+                    .padding(.top, 10)
+                    .padding(.bottom, 28)
+                    .frame(maxWidth: limitContentWidth ? Metrics.contentMaxWidth + 112 : .infinity, alignment: .center)
+                    .frame(maxWidth: .infinity, alignment: .center)
                 }
-                .padding(.horizontal, 56)
-                .padding(.top, 10)
-                .padding(.bottom, 28)
-                .frame(maxWidth: 800, alignment: .center)
-                .frame(maxWidth: .infinity, alignment: .center)
             }
             .scrollIndicators(.automatic)
             .onChange(of: jumpTarget) { _, target in
@@ -253,11 +397,26 @@ struct MarkdownPreview: View {
                     proxy.scrollTo(target, anchor: .top)
                 }
             }
+            .popover(item: $inlinePreviewTarget, arrowEdge: .bottom) { preview in
+                LinkPreviewCard(preview: preview, onOpen: {
+                    inlinePreviewTarget = nil
+                    let full = preview.anchor.isEmpty ? preview.targetName : "\(preview.targetName)#\(preview.anchor)"
+                    onOpenTarget(full)
+                }, onDismiss: {
+                    inlinePreviewTarget = nil
+                })
+            }
             .environment(\.openURL, OpenURLAction { url in
                 if url.scheme == "lexi" {
                     let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
                     if let target = components?.queryItems?.first(where: { $0.name == "target" })?.value {
-                        onOpenTarget(target)
+                        let anchor = components?.queryItems?.first(where: { $0.name == "anchor" })?.value
+                        if NSEvent.modifierFlags.contains(.option), let previewProvider {
+                            inlinePreviewTarget = previewProvider(target, anchor)
+                        } else {
+                            let full = (anchor?.isEmpty == false) ? "\(target)#\(anchor!)" : target
+                            onOpenTarget(full)
+                        }
                     }
                     return .handled
                 }
@@ -265,6 +424,42 @@ struct MarkdownPreview: View {
                 return .handled
             })
         }
+    }
+
+    private func wikiLinksQuickBar(links: [WikiLink],
+                                   previewProvider: @escaping (String, String?) -> LinkTargetPreview) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "link")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(palette.brand)
+                Text("文内双链 · \(links.count)")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(palette.textSecondary)
+                Text("悬停或点击预览 · Option+点击正文链接同样有效")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(palette.textSecondary.opacity(0.75))
+            }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 260), spacing: 8)], alignment: .leading, spacing: 8) {
+                ForEach(Array(links.enumerated()), id: \.offset) { _, link in
+                    MarkdownWikiLinkChip(link: link,
+                                         previewProvider: { previewProvider(link.target, link.anchor) },
+                                         onOpen: {
+                                             let full = (link.anchor?.isEmpty == false) ? "\(link.target)#\(link.anchor!)" : link.target
+                                             onOpenTarget(full)
+                                         })
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(palette.softSurface.opacity(palette.isDark ? 0.45 : 0.72))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(palette.workspaceLine.opacity(0.7), lineWidth: 0.6)
+        )
     }
 
     private var emptyHint: some View {
@@ -290,6 +485,61 @@ struct MarkdownPreview: View {
             return "h-\(line)-\(level)"
         }
         return block.id
+    }
+}
+
+private struct MarkdownWikiLinkChip: View {
+    @Environment(\.lexiPalette) private var palette
+    let link: WikiLink
+    let previewProvider: () -> LinkTargetPreview
+    let onOpen: () -> Void
+    @State private var showPreview = false
+
+    var body: some View {
+        let preview = previewProvider()
+        Button {
+            showPreview.toggle()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: preview.exists ? "doc.text" : "plus.circle")
+                    .font(.system(size: 10))
+                    .foregroundStyle(preview.exists ? palette.brand : palette.warning)
+                Text(link.label)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(preview.exists ? palette.brandInk : palette.textSecondary)
+                    .lineLimit(1)
+                if let anchor = link.anchor, !anchor.isEmpty {
+                    Text("#\(anchor)")
+                        .font(.system(size: 10))
+                        .foregroundStyle(palette.textSecondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "eye")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(palette.textSecondary.opacity(0.8))
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 28)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(palette.surface)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(palette.workspaceLine.opacity(0.75), lineWidth: 0.6)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .modifier(LinkHoverPreviewModifier(previewProvider: previewProvider,
+                                           arrowEdge: .top,
+                                           onOpen: onOpen,
+                                           isPresented: $showPreview))
+        .onTapGesture(count: 2) {
+            showPreview = false
+            onOpen()
+        }
     }
 }
 
@@ -358,7 +608,7 @@ private struct BlockView: View {
             TableBlock(headers: headers, rows: rows, fontSize: max(11.5, bodySize - 3))
 
         case .math(let formula):
-            MathBlock(formula: formula, blockID: block.id, copiedBlock: $copiedBlock)
+            MathBlock(formula: formula, blockID: block.id, fontSize: max(16, bodySize * 1.12), copiedBlock: $copiedBlock)
 
         case .image(let alt, let source):
             ImageBlock(alt: alt, source: source, vaultURL: vaultURL)
@@ -501,14 +751,20 @@ private struct CalloutView: View {
                 }
             }
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, LexiTokens.space5)
         .padding(.vertical, 14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: LexiTokens.radiusMD, style: .continuous)
                 .fill(callout.kind == .note || callout.kind == .important
-                      ? palette.brandSoft.opacity(palette.isDark ? 0.28 : 0.68)
+                      ? palette.calloutBackground
                       : tint.opacity(palette.isDark ? 0.14 : 0.085))
+                .overlay(
+                    RoundedRectangle(cornerRadius: LexiTokens.radiusMD, style: .continuous)
+                        .stroke(callout.kind == .note || callout.kind == .important
+                                ? palette.calloutBorder
+                                : tint.opacity(palette.isDark ? 0.28 : 0.18), lineWidth: 1)
+                )
         )
     }
 }
@@ -559,10 +815,14 @@ private struct CodeBlockView: View {
             }
         }
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: LexiTokens.radiusMD, style: .continuous)
                 .fill(palette.softSurface.opacity(palette.isDark ? 0.5 : 0.62))
+                .overlay(
+                    RoundedRectangle(cornerRadius: LexiTokens.radiusMD, style: .continuous)
+                        .stroke(palette.workspaceLine.opacity(0.7), lineWidth: 0.5)
+                )
         )
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: LexiTokens.radiusMD, style: .continuous))
     }
 }
 
@@ -621,33 +881,76 @@ private struct TableBlock: View {
 
 private struct MathBlock: View {
     @Environment(\.lexiPalette) private var palette
+    @ObservedObject private var mathService = LexiMathService.shared
     let formula: String
     let blockID: String
+    var fontSize: CGFloat = 18
     @Binding var copiedBlock: String?
 
     var body: some View {
-        let converted = LatexRenderer.unicode(formula)
-        VStack(spacing: 6) {
-            Text(converted)
-                .font(.system(size: 19, weight: .regular, design: .serif))
-                .italic()
-                .foregroundStyle(palette.textPrimary)
-                .lineSpacing(5)
-                .multilineTextAlignment(.center)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity)
+        let _ = mathService.revision
+        let status = mathService.lookup(
+            latex: formula,
+            displayMode: true,
+            fontSize: fontSize,
+            colorHex: palette.textPrimaryHex
+        )
+
+        VStack(spacing: 8) {
+            switch status {
+            case .ready(let bitmap):
+                ViewThatFits(in: .horizontal) {
+                    Image(nsImage: bitmap.image)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        Image(nsImage: bitmap.image)
+                            .padding(.horizontal, 4)
+                    }
+                }
+            case .pending:
+                Text(LatexRenderer.unicode(formula))
+                    .font(.system(size: fontSize, weight: .regular, design: .serif))
+                    .italic()
+                    .foregroundStyle(palette.textSecondary)
+                    .lineSpacing(5)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+            case .failed(let message):
+                VStack(spacing: 6) {
+                    Text(formula)
+                        .font(.system(size: max(12.5, fontSize - 4), design: .monospaced))
+                        .foregroundStyle(palette.textPrimary)
+                        .textSelection(.enabled)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(spacing: 5) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10))
+                        Text("LaTeX 语法提示：\(message)")
+                            .font(.system(size: 11))
+                            .lineLimit(2)
+                    }
+                    .foregroundStyle(palette.error)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+
             if copiedBlock == blockID {
                 Text("LaTeX 已复制")
                     .font(.system(size: 9.5))
                     .foregroundStyle(palette.textSecondary)
             }
         }
-        .padding(.vertical, 18)
+        .padding(.vertical, 16)
         .padding(.horizontal, 16)
         .frame(maxWidth: .infinity)
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(palette.brandSoft.opacity(palette.isDark ? 0.26 : 0.52))
+            RoundedRectangle(cornerRadius: LexiTokens.radiusMD, style: .continuous)
+                .fill(palette.calloutBackground)
+                .overlay(
+                    RoundedRectangle(cornerRadius: LexiTokens.radiusMD, style: .continuous)
+                        .stroke(palette.calloutBorder, lineWidth: 0.75)
+                )
         )
         .help(formula)
         .contextMenu {
@@ -698,7 +1001,7 @@ private struct ImageBlock: View {
                     ProgressView().frame(maxWidth: .infinity, minHeight: 80)
                 }
             }
-        } else if let vaultURL, let image = NSImage(contentsOf: vaultURL.appendingPathComponent(source)) {
+        } else if let resolved = resolveLocalImageURL(), let image = NSImage(contentsOf: resolved) {
             Image(nsImage: image)
                 .resizable()
                 .scaledToFit()
@@ -707,6 +1010,22 @@ private struct ImageBlock: View {
         } else {
             placeholder
         }
+    }
+
+    private func resolveLocalImageURL() -> URL? {
+        guard let vaultURL else { return nil }
+        let root = vaultURL.standardizedFileURL
+        let clean = source.removingPercentEncoding ?? source
+        let direct = vaultURL.appendingPathComponent(clean).standardizedFileURL
+        if direct.path.hasPrefix(root.path + "/"), FileManager.default.fileExists(atPath: direct.path) {
+            return direct
+        }
+        let stripped = clean.replacingOccurrences(of: "^(\\.\\./)+", with: "", options: .regularExpression)
+        let fromAttachments = vaultURL.appendingPathComponent(stripped).standardizedFileURL
+        if fromAttachments.path.hasPrefix(root.path + "/"), FileManager.default.fileExists(atPath: fromAttachments.path) {
+            return fromAttachments
+        }
+        return nil
     }
 
     private var placeholder: some View {

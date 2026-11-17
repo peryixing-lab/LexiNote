@@ -165,7 +165,14 @@ final class PluginRpcDispatcher {
 
         // MARK: Events
         case "events.on":
-            let eventName = (params["event"] as? String ?? "")
+            let eventName = (params["event"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !eventName.isEmpty else {
+                throw PluginHostError(PluginErrorCode.invalidArgument, "事件名称不能为空")
+            }
+            let required = PluginCapability.requiredCapability(forEvent: eventName)
+            if !required.isEmpty {
+                try manager.requireCapability(pluginId: pluginId, capability: required)
+            }
             manager.subscribe(pluginId: pluginId, eventName: eventName)
             return true
 

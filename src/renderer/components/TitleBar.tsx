@@ -44,20 +44,20 @@ function WindowControls(): JSX.Element {
 }
 
 export function BrandBar(): JSX.Element {
-  const { state, derived } = useStore();
+  const { state } = useStore();
   return (
     <div className="brandbar">
       <img className="brand-logo" src={new URL('../assets/brand/lexi_logo.svg', import.meta.url).href} alt="知萤" />
-      {state.sidebarOpen ? (
-        state.settings.language === 'en' ? (
+      <div className={`brand-wordmark${state.sidebarOpen ? ' visible' : ''}`}>
+        {state.settings.language === 'en' ? (
           <span className="brand-name">LexiNote</span>
         ) : (
           <>
             <span className="brand-name">知萤</span>
             <span className="brand-sub">LexiNote</span>
           </>
-        )
-      ) : null}
+        )}
+      </div>
       <span className="brand-spacer" />
     </div>
   );

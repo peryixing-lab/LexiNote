@@ -1,4 +1,4 @@
-import type { NoteItem } from '../../shared/types';
+import type { NoteItem, NoteSortMode } from '../../shared/types';
 
 /**
  * Shared search grammar ported from core/LexiSearch.ets: plain text, tag:,
@@ -81,20 +81,68 @@ export function rankTitle(title: string, query: string): number {
   return 100 + gaps;
 }
 
-export function highlightSegments(text: string, query: string): { text: string; hit: boolean }[] {
-  const needle = query.trim();
-  if (!needle) return [{ text, hit: false }];
-  const segments: { text: string; hit: boolean }[] = [];
-  const lower = text.toLowerCase();
-  const lowerNeedle = needle.toLowerCase();
-  let cursor = 0;
-  let index = lower.indexOf(lowerNeedle);
-  while (index >= 0) {
-    if (index > cursor) segments.push({ text: text.slice(cursor, index), hit: false });
-    segments.push({ text: text.slice(index, index + needle.length), hit: true });
-    cursor = index + needle.length;
-    index = lower.indexOf(lowerNeedle, cursor);
+/** Extract positive query phrases/keywords used to highlight and anchor search results. */
+export function extractHighlightTerms(query: string): string[] {
+  const terms: string[] = [];
+  for (const term of parseQuery(query)) {
+    if (term.excluded || term.field === 'type') continue;
+    const raw = term.field === 'tag' ? term.text.replace(/^#/, '') : term.text;
+    const clean = raw.trim().toLowerCase();
+    if (clean.length > 0 && !terms.includes(clean)) terms.push(clean);
   }
-  if (cursor < text.length) segments.push({ text: text.slice(cursor), hit: false });
+  terms.sort((a, b) => b.length - a.length);
+  return terms;
+}
+
+export function highlightSegments(text: string, query: string): { text: string; hit: boolean }[] {
+  if (!text) return [];
+  const terms = extractHighlightTerms(query);
+  if (terms.length === 0) return [{ text, hit: false }];
+  const lower = text.toLowerCase();
+  const segments: { text: string; hit: boolean }[] = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    let bestStart = -1;
+    let bestLength = 0;
+    for (const term of terms) {
+      const idx = lower.indexOf(term, cursor);
+      if (idx >= 0 && (bestStart < 0 || idx < bestStart || (idx === bestStart && term.length > bestLength))) {
+        bestStart = idx;
+        bestLength = term.length;
+      }
+    }
+    if (bestStart < 0) {
+      segments.push({ text: text.slice(cursor), hit: false });
+      break;
+    }
+    if (bestStart > cursor) segments.push({ text: text.slice(cursor, bestStart), hit: false });
+    segments.push({ text: text.slice(bestStart, bestStart + bestLength), hit: true });
+    cursor = bestStart + bestLength;
+  }
   return segments;
+}
+
+export function noteAccessTimestamp(note: NoteItem): number {
+  return note.lastOpenedAt && note.lastOpenedAt > 0 ? note.lastOpenedAt : note.updatedAt;
+}
+
+export function sortNotes(
+  notes: NoteItem[],
+  mode: NoteSortMode = 'updated',
+  options?: { pinnedFirst?: boolean }
+): NoteItem[] {
+  const pinnedFirst = options?.pinnedFirst ?? false;
+  return notes.slice().sort((a, b) => {
+    if (pinnedFirst && a.pinned !== b.pinned) return Number(b.pinned) - Number(a.pinned);
+    if (mode === 'accessed') {
+      const diff = noteAccessTimestamp(b) - noteAccessTimestamp(a);
+      if (diff !== 0) return diff;
+      return b.updatedAt - a.updatedAt;
+    }
+    if (mode === 'created') return b.createdAt - a.createdAt;
+    if (mode === 'title') {
+      return (a.title || a.id).localeCompare(b.title || b.id, 'zh-Hans-CN');
+    }
+    return b.updatedAt - a.updatedAt;
+  });
 }

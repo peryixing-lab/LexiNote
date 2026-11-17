@@ -10,9 +10,11 @@ import React, {
 import type {
   AppSettings,
   CanvasBoard,
+  ImportedFile,
   LexiProject,
   MindMapDoc,
   NoteItem,
+  NoteSortMode,
   PersistedState,
   RuntimeInfo,
   VaultItem,
@@ -20,9 +22,15 @@ import type {
 } from '../../shared/types';
 import { defaultSettings, demoState, initialState } from '../core/seed';
 import { buildPalette, resolveDark, applyPalette } from '../core/theme';
-import { setActiveLanguage } from '../core/i18n';
-import { displayTitle, markdownToMindMapNodes, renameLinksInMarkdown } from '../core/markdown';
-import { buildNoteLinks, findUnlinkedMentions } from '../core/markdown';
+import { setActiveLanguage, tr as translate } from '../core/i18n';
+import { displayTitle, markdownToMindMapNodes, renameLinksInMarkdown, serializeFrontmatter } from '../core/markdown';
+import {
+  buildNoteLinks,
+  findUnconnectedNotes,
+  findUnlinkedMentions,
+  isNoteUnconnected
+} from '../core/markdown';
+import { buildPdfExportHtml } from '../core/exportPdfHtml';
 import type { ExtractedLink, UnlinkedMention } from '../core/markdown';
 import { DEFAULT_HOTKEYS } from '../core/commands';
 import { matchesSearch } from '../core/search';
@@ -30,6 +38,15 @@ import { LEXI_ENGLISH } from '../core/english';
 import { UI_ENGLISH } from '../core/ui-english';
 import type { PluginEditorDraft } from '../../shared/pluginTypes';
 import type { StateSyncPayload } from '../global';
+import {
+  clampHistoryPolicy,
+  computeSnapshotHash,
+  type ConflictResolutionMode,
+  type CrashRecoveryItem,
+  type HistoryRetentionPolicy,
+  type NoteConflictInfo,
+  sameNoteContent
+} from '../../shared/noteHistory';
 
 export type EditorMode = 'live' | 'source' | 'reading';
 export type Section = 1 | 2 | 4;
@@ -67,6 +84,8 @@ export interface AppStoreState {
   navIndex: number;
   searchText: string;
   favoritesOnly: boolean;
+  unconnectedOnly: boolean;
+  noteAccessedAt: Record<string, number>;
   closedFolders: string[];
   sidebarOpen: boolean;
   rightSidebarOpen: boolean;
@@ -81,7 +100,12 @@ export interface AppStoreState {
   helpOpen: boolean;
   workspacePrompt: { vaultId: string; name: string } | null;
   editorModes: Record<string, EditorMode>;
-  saveStatus: 'saved' | 'saving' | 'error';
+  saveStatus: 'saved' | 'unsaved' | 'saving' | 'error';
+  lastSavedAt: number | null;
+  lastSaveError: string;
+  historyModalNoteId: string;
+  noteConflicts: Record<string, NoteConflictInfo>;
+  crashRecoveries: CrashRecoveryItem[];
   toast: { id: number; text: string } | null;
   runtime: RuntimeInfo | null;
 }
@@ -92,6 +116,10 @@ export interface AppActions {
   selectTab: (id: string) => void;
   setSearchText: (text: string) => void;
   setFavoritesOnly: (value: boolean) => void;
+  setUnconnectedOnly: (value: boolean) => void;
+  setSidebarSort: (mode: NoteSortMode) => void;
+  setLibrarySort: (mode: NoteSortMode) => void;
+  insertWikiLink: (targetTitle: string, targetNoteId?: string) => boolean;
   toggleFolder: (folder: string) => void;
   setSidebarOpen: (open: boolean) => void;
   setRightSidebar: (open: boolean, mode?: RightSidebarMode) => void;
@@ -139,7 +167,14 @@ export interface AppActions {
   setHelpOpen: (open: boolean) => void;
   showToast: (text: string) => void;
   executeCommand: (commandId: string) => Promise<void>;
-  saveNow: () => Promise<void>;
+  saveNow: () => Promise<boolean>;
+  openNoteHistory: (noteId?: string) => void;
+  closeNoteHistory: () => void;
+  createNoteSnapshot: (noteId: string) => Promise<void>;
+  restoreNoteVersion: (noteId: string, revisionId: string) => Promise<void>;
+  resolveNoteConflict: (noteId: string, mode: ConflictResolutionMode) => Promise<void>;
+  dismissCrashRecovery: (noteId: string) => Promise<void>;
+  restoreCrashRecovery: (item: CrashRecoveryItem) => Promise<void>;
   exportVaultMarkdown: () => Promise<void>;
   chooseWorkspaceFolder: () => Promise<void>;
   exportWorkspaceZip: () => Promise<void>;
@@ -168,7 +203,9 @@ export interface AppStore {
   derived: {
     activeVault: VaultItem | undefined;
     activeProject: LexiProject | undefined;
+    hydratedNotes: NoteItem[];
     visibleNotes: NoteItem[];
+    unconnectedNotes: NoteItem[];
     folderNames: string[];
     currentNote: NoteItem | undefined;
     currentMap: MindMapDoc | undefined;
@@ -212,6 +249,8 @@ const EMPTY_STATE: AppStoreState = {
   navIndex: -1,
   searchText: '',
   favoritesOnly: false,
+  unconnectedOnly: false,
+  noteAccessedAt: {},
   closedFolders: [],
   sidebarOpen: true,
   rightSidebarOpen: false,
@@ -227,6 +266,11 @@ const EMPTY_STATE: AppStoreState = {
   workspacePrompt: null,
   editorModes: {},
   saveStatus: 'saved',
+  lastSavedAt: null,
+  lastSaveError: '',
+  historyModalNoteId: '',
+  noteConflicts: {},
+  crashRecoveries: [],
   toast: null,
   runtime: null
 };
@@ -268,6 +312,7 @@ function normalizeState(
   const settings: AppSettings = {
     ...defaultSettings(),
     ...raw.settings,
+    historyPolicy: clampHistoryPolicy(raw.settings?.historyPolicy),
     hotkeys: { ...DEFAULT_HOTKEYS, ...(raw.settings?.hotkeys ?? {}) }
   };
   const vaults = (Array.isArray(raw.vaults) ? raw.vaults : []).map(normalizeVault);
@@ -291,6 +336,17 @@ function normalizeState(
     : vaultNotes.some((note) => note.id === settings.lastNoteId)
       ? settings.lastNoteId
       : vaultNotes[0]?.id ?? '';
+  const noteAccessedAt: Record<string, number> = {};
+  if (raw.noteAccessedAt && typeof raw.noteAccessedAt === 'object') {
+    for (const [id, val] of Object.entries(raw.noteAccessedAt)) {
+      if (id && typeof val === 'number' && Number.isFinite(val) && val > 0) {
+        noteAccessedAt[id] = val;
+      }
+    }
+  }
+  if (selected && !noteAccessedAt[selected]) {
+    noteAccessedAt[selected] = Date.now();
+  }
   return {
     ...EMPTY_STATE,
     ready: true,
@@ -300,6 +356,7 @@ function normalizeState(
     maps: Array.isArray(raw.maps) ? raw.maps : [],
     canvases: Array.isArray(raw.canvases) ? raw.canvases : [],
     settings,
+    noteAccessedAt,
     activeVaultId: vaultId,
     selectedId: selected,
     tabs: selected ? [selected] : [],
@@ -320,7 +377,8 @@ function persisted(state: AppStoreState): PersistedState {
       ...state.settings,
       lastVaultId: state.activeVaultId,
       lastNoteId: state.selectedId
-    }
+    },
+    ...(Object.keys(state.noteAccessedAt).length > 0 ? { noteAccessedAt: state.noteAccessedAt } : {})
   };
 }
 
@@ -432,12 +490,22 @@ function mergeExternalState(
       notes.find((note) => note.vaultId === activeVaultId && note.trashedAt === 0)?.id ?? '';
   }
 
+  const mergedAccessed: Record<string, number> = { ...current.noteAccessedAt };
+  if (incoming.noteAccessedAt) {
+    for (const [id, val] of Object.entries(incoming.noteAccessedAt)) {
+      if (typeof val === 'number' && Number.isFinite(val) && val > 0) {
+        mergedAccessed[id] = Math.max(mergedAccessed[id] ?? 0, val);
+      }
+    }
+  }
+
   return {
     vaults,
     projects,
     notes,
     maps,
     canvases,
+    noteAccessedAt: mergedAccessed,
     settings:
       (incoming.settings.settingsUpdatedAt ?? 0) >= (current.settings.settingsUpdatedAt ?? 0)
         ? incoming.settings
@@ -464,10 +532,67 @@ export function AppProvider({ children }: { children: React.ReactNode }): JSX.El
   const initialised = useRef(false);
   const revisionRef = useRef(0);
   const dirtyRef = useRef<Map<string, DirtyFlag>>(new Map());
+  const noteBasesRef = useRef<Map<string, string>>(new Map());
+  const walTimersRef = useRef<Map<string, number>>(new Map());
 
   const patch = useCallback((value: Partial<AppStoreState> | ((current: AppStoreState) => Partial<AppStoreState>)) => {
     setState((current) => ({ ...current, ...(typeof value === 'function' ? value(current) : value) }));
   }, []);
+
+  const showToast = useCallback((text: string): void => {
+    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
+    const id = Date.now();
+    patch({ toast: { id, text: translate(text) } });
+    toastTimer.current = window.setTimeout(() => {
+      patch({ toast: null });
+    }, 2600);
+  }, [patch]);
+
+  const flushNoteWalNow = useCallback((note: NoteItem): void => {
+    if (!note || !note.id) return;
+    const baseHash = noteBasesRef.current.get(note.id) ?? '';
+    const entry = {
+      noteId: note.id,
+      vaultId: note.vaultId,
+      projectId: note.projectId || '',
+      title: note.title,
+      content: note.content,
+      tags: [...(note.tags ?? [])],
+      properties: (note.properties ?? []).map((p) => ({ key: p.key, value: p.value })),
+      baseHash,
+      baseUpdatedAt: note.updatedAt,
+      updatedAt: Date.now()
+    };
+    if (window.lexi?.history) {
+      void window.lexi.history.writeDraftWal(entry).catch(() => {});
+    } else {
+      try {
+        localStorage.setItem(`lexinote-wal:${note.id}`, JSON.stringify(entry));
+      } catch {
+        // Ignore storage quota errors in pure-web fallback.
+      }
+    }
+  }, []);
+
+  const queueNoteWal = useCallback((noteId: string): void => {
+    const existingTimer = walTimersRef.current.get(noteId);
+    if (existingTimer !== undefined) window.clearTimeout(existingTimer);
+    const timer = window.setTimeout(() => {
+      walTimersRef.current.delete(noteId);
+      const target = stateRef.current.notes.find((n) => n.id === noteId);
+      if (target) flushNoteWalNow(target);
+    }, 120);
+    walTimersRef.current.set(noteId, timer);
+  }, [flushNoteWalNow]);
+
+  const flushAllPendingWal = useCallback((): void => {
+    for (const [noteId, timer] of walTimersRef.current.entries()) {
+      window.clearTimeout(timer);
+      const target = stateRef.current.notes.find((n) => n.id === noteId);
+      if (target) flushNoteWalNow(target);
+    }
+    walTimersRef.current.clear();
+  }, [flushNoteWalNow]);
 
   const markDirty = useCallback((id: string, deleted = false): void => {
     const now = Date.now();
@@ -475,7 +600,8 @@ export function AppProvider({ children }: { children: React.ReactNode }): JSX.El
       if (now - entry.at > DIRTY_TTL_MS) dirtyRef.current.delete(key);
     }
     dirtyRef.current.set(id, { at: now, deleted });
-  }, []);
+    if (!deleted && !id.includes(':')) queueNoteWal(id);
+  }, [queueNoteWal]);
 
   // Boot: load persisted state (or seed), runtime info, and publish the language.
   useEffect(() => {
@@ -484,12 +610,14 @@ export function AppProvider({ children }: { children: React.ReactNode }): JSX.El
       let loaded: PersistedState | null = null;
       let runtime: RuntimeInfo | null = null;
       let revision = 0;
+      let crashRecoveries: CrashRecoveryItem[] = [];
       try {
         if (window.lexi) {
           const [envelope, info] = await Promise.all([window.lexi.loadState(), window.lexi.runtimeInfo()]);
           loaded = envelope.state;
           revision = envelope.revision;
           runtime = info;
+          crashRecoveries = await window.lexi.history.listCrashRecoveries().catch(() => []);
         } else {
           const raw = localStorage.getItem('lexinote-state');
           loaded = raw ? (JSON.parse(raw) as PersistedState) : null;
@@ -502,26 +630,71 @@ export function AppProvider({ children }: { children: React.ReactNode }): JSX.El
       revisionRef.current = revision;
       const base = loaded ?? (demoDataRequested() ? demoState() : initialState());
       const next = normalizeState(base, { requestedVaultId: requestedVaultIdFromLocation() });
+      noteBasesRef.current = new Map(next.notes.map((n) => [n.id, computeSnapshotHash(n)]));
       initialised.current = true;
-      setState((current) => ({ ...next, runtime, activeSection: current.activeSection }));
+      setState((current) => ({
+        ...next,
+        runtime,
+        crashRecoveries,
+        lastSavedAt: loaded ? Date.now() : null,
+        activeSection: current.activeSection
+      }));
+      if (crashRecoveries.length > 0) {
+        showToast(`检测到 ${crashRecoveries.length} 条异常退出恢复草稿，可查看或对比恢复`);
+      }
     }
     void boot();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [showToast]);
 
   useEffect(() => {
     const dispose = window.lexi?.onStateSync((payload: StateSyncPayload) => {
       if (!stateRef.current.ready) return;
       revisionRef.current = Math.max(revisionRef.current, payload.revision);
-      setState((current) => ({
-        ...current,
-        ...mergeExternalState(current, payload.state, dirtyRef.current)
-      }));
+      setState((current) => {
+        const merged = mergeExternalState(current, payload.state, dirtyRef.current);
+        const remoteById = new Map(payload.state.notes.map((n) => [n.id, n]));
+        const nextConflicts: Record<string, NoteConflictInfo> = { ...current.noteConflicts };
+        let newConflictDetected = false;
+
+        for (const mergedNote of merged.notes ?? current.notes) {
+          const remote = remoteById.get(mergedNote.id);
+          const dirtyEntry = dirtyRef.current.get(mergedNote.id);
+          const baseHash = noteBasesRef.current.get(mergedNote.id);
+          if (remote && freshDirty(dirtyEntry) && !dirtyEntry?.deleted) {
+            const remoteHash = computeSnapshotHash(remote);
+            const localHash = computeSnapshotHash(mergedNote);
+            if (remoteHash !== localHash && (!baseHash || remoteHash !== baseHash)) {
+              nextConflicts[mergedNote.id] = {
+                noteId: mergedNote.id,
+                detectedAt: Date.now(),
+                baseHash: baseHash ?? '',
+                localNote: mergedNote,
+                remoteNote: remote
+              };
+              newConflictDetected = true;
+              continue;
+            }
+          }
+          if (remote && !freshDirty(dirtyEntry)) {
+            noteBasesRef.current.set(remote.id, computeSnapshotHash(remote));
+            delete nextConflicts[remote.id];
+          }
+        }
+        if (newConflictDetected) {
+          showToast('检测到其他窗口同时修改了同一篇笔记，可在“更多 → 版本历史与对比”中处理冲突');
+        }
+        return {
+          ...current,
+          ...merged,
+          noteConflicts: nextConflicts
+        };
+      });
     });
     return () => dispose?.();
-  }, []);
+  }, [showToast]);
 
   useEffect(() => {
     setActiveLanguage(state.settings.language);
@@ -554,38 +727,91 @@ export function AppProvider({ children }: { children: React.ReactNode }): JSX.El
     document.documentElement.style.setProperty('--app-zoom', String(zoom));
   }, [state.settings.zoom]);
 
-  const persist = useCallback(async (showStatus = false): Promise<void> => {
+  const persist = useCallback(async (showStatus = false): Promise<boolean> => {
+    flushAllPendingWal();
     const snapshot = persisted(stateRef.current);
+    const noteBases: Record<string, string> = {};
+    for (const [id, hash] of noteBasesRef.current.entries()) noteBases[id] = hash;
+    const dirtyNoteIds = [...dirtyRef.current.keys()].filter((id) => !id.includes(':'));
     try {
       if (window.lexi) {
-        const result = await window.lexi.saveState(snapshot, revisionRef.current);
+        const result = await window.lexi.saveState(snapshot, revisionRef.current, { noteBases, dirtyNoteIds });
         revisionRef.current = Math.max(revisionRef.current, result.revision);
+        const conflictIds = new Set((result.conflicts ?? []).map((c) => c.noteId));
+        for (const note of snapshot.notes) {
+          if (!conflictIds.has(note.id)) {
+            noteBasesRef.current.set(note.id, computeSnapshotHash(note));
+            dirtyRef.current.delete(note.id);
+          }
+        }
+        if (result.conflicts && result.conflicts.length > 0) {
+          setState((current) => {
+            const nextConflicts = { ...current.noteConflicts };
+            for (const c of result.conflicts!) nextConflicts[c.noteId] = c;
+            return {
+              ...current,
+              noteConflicts: nextConflicts,
+              saveStatus: 'saved',
+              lastSavedAt: Date.now(),
+              lastSaveError: ''
+            };
+          });
+          showToast('检测到多窗口同时编辑同一篇笔记，请打开“版本历史与对比”处理冲突');
+          return true;
+        }
+        if (result.syncWarning || result.historyWarning) {
+          const warn = result.syncWarning || result.historyWarning || '';
+          patch({ saveStatus: 'saved', lastSavedAt: Date.now(), lastSaveError: warn });
+          if (showStatus) showToast(warn);
+          return true;
+        }
       } else {
         localStorage.setItem('lexinote-state', JSON.stringify(snapshot));
+        for (const note of snapshot.notes) {
+          noteBasesRef.current.set(note.id, computeSnapshotHash(note));
+          dirtyRef.current.delete(note.id);
+          try {
+            localStorage.removeItem(`lexinote-wal:${note.id}`);
+          } catch {
+            // Ignore cleanup errors.
+          }
+        }
       }
-      if (showStatus || stateRef.current.saveStatus === 'saving') {
-        patch({ saveStatus: 'saved' });
+      if (
+        showStatus ||
+        stateRef.current.saveStatus === 'saving' ||
+        stateRef.current.saveStatus === 'unsaved' ||
+        stateRef.current.saveStatus === 'error'
+      ) {
+        patch({ saveStatus: 'saved', lastSavedAt: Date.now(), lastSaveError: '' });
       }
+      return true;
     } catch (error) {
       console.error('save failed', error);
-      patch({ saveStatus: 'error' });
+      const errMsg = error instanceof Error && error.message ? error.message : '保存失败，当前编辑草稿已保留';
+      patch({ saveStatus: 'error', lastSaveError: errMsg });
+      return false;
     }
-  }, [patch]);
+  }, [flushAllPendingWal, patch, showToast]);
 
-  const flushSave = useCallback(async (): Promise<void> => {
+  const flushSave = useCallback(async (): Promise<boolean> => {
     if (saveTimer.current !== null) {
       window.clearTimeout(saveTimer.current);
       saveTimer.current = null;
     }
-    await persist(true);
-  }, [persist]);
+    patch({ saveStatus: 'saving' });
+    return persist(true);
+  }, [patch, persist]);
 
   const scheduleSave = useCallback((): void => {
     if (!initialised.current) return;
-    patch({ saveStatus: 'saving' });
+    if (dirtyRef.current.size > 0) {
+      patch({ saveStatus: 'unsaved' });
+    }
     if (saveTimer.current !== null) window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(() => {
       saveTimer.current = null;
+      patch({ saveStatus: 'saving' });
       void persist();
     }, 350);
   }, [patch, persist]);
@@ -602,12 +828,14 @@ export function AppProvider({ children }: { children: React.ReactNode }): JSX.El
     state.vaults,
     state.projects,
     state.settings,
+    state.noteAccessedAt,
     state.activeVaultId,
     state.activeProjectId
   ]);
 
   useEffect(() => {
     const listener = (): void => {
+      flushAllPendingWal();
       if (saveTimer.current !== null) {
         window.clearTimeout(saveTimer.current);
         saveTimer.current = null;
@@ -620,16 +848,7 @@ export function AppProvider({ children }: { children: React.ReactNode }): JSX.El
       window.removeEventListener('blur', listener);
       window.removeEventListener('beforeunload', listener);
     };
-  }, [persist]);
-
-  const showToast = useCallback((text: string): void => {
-    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
-    setState((current) => ({ ...current, toast: { id: Date.now(), text } }));
-    toastTimer.current = window.setTimeout(() => {
-      setState((current) => ({ ...current, toast: null }));
-      toastTimer.current = null;
-    }, 3200);
-  }, []);
+  }, [flushAllPendingWal, persist]);
 
   const updateSettings = useCallback((values: Partial<AppSettings>): void => {
     patch((current) => ({
@@ -651,12 +870,17 @@ export function AppProvider({ children }: { children: React.ReactNode }): JSX.El
   const openDocument = useCallback((id: string): void => {
     if (!id) return;
     const current = stateRef.current;
-    const known =
-      current.notes.some((note) => note.id === id) ||
-      current.maps.some((map) => `map:${map.id}` === id) ||
-      current.canvases.some((board) => `canvas:${board.id}` === id);
-    if (!known) {
-      showToast('笔记不存在或已被删除');
+    const noteMatch = current.notes.find((note) => note.id === id);
+    const mapMatch = id.startsWith('map:') ? current.maps.find((map) => map.id === id.substring(4)) : undefined;
+    const canvasMatch = id.startsWith('canvas:')
+      ? current.canvases.find((board) => board.id === id.substring(7))
+      : undefined;
+    if ((noteMatch && noteMatch.trashedAt > 0) || (mapMatch && mapMatch.trashedAt > 0)) {
+      showToast('该文件位于回收站，请先恢复后再打开');
+      return;
+    }
+    if (!noteMatch && !mapMatch && !canvasMatch) {
+      showToast('无法打开文档：该文件不存在或已被移除');
       return;
     }
     const existsInVault = current.notes.some((note) => note.id === id && note.vaultId === current.activeVaultId);
@@ -667,6 +891,7 @@ export function AppProvider({ children }: { children: React.ReactNode }): JSX.El
       : current.notes.find((note) => note.id === id)?.vaultId ??
         current.maps.find((map) => map.id === mapId)?.vaultId ??
         current.canvases.find((board) => board.id === canvasId)?.vaultId;
+    const now = noteMatch ? Date.now() : 0;
     setState((previous) => {
       const tabs = previous.tabs.includes(id) ? previous.tabs : previous.tabs.concat(id);
       return {
@@ -674,7 +899,10 @@ export function AppProvider({ children }: { children: React.ReactNode }): JSX.El
         tabs,
         activeSection: 1,
         activeVaultId: targetVault ?? previous.activeVaultId,
-        selectedId: id
+        selectedId: id,
+        ...(noteMatch
+          ? { noteAccessedAt: { ...previous.noteAccessedAt, [id]: now } }
+          : {})
       };
     });
     pushNavigation(id);
@@ -714,6 +942,7 @@ export function AppProvider({ children }: { children: React.ReactNode }): JSX.El
       tabs: previous.tabs.concat(id),
       activeSection: 1,
       selectedId: id,
+      noteAccessedAt: { ...previous.noteAccessedAt, [id]: now },
       editorModes: { ...previous.editorModes, [id]: type === 'quick' ? 'source' : previous.settings.editorDefaultView }
     }));
     markDirty(id);
@@ -797,12 +1026,18 @@ export function AppProvider({ children }: { children: React.ReactNode }): JSX.El
   const deleteForever = useCallback((id: string): void => {
     setState((current) => ({ ...current, notes: current.notes.filter((note) => note.id !== id) }));
     markDirty(id, true);
+    void window.lexi?.history.deleteNoteHistory(id).catch(() => {});
     showToast('已永久删除');
   }, [markDirty, showToast]);
 
   const emptyTrash = useCallback((): void => {
     const current = stateRef.current;
-    for (const note of current.notes) if (note.trashedAt > 0) markDirty(note.id, true);
+    for (const note of current.notes) {
+      if (note.trashedAt > 0) {
+        markDirty(note.id, true);
+        void window.lexi?.history.deleteNoteHistory(note.id).catch(() => {});
+      }
+    }
     for (const map of current.maps) if (map.trashedAt > 0) markDirty(map.id, true);
     setState((previous) => ({
       ...previous,
@@ -1292,15 +1527,23 @@ export function AppProvider({ children }: { children: React.ReactNode }): JSX.El
     const vaultNotes = current.notes.filter((note) => note.vaultId === current.activeVaultId && note.trashedAt === 0);
     const files = vaultNotes.map((note) => ({
       name: `${displayTitle(note).replace(/[\\/:*?"<>|]/g, '-')}.md`,
-      content: note.content
+      content: serializeFrontmatter(note)
     }));
     const maps = current.maps.filter((map) => map.vaultId === current.activeVaultId && map.trashedAt === 0);
+    const canvases = current.canvases.filter((board) => board.vaultId === current.activeVaultId);
     const mapFolder = `${folder}/思维导图`;
+    const canvasFolder = `${folder}/白板`;
     const count = await window.lexi.exportMarkdown(files, folder);
     if (maps.length > 0) {
       await window.lexi.exportMarkdown(
-        maps.map((map) => ({ name: `${map.title.replace(/[\\/:*?"<>|]/g, '-')}.mindmap.json`, content: JSON.stringify(map, null, 2) })),
+        maps.map((map) => ({ name: `${map.id}.mindmap.json`, content: JSON.stringify(map, null, 2) })),
         mapFolder
+      );
+    }
+    if (canvases.length > 0) {
+      await window.lexi.exportMarkdown(
+        canvases.map((board) => ({ name: `${board.id}.canvas.json`, content: JSON.stringify(board, null, 2) })),
+        canvasFolder
       );
     }
     showToast(`已导出 ${count} 篇笔记`);
@@ -1354,7 +1597,13 @@ export function AppProvider({ children }: { children: React.ReactNode }): JSX.El
         tabs: [],
         activeTabId: ''
       }));
-      showToast(`已解压 ${res.fileCount} 个文件到「${res.folderName}」`);
+      if (res.warnings && res.warnings.length > 0) {
+        showToast(
+          `已解压 ${res.fileCount} 个文件到「${res.folderName}」，${res.warnings.length} 个文件读取异常：${res.warnings[0]}`
+        );
+      } else {
+        showToast(`已解压 ${res.fileCount} 个文件到「${res.folderName}」`);
+      }
     } catch (error) {
       showToast((error as Error).message || '解压失败');
     }
@@ -1383,72 +1632,191 @@ export function AppProvider({ children }: { children: React.ReactNode }): JSX.El
 
   const rebuildIndex = useCallback(async (): Promise<void> => {
     if (!window.lexi) return;
-    const vault = stateRef.current.vaults.find((v) => v.id === stateRef.current.activeVaultId);
-    if (!vault) return;
-    const folderPath = await window.lexi.resolveWorkspaceFolder(vault);
-    const scanned = await window.lexi.scanWorkspaceFolder(folderPath, vault.id);
-    setState((previous) => ({
-      ...previous,
-      notes: [...previous.notes.filter((n) => n.vaultId !== vault.id), ...scanned.notes],
-      maps: [...previous.maps.filter((m) => m.vaultId !== vault.id), ...scanned.maps],
-      canvases: [...previous.canvases.filter((c) => c.vaultId !== vault.id), ...scanned.canvases]
-    }));
-    showToast(`已重建 ${scanned.notes.length} 篇笔记索引`);
+    try {
+      const vault = stateRef.current.vaults.find((v) => v.id === stateRef.current.activeVaultId);
+      if (!vault) return;
+      const folderPath = await window.lexi.resolveWorkspaceFolder(vault);
+      const scanned = await window.lexi.scanWorkspaceFolder(folderPath, vault.id);
+      setState((previous) => ({
+        ...previous,
+        notes: [...previous.notes.filter((n) => n.vaultId !== vault.id), ...scanned.notes],
+        maps: [...previous.maps.filter((m) => m.vaultId !== vault.id), ...scanned.maps],
+        canvases: [...previous.canvases.filter((c) => c.vaultId !== vault.id), ...scanned.canvases]
+      }));
+      if (scanned.warnings && scanned.warnings.length > 0) {
+        showToast(
+          `已重建 ${scanned.notes.length} 篇笔记索引，${scanned.warnings.length} 个文件读取异常：${scanned.warnings[0]}`
+        );
+      } else {
+        showToast(`已重建 ${scanned.notes.length} 篇笔记索引`);
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : '索引扫描失败';
+      showToast(`重建索引失败：${reason}`);
+    }
   }, [showToast]);
+
+  const ingestImportedFiles = useCallback(
+    (files: ImportedFile[], mode: 'import' | 'open' = 'import'): void => {
+      if (!files.length) return;
+      const current = stateRef.current;
+      const existingNoteIds = new Set(current.notes.map((n) => n.id));
+      const existingMapIds = new Set(current.maps.map((m) => m.id));
+      const existingCanvasIds = new Set(current.canvases.map((c) => c.id));
+      const createdNotes: NoteItem[] = [];
+      const createdMaps: MindMapDoc[] = [];
+      const createdCanvases: CanvasBoard[] = [];
+      const failed: string[] = [];
+
+      for (const file of files) {
+        if (file.error) {
+          failed.push(`${file.name}（${file.error}）`);
+          continue;
+        }
+        if (file.parsedMap) {
+          const id = existingMapIds.has(file.parsedMap.id) ? newId('map') : file.parsedMap.id;
+          existingMapIds.add(id);
+          createdMaps.push({ ...file.parsedMap, id, vaultId: current.activeVaultId });
+          continue;
+        }
+        if (file.parsedCanvas) {
+          const id = existingCanvasIds.has(file.parsedCanvas.id) ? newId('canvas') : file.parsedCanvas.id;
+          existingCanvasIds.add(id);
+          createdCanvases.push({ ...file.parsedCanvas, id, vaultId: current.activeVaultId });
+          continue;
+        }
+        if (file.name.toLowerCase().endsWith('.json')) {
+          try {
+            const parsed = JSON.parse(file.content) as Partial<PersistedState> & { mindMaps?: MindMapDoc[] };
+            let importedAny = false;
+            if (Array.isArray(parsed.notes)) {
+              const restoredNotes = parsed.notes
+                .filter((note) => note && note.id && !existingNoteIds.has(note.id))
+                .map((note) => {
+                  existingNoteIds.add(note.id);
+                  return { ...note, vaultId: current.activeVaultId };
+                });
+              createdNotes.push(...restoredNotes);
+              importedAny = true;
+            }
+            const rawMaps = Array.isArray(parsed.maps) ? parsed.maps : Array.isArray(parsed.mindMaps) ? parsed.mindMaps : [];
+            if (rawMaps.length > 0) {
+              const restoredMaps = rawMaps
+                .filter((m) => m && m.id && !existingMapIds.has(m.id))
+                .map((m) => {
+                  existingMapIds.add(m.id);
+                  return { ...m, vaultId: current.activeVaultId };
+                });
+              createdMaps.push(...restoredMaps);
+              importedAny = true;
+            }
+            if (Array.isArray(parsed.canvases)) {
+              const restoredCanvases = parsed.canvases
+                .filter((c) => c && c.id && !existingCanvasIds.has(c.id))
+                .map((c) => {
+                  existingCanvasIds.add(c.id);
+                  return { ...c, vaultId: current.activeVaultId };
+                });
+              createdCanvases.push(...restoredCanvases);
+              importedAny = true;
+            }
+            if (importedAny) continue;
+          } catch {
+            // Not a LexiNote backup; import it as a note below.
+          }
+        }
+        if (file.parsedNote) {
+          const id = existingNoteIds.has(file.parsedNote.id) ? newId('note') : file.parsedNote.id;
+          existingNoteIds.add(id);
+          createdNotes.push({
+            ...file.parsedNote,
+            id,
+            vaultId: current.activeVaultId,
+            projectId: current.activeProjectId
+          });
+          continue;
+        }
+        const title = file.name.replace(/\.(md|markdown|txt)$/i, '');
+        createdNotes.push({
+          id: newId('note'),
+          vaultId: current.activeVaultId,
+          projectId: current.activeProjectId,
+          title,
+          notebook: '外部导入',
+          content: file.content,
+          noteType: 'markdown',
+          editorLevel: 'pro',
+          tags: [],
+          properties: [],
+          pinned: false,
+          favorite: false,
+          trashedAt: 0,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          path: ''
+        });
+      }
+      const total = createdNotes.length + createdMaps.length + createdCanvases.length;
+      if (total === 0) {
+        if (failed.length > 0) {
+          showToast(translate('无法打开「{0}」：{1}', undefined, [files[0].name, files[0].error || '读取失败']));
+        } else {
+          showToast('没有可导入的内容');
+        }
+        return;
+      }
+      setState((previous) => ({
+        ...previous,
+        notes: createdNotes.concat(previous.notes),
+        maps: createdMaps.concat(previous.maps),
+        canvases: createdCanvases.concat(previous.canvases)
+      }));
+      for (const note of createdNotes) markDirty(note.id);
+      for (const map of createdMaps) markDirty(map.id);
+      for (const board of createdCanvases) markDirty(board.id);
+
+      const firstId =
+        createdNotes[0]?.id ??
+        (createdMaps[0] ? `map:${createdMaps[0].id}` : createdCanvases[0] ? `canvas:${createdCanvases[0].id}` : '');
+      if (firstId) window.setTimeout(() => openDocument(firstId), 0);
+
+      if (failed.length > 0) {
+        showToast(`已导入 ${total} 个文件，${failed.length} 个打开失败：${failed[0]}`);
+      } else if (mode === 'open' && total === 1) {
+        const openedTitle = createdNotes[0]?.title || createdMaps[0]?.title || createdCanvases[0]?.title || files[0].name;
+        showToast(translate('已打开文件「{0}」', undefined, [openedTitle]));
+      } else {
+        showToast(`已导入 ${createdNotes.length} 篇笔记、${createdMaps.length} 个导图、${createdCanvases.length} 个白板`);
+      }
+    },
+    [markDirty, openDocument, showToast]
+  );
 
   const importFiles = useCallback(async (): Promise<void> => {
     if (!window.lexi) {
       showToast('浏览器预览中不支持导入文件');
       return;
     }
-    const files = await window.lexi.importFiles();
-    if (!files.length) return;
-    const current = stateRef.current;
-    const created: NoteItem[] = [];
-    for (const file of files) {
-      if (file.name.toLowerCase().endsWith('.json')) {
-        try {
-          const parsed = JSON.parse(file.content) as PersistedState;
-          if (Array.isArray(parsed.notes)) {
-            const ids = new Set(current.notes.map((note) => note.id));
-            const restored = parsed.notes
-              .filter((note) => !ids.has(note.id))
-              .map((note) => ({ ...note, vaultId: current.activeVaultId }));
-            created.push(...restored);
-            continue;
-          }
-        } catch {
-          // Not a LexiNote backup; import it as a note below.
-        }
-      }
-      const title = file.name.replace(/\.(md|markdown|txt)$/i, '');
-      created.push({
-        id: newId('note'),
-        vaultId: current.activeVaultId,
-        projectId: current.activeProjectId,
-        title,
-        notebook: '外部导入',
-        content: file.content,
-        noteType: 'markdown',
-        editorLevel: 'pro',
-        tags: [],
-        properties: [],
-        pinned: false,
-        favorite: false,
-        trashedAt: 0,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        path: ''
-      });
+    try {
+      const files = await window.lexi.importFiles();
+      if (!files.length) return;
+      ingestImportedFiles(files, 'import');
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : '导入失败';
+      showToast(`打开文件失败：${reason}`);
     }
-    if (created.length === 0) {
-      showToast('没有可导入的笔记');
-      return;
-    }
-    setState((previous) => ({ ...previous, notes: created.concat(previous.notes) }));
-    showToast(`已导入 ${created.length} 篇笔记`);
-    openDocument(created[0].id);
-  }, [openDocument, showToast]);
+  }, [ingestImportedFiles, showToast]);
+
+  useEffect(() => {
+    if (!state.ready || !window.lexi?.externalFiles) return;
+    void window.lexi.externalFiles.consume().then((files) => {
+      if (files.length > 0) ingestImportedFiles(files, 'open');
+    }).catch(() => {});
+    const dispose = window.lexi.externalFiles.onOpen((files) => {
+      if (files.length > 0) ingestImportedFiles(files, 'open');
+    });
+    return () => dispose?.();
+  }, [ingestImportedFiles, state.ready]);
 
   const exportNote = useCallback(async (format: 'md' | 'txt'): Promise<void> => {
     const note = noteById(stateRef.current.selectedId);
@@ -1458,17 +1826,151 @@ export function AppProvider({ children }: { children: React.ReactNode }): JSX.El
     }
     if (!window.lexi) return;
     const name = `${displayTitle(note).replace(/[\\/:*?"<>|]/g, '-')}.${format}`;
-    const content = format === 'md' ? note.content : note.content.replace(/```[\s\S]*?```/g, '');
+    const content = format === 'md' ? serializeFrontmatter(note) : note.content.replace(/```[\s\S]*?```/g, '');
     const target = await window.lexi.exportText(content, name, [
       { name: format === 'md' ? 'Markdown' : '纯文本', extensions: [format] }
     ]);
     if (target) showToast('已导出');
   }, [showToast]);
 
-  const saveNow = useCallback(async (): Promise<void> => {
-    await flushSave();
-    showToast('已保存到本机');
+  const saveNow = useCallback(async (): Promise<boolean> => {
+    const ok = await flushSave();
+    if (ok) {
+      if (!stateRef.current.lastSaveError) showToast('已保存到本机');
+    } else {
+      showToast(stateRef.current.lastSaveError || '保存失败，当前编辑草稿已保留');
+    }
+    return ok;
   }, [flushSave, showToast]);
+
+  const openNoteHistory = useCallback((noteId?: string): void => {
+    const targetId = noteId && !noteId.includes(':') ? noteId : stateRef.current.selectedId;
+    if (!targetId || targetId.includes(':')) {
+      showToast('请先打开一篇笔记');
+      return;
+    }
+    patch({ historyModalNoteId: targetId });
+  }, [patch, showToast]);
+
+  const closeNoteHistory = useCallback((): void => {
+    patch({ historyModalNoteId: '' });
+  }, [patch]);
+
+  const createNoteSnapshot = useCallback(async (noteId: string): Promise<void> => {
+    const target = stateRef.current.notes.find((n) => n.id === noteId);
+    if (!target) {
+      showToast('未找到当前笔记');
+      return;
+    }
+    if (!window.lexi?.history) {
+      showToast('当前环境不支持独立快照存储');
+      return;
+    }
+    const res = await window.lexi.history.snapshot(target);
+    showToast(res.warning ? res.warning : '已保存手动版本快照');
+  }, [showToast]);
+
+  const restoreNoteVersion = useCallback(async (noteId: string, revisionId: string): Promise<void> => {
+    const currentNote = stateRef.current.notes.find((n) => n.id === noteId);
+    if (!currentNote) return;
+    if (!window.lexi?.history) {
+      showToast('当前环境不支持版本恢复');
+      return;
+    }
+    // Capture live editor draft if user currently has unsaved changes buffered in state.
+    const liveDraft = {
+      title: currentNote.title,
+      content: currentNote.content,
+      tags: [...(currentNote.tags ?? [])],
+      properties: (currentNote.properties ?? []).map((p) => ({ key: p.key, value: p.value }))
+    };
+    try {
+      const res = await window.lexi.history.restore({ noteId, revisionId, liveDraft });
+      revisionRef.current = Math.max(revisionRef.current, res.revision);
+      noteBasesRef.current.set(noteId, computeSnapshotHash(res.restoredNote));
+      dirtyRef.current.delete(noteId);
+      setState((prev) => {
+        const nextConflicts = { ...prev.noteConflicts };
+        delete nextConflicts[noteId];
+        return {
+          ...prev,
+          notes: prev.notes.map((n) => (n.id === noteId ? res.restoredNote : n)),
+          noteConflicts: nextConflicts,
+          crashRecoveries: prev.crashRecoveries.filter((item) => item.noteId !== noteId),
+          saveStatus: 'saved',
+          lastSaveError: ''
+        };
+      });
+      showToast(res.warning ? `已恢复历史版本（${res.warning}）` : '已恢复历史版本（原当前版本与草稿已自动备份）');
+    } catch (error) {
+      showToast(error instanceof Error && error.message ? error.message : '恢复历史版本失败');
+    }
+  }, [showToast]);
+
+  const resolveNoteConflict = useCallback(async (noteId: string, mode: ConflictResolutionMode): Promise<void> => {
+    const conflict = stateRef.current.noteConflicts[noteId];
+    const currentLocal = stateRef.current.notes.find((n) => n.id === noteId) ?? conflict?.localNote;
+    if (!currentLocal || !window.lexi?.history) return;
+    try {
+      const res = await window.lexi.history.resolveConflict({ noteId, mode, localNote: currentLocal });
+      revisionRef.current = Math.max(revisionRef.current, res.revision);
+      noteBasesRef.current.set(noteId, computeSnapshotHash(res.resolvedNote));
+      dirtyRef.current.delete(noteId);
+      setState((prev) => {
+        const nextConflicts = { ...prev.noteConflicts };
+        delete nextConflicts[noteId];
+        const updatedNotes = prev.notes.map((n) => (n.id === noteId ? res.resolvedNote : n));
+        const notes = res.copyNote && !updatedNotes.some((n) => n.id === res.copyNote!.id)
+          ? [res.copyNote, ...updatedNotes]
+          : updatedNotes;
+        if (res.copyNote) {
+          noteBasesRef.current.set(res.copyNote.id, computeSnapshotHash(res.copyNote));
+        }
+        return {
+          ...prev,
+          notes,
+          noteConflicts: nextConflicts,
+          tabs: res.copyNote ? [res.copyNote.id, ...prev.tabs] : prev.tabs,
+          selectedId: res.copyNote ? res.copyNote.id : prev.selectedId,
+          saveStatus: 'saved',
+          lastSaveError: ''
+        };
+      });
+      if (mode === 'save-copy') {
+        showToast('已生成冲突副本，另一版本留在当前笔记');
+      } else {
+        showToast('已解决冲突，另一版本已保留到历史快照');
+      }
+    } catch (error) {
+      showToast(error instanceof Error && error.message ? error.message : '冲突处理失败');
+    }
+  }, [showToast]);
+
+  const dismissCrashRecovery = useCallback(async (noteId: string): Promise<void> => {
+    setState((prev) => ({
+      ...prev,
+      crashRecoveries: prev.crashRecoveries.filter((item) => item.noteId !== noteId)
+    }));
+    await window.lexi?.history.dismissCrashRecovery(noteId).catch(() => {});
+  }, []);
+
+  const restoreCrashRecovery = useCallback(async (item: CrashRecoveryItem): Promise<void> => {
+    const existing = stateRef.current.notes.find((n) => n.id === item.noteId);
+    if (existing && !sameNoteContent(existing, item.draft) && window.lexi?.history) {
+      await window.lexi.history.snapshot(existing).catch(() => {});
+    }
+    setState((prev) => ({
+      ...prev,
+      notes: existing
+        ? prev.notes.map((n) => (n.id === item.noteId ? { ...item.draft, updatedAt: Date.now() } : n))
+        : [{ ...item.draft, updatedAt: Date.now() }, ...prev.notes],
+      crashRecoveries: prev.crashRecoveries.filter((c) => c.noteId !== item.noteId)
+    }));
+    markDirty(item.noteId);
+    await window.lexi?.history.dismissCrashRecovery(item.noteId).catch(() => {});
+    openDocument(item.noteId);
+    showToast('已将异常退出前的草稿恢复到编辑器');
+  }, [markDirty, openDocument, showToast]);
 
   const executeCommand = useCallback(async (commandId: string): Promise<void> => {
     const current = stateRef.current;
@@ -1643,6 +2145,9 @@ export function AppProvider({ children }: { children: React.ReactNode }): JSX.El
       case 'duplicate':
         duplicateNote(current.selectedId);
         return;
+      case 'history':
+        openNoteHistory(current.selectedId);
+        return;
       case 'copy-uri':
         if (window.lexi && current.selectedId) {
           await window.lexi.writeClipboard(`lexinote://open?noteId=${encodeURIComponent(current.selectedId)}`);
@@ -1681,17 +2186,45 @@ export function AppProvider({ children }: { children: React.ReactNode }): JSX.El
           showToast('请先打开一篇笔记');
           return;
         }
+        if (!window.lexi) {
+          showToast('浏览器预览中不支持直接导出 PDF');
+          return;
+        }
+        showToast(translate('正在导出 PDF…'));
+        try {
+          const html = buildPdfExportHtml(note, current.notes, { language: current.settings.language });
+          const res = await window.lexi.exportPdf({
+            html,
+            suggestedName: displayTitle(note)
+          });
+          if (res.canceled) {
+            showToast(translate('已取消 PDF 导出'));
+          } else {
+            showToast(translate('已导出 PDF：{0}', undefined, [res.fileName || `${displayTitle(note)}.pdf`]));
+          }
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : 'PDF 生成失败';
+          showToast(translate('PDF 导出失败：{0}', undefined, [reason]));
+        }
+        return;
+      }
+      case 'export-html': {
+        const note = noteById(current.selectedId);
+        if (!note) {
+          showToast('请先打开一篇笔记');
+          return;
+        }
         if (!window.lexi) return;
-        const html = `<!doctype html><html><head><meta charset="utf-8"><title>${displayTitle(note)}</title>
-<style>body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;max-width:760px;margin:48px auto;padding:0 24px;line-height:1.75;color:#1A1D24}h1{font-size:30px}h2{font-size:22px}pre{background:#F4F5F7;padding:12px;border-radius:8px;overflow:auto}blockquote{border-left:3px solid #6E44D9;margin:0;padding-left:14px;color:#535863}code{background:#F4F5F7;padding:2px 5px;border-radius:4px}</style>
-</head><body><pre style="white-space:pre-wrap;background:none;padding:0">${note.content
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')}</pre></body></html>`;
-        const target = await window.lexi.exportText(html, `${displayTitle(note).replace(/[\\/:*?"<>|]/g, '-')}.html`, [
-          { name: 'HTML', extensions: ['html'] }
-        ]);
-        if (target) showToast('已导出可打印的 HTML，可在浏览器中另存为 PDF');
+        const html = buildPdfExportHtml(note, current.notes, {
+          language: current.settings.language,
+          forBrowserHtml: true
+        });
+        const target = await window.lexi.exportText(
+          html,
+          `${displayTitle(note).replace(/[\\/:*?"<>|]/g, '-')}.html`,
+          [{ name: 'HTML', extensions: ['html'] }]
+        );
+        if (target) showToast('已导出 HTML');
         return;
       }
       case 'back':
@@ -1799,22 +2332,44 @@ export function AppProvider({ children }: { children: React.ReactNode }): JSX.El
     return () => window.removeEventListener('keydown', handler);
   }, [closeTab, createNote, executeCommand, openPalette, patch, saveNow, updateSettings]);
 
+  const hydratedNotes = useMemo(
+    () =>
+      state.notes.map((note) => ({
+        ...note,
+        lastOpenedAt: state.noteAccessedAt[note.id] ?? 0
+      })),
+    [state.notes, state.noteAccessedAt]
+  );
   const links = useMemo(() => buildNoteLinks(state.notes), [state.notes]);
   const mentions = useMemo(() => findUnlinkedMentions(state.notes, links), [state.notes, links]);
+  const unconnectedNotes = useMemo(
+    () => findUnconnectedNotes(hydratedNotes, links, state.activeVaultId),
+    [hydratedNotes, links, state.activeVaultId]
+  );
   const activeVault = state.vaults.find((vault) => vault.id === state.activeVaultId);
   const activeProject = state.projects.find((project) => project.id === state.activeProjectId);
   const visibleNotes = useMemo(
     () =>
-      state.notes.filter(
+      hydratedNotes.filter(
         (note) =>
           note.trashedAt === 0 &&
           note.vaultId === state.activeVaultId &&
           (!note.projectId || state.projects.some((project) => project.id === note.projectId)) &&
           (!state.activeProjectId || note.projectId === state.activeProjectId) &&
           (!state.favoritesOnly || note.favorite) &&
+          (!state.unconnectedOnly || isNoteUnconnected(note.id, links)) &&
           matchesSearch(note, state.searchText)
       ),
-    [state.notes, state.activeVaultId, state.activeProjectId, state.projects, state.favoritesOnly, state.searchText]
+    [
+      hydratedNotes,
+      links,
+      state.activeVaultId,
+      state.activeProjectId,
+      state.projects,
+      state.favoritesOnly,
+      state.unconnectedOnly,
+      state.searchText
+    ]
   );
   const folderNames = useMemo(() => {
     const names: string[] = [];
@@ -1860,7 +2415,31 @@ export function AppProvider({ children }: { children: React.ReactNode }): JSX.El
     closeTab,
     selectTab: openDocument,
     setSearchText: (text) => patch({ searchText: text }),
-    setFavoritesOnly: (value) => patch({ favoritesOnly: value }),
+    setFavoritesOnly: (value) => patch({ favoritesOnly: value, unconnectedOnly: value ? false : stateRef.current.unconnectedOnly }),
+    setUnconnectedOnly: (value) => patch({ unconnectedOnly: value, favoritesOnly: value ? false : stateRef.current.favoritesOnly }),
+    setSidebarSort: (mode) => updateSettings({ sidebarSort: mode }),
+    setLibrarySort: (mode) => updateSettings({ librarySort: mode }),
+    insertWikiLink: (targetTitle, targetNoteId) => {
+      const clean = targetTitle.trim();
+      if (!clean) return false;
+      const snippet = `[[${clean}]]`;
+      const activeId = targetNoteId || stateRef.current.selectedId;
+      if (!activeId) return false;
+      if (activeId === stateRef.current.selectedId && editorApi.current?.replaceSelectionText) {
+        const draft = editorApi.current.replaceSelectionText(snippet);
+        if (draft) {
+          showToast(tr('已插入双向链接 [[{0}]]', [clean]));
+          return true;
+        }
+      }
+      const targetNote = stateRef.current.notes.find((n) => n.id === activeId);
+      if (!targetNote) return false;
+      const body = targetNote.content.trimEnd();
+      const nextContent = body ? `${body}\n\n${snippet}` : snippet;
+      updateNote(targetNote.id, { content: nextContent });
+      showToast(tr('已关联 [[{0}]]', [clean]));
+      return true;
+    },
     toggleFolder: (folder) =>
       patch((current) => ({
         closedFolders: current.closedFolders.includes(folder)
@@ -1918,6 +2497,13 @@ export function AppProvider({ children }: { children: React.ReactNode }): JSX.El
     showToast,
     executeCommand,
     saveNow,
+    openNoteHistory,
+    closeNoteHistory,
+    createNoteSnapshot,
+    restoreNoteVersion,
+    resolveNoteConflict,
+    dismissCrashRecovery,
+    restoreCrashRecovery,
     exportVaultMarkdown,
     exportWorkspaceZip,
     importWorkspaceZip,
@@ -1955,7 +2541,9 @@ export function AppProvider({ children }: { children: React.ReactNode }): JSX.El
     derived: {
       activeVault,
       activeProject,
+      hydratedNotes,
       visibleNotes,
+      unconnectedNotes,
       folderNames,
       currentNote: selectedNote,
       currentMap,

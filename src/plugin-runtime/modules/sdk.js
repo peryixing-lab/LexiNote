@@ -648,6 +648,25 @@ function createContext(options) {
       if (typeof source.baseUrl === 'string') { params.baseUrl = source.baseUrl; }
       if (typeof source.model === 'string') { params.model = source.model; }
       if (typeof source.apiKey === 'string' && source.apiKey.length > 0) { params.apiKey = source.apiKey; }
+      if (typeof source.credentialRef === 'string') { params.credentialRef = source.credentialRef; }
+      if (source.clearApiKey === true) { params.clearApiKey = true; }
+      if (isPlainObject(source.compat)) {
+        const compat = {};
+        if (typeof source.compat.maxTokensField === 'string') { compat.maxTokensField = source.compat.maxTokensField; }
+        if (typeof source.compat.thinkingFormat === 'string') { compat.thinkingFormat = source.compat.thinkingFormat; }
+        if (typeof source.compat.supportsDeveloperRole === 'boolean') {
+          compat.supportsDeveloperRole = source.compat.supportsDeveloperRole;
+        }
+        params.compat = compat;
+      }
+      if (isPlainObject(source.retryPolicy)) {
+        const retryPolicy = {};
+        if (typeof source.retryPolicy.mode === 'string') { retryPolicy.mode = source.retryPolicy.mode; }
+        if (typeof source.retryPolicy.maxRetries === 'number' && isFinite(source.retryPolicy.maxRetries)) {
+          retryPolicy.maxRetries = Math.floor(source.retryPolicy.maxRetries);
+        }
+        params.retryPolicy = retryPolicy;
+      }
       if (typeof source.maxTokens === 'number' && isFinite(source.maxTokens)) {
         params.maxTokens = Math.floor(source.maxTokens);
       }

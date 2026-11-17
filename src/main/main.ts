@@ -1,18 +1,42 @@
-import { app, BrowserWindow, Menu, dialog, ipcMain, shell, clipboard, screen } from 'electron';
-import { promises as fs } from 'node:fs';
+import { app, BrowserWindow, Menu, dialog, ipcMain, net, protocol, shell, clipboard, screen } from 'electron';
+import { randomUUID } from 'node:crypto';
+import { existsSync, promises as fs } from 'node:fs';
 import path from 'node:path';
-import type { PersistedState, RuntimeInfo } from '../shared/types';
-import type { ImportedFile, MarkdownExportFile } from '../shared/types';
+import { pathToFileURL } from 'node:url';
+import type { ImportedAttachment, ImportedFile, MarkdownExportFile, NoteItem, PersistedState, RuntimeInfo } from '../shared/types';
+import {
+  cloneNote,
+  type ConflictResolutionMode,
+  type CrashRecoveryItem,
+  type DraftWalEntry,
+  type HistoryRetentionPolicy,
+  type HistoryUsageSummary,
+  type NoteConflictInfo,
+  type NoteRevision
+} from '../shared/noteHistory';
 import { codeOfPluginError, messageOfPluginError, type PluginInstallResult } from '../shared/pluginTypes';
+import { NoteHistoryStore, mergeWithConflictDetection } from './historyStore';
 import { PluginService } from './pluginService';
 import {
+  atomicWriteTextAsync,
   buildZipBuffer,
   collectWorkspaceFilesForZip,
   extractZipToFolder,
+  friendlySaveError,
+  normalizeCanvasBoard,
+  normalizeMindMapDoc,
+  parseNoteMarkdown,
   resolveVaultFolder,
   scanWorkspaceFolder,
   syncStateToWorkspaceFolders
 } from './workspaceFs';
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'lexi-asset',
+    privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true }
+  }
+]);
 
 const isDev = !!process.env.VITE_DEV_SERVER_URL;
 const demoData = process.env.LEXI_DEMO_DATA === '1';
@@ -32,6 +56,14 @@ function getPluginService(): PluginService {
     pluginServiceInstance = new PluginService(app.getPath('userData'));
   }
   return pluginServiceInstance;
+}
+
+let historyStoreInstance: NoteHistoryStore | null = null;
+function getHistoryStore(): NoteHistoryStore {
+  if (!historyStoreInstance) {
+    historyStoreInstance = new NoteHistoryStore(app.getPath('userData'));
+  }
+  return historyStoreInstance;
 }
 
 function broadcastPluginCatalog(): void {
@@ -60,6 +92,133 @@ const windows = new Set<BrowserWindow>();
 let primaryWindow: BrowserWindow | null = null;
 const closeAllowed = new Set<number>();
 const closeRequested = new Set<number>();
+const pendingPdfDocs = new Map<string, string>();
+const pendingExternalPaths: string[] = [];
+
+const OPENABLE_EXT_RE = /\.(md|markdown|txt|json)$/i;
+
+function resolveKatexDir(): string {
+  const packaged = path.join(__dirname, 'katex');
+  if (existsSync(packaged)) return packaged;
+  return path.resolve(__dirname, '../../node_modules/katex/dist');
+}
+
+function extractOpenableFileArgs(argv: string[]): string[] {
+  const found: string[] = [];
+  for (const arg of argv.slice(1)) {
+    if (!arg || arg.startsWith('-') || arg === '.') continue;
+    const candidate = path.resolve(arg);
+    if (OPENABLE_EXT_RE.test(candidate) && existsSync(candidate)) {
+      found.push(candidate);
+    }
+  }
+  return found;
+}
+
+async function readExternalImportedFiles(filePaths: string[]): Promise<ImportedFile[]> {
+  const files: ImportedFile[] = [];
+  for (const filePath of filePaths) {
+    const name = path.basename(filePath);
+    try {
+      const content = await fs.readFile(filePath, 'utf8');
+      const st = await fs.stat(filePath);
+      const entry: ImportedFile = { name, content, sourcePath: filePath };
+      if (/\.(md|markdown)$/i.test(name)) {
+        entry.parsedNote = parseNoteMarkdown(content, {
+          vaultId: '',
+          fallbackTitle: name.replace(/\.(md|markdown)$/i, ''),
+          fallbackNotebook: '外部导入',
+          filePath: '',
+          birthtimeMs: st.birthtimeMs,
+          mtimeMs: st.mtimeMs
+        });
+      } else if (/\.json$/i.test(name)) {
+        try {
+          const parsed = JSON.parse(content) as Record<string, unknown>;
+          if (parsed && typeof parsed === 'object') {
+            const mapDoc = normalizeMindMapDoc(parsed, '');
+            if (mapDoc) entry.parsedMap = mapDoc;
+            else {
+              const board = normalizeCanvasBoard(parsed, '');
+              if (board) entry.parsedCanvas = board;
+            }
+          }
+        } catch {
+          // Keep raw content for fallback handling.
+        }
+      }
+      files.push(entry);
+    } catch (error) {
+      files.push({
+        name,
+        content: '',
+        sourcePath: filePath,
+        error: friendlySaveError(error, '无法读取文件内容')
+      });
+    }
+  }
+  return files;
+}
+
+async function deliverExternalFiles(filePaths: string[]): Promise<void> {
+  if (filePaths.length === 0) return;
+  const target = primaryWindow && !primaryWindow.isDestroyed()
+    ? primaryWindow
+    : [...windows].find((candidate) => !candidate.isDestroyed()) ?? null;
+  if (!target || target.webContents.isLoading()) {
+    pendingExternalPaths.push(...filePaths);
+    return;
+  }
+  const files = await readExternalImportedFiles(filePaths);
+  if (files.length > 0 && !target.isDestroyed()) {
+    target.webContents.send('files:external-open', files);
+  }
+}
+
+async function renderHtmlToPdfBuffer(html: string): Promise<Buffer> {
+  const token = `${randomUUID()}.html`;
+  pendingPdfDocs.set(token, html);
+  const win = new BrowserWindow({
+    show: false,
+    width: 794,
+    height: 1123,
+    backgroundColor: '#FFFFFF',
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      spellcheck: false
+    }
+  });
+  try {
+    await win.loadURL(`lexi-asset://pdf-doc/${token}`);
+    await win.webContents.executeJavaScript(
+      `(async () => {
+        if (document.fonts && document.fonts.ready) {
+          await Promise.race([document.fonts.ready, new Promise((r) => setTimeout(r, 2500))]);
+        }
+        const imgs = Array.from(document.images || []);
+        await Promise.all(imgs.map((img) => {
+          if (img.complete) return Promise.resolve();
+          return new Promise((resolve) => {
+            const timer = setTimeout(resolve, 2500);
+            img.addEventListener('load', () => { clearTimeout(timer); resolve(); }, { once: true });
+            img.addEventListener('error', () => { clearTimeout(timer); resolve(); }, { once: true });
+          });
+        }));
+      })()`,
+      true
+    );
+    return await win.webContents.printToPDF({
+      printBackground: true,
+      pageSize: 'A4',
+      preferCSSPageSize: true
+    });
+  } finally {
+    pendingPdfDocs.delete(token);
+    if (!win.isDestroyed()) win.destroy();
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Shared library state. Every window saves a full snapshot; the main process
@@ -140,26 +299,62 @@ async function readStateFile(): Promise<PersistedState | null> {
   }
 }
 
+let masterBootRecovered = false;
 async function ensureMaster(): Promise<void> {
-  if (masterState) return;
-  const loaded = await readStateFile();
-  if (loaded) {
-    masterState = loaded;
-    dataRevision = 1;
+  if (!masterState) {
+    const loaded = await readStateFile();
+    if (loaded) {
+      masterState = loaded;
+      dataRevision = 1;
+    }
+  }
+  if (!masterBootRecovered) {
+    masterBootRecovered = true;
+    if (masterState) {
+      try {
+        const res = await getHistoryStore().recoverCrashDrafts(masterState, masterState.settings?.historyPolicy);
+        if (res.stateChanged) {
+          await writeMasterFileState(res.nextState);
+          masterState = res.nextState;
+          dataRevision += 1;
+        }
+      } catch (err) {
+        console.warn('Crash recovery scan failed', err);
+      }
+    }
   }
 }
 
-async function writeMasterFile(): Promise<void> {
-  if (!masterState) return;
+async function writeMasterFileState(
+  nextState: PersistedState,
+  options?: { skipWorkspaceSync?: boolean }
+): Promise<{ syncWarning?: string }> {
   const target = dataFile();
-  const temp = `${target}.tmp`;
-  await fs.mkdir(path.dirname(target), { recursive: true });
-  await fs.writeFile(temp, JSON.stringify(masterState), 'utf8');
-  await fs.rename(temp, target);
-  syncStateToWorkspaceFolders(app.getPath('userData'), masterState);
+  await atomicWriteTextAsync(target, JSON.stringify(nextState));
+  if (options?.skipWorkspaceSync) return {};
+  let syncWarning: string | undefined;
+  try {
+    const warnings = syncStateToWorkspaceFolders(app.getPath('userData'), nextState);
+    if (warnings.length > 0) syncWarning = warnings[0];
+  } catch (error) {
+    syncWarning = `主库已保存，外部工作区同步受限：${friendlySaveError(error)}`;
+  }
+  return { syncWarning };
+}
+
+function sanitizeNoteAccessMap(raw: Record<string, number> | undefined): Record<string, number> | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const cleaned: Record<string, number> = {};
+  for (const [id, val] of Object.entries(raw)) {
+    if (id && typeof val === 'number' && Number.isFinite(val) && val > 0) {
+      cleaned[id] = val;
+    }
+  }
+  return Object.keys(cleaned).length > 0 ? cleaned : undefined;
 }
 
 function normalizeIncoming(value: PersistedState | null | undefined): PersistedState {
+  const noteAccessedAt = sanitizeNoteAccessMap(value?.noteAccessedAt ?? masterState?.noteAccessedAt);
   return {
     version: 2,
     vaults: Array.isArray(value?.vaults) ? value!.vaults : [],
@@ -167,7 +362,8 @@ function normalizeIncoming(value: PersistedState | null | undefined): PersistedS
     notes: Array.isArray(value?.notes) ? value!.notes : [],
     maps: Array.isArray(value?.maps) ? value!.maps : [],
     canvases: Array.isArray(value?.canvases) ? value!.canvases : [],
-    settings: value?.settings ?? masterState?.settings ?? ({} as PersistedState['settings'])
+    settings: value?.settings ?? masterState?.settings ?? ({} as PersistedState['settings']),
+    ...(noteAccessedAt ? { noteAccessedAt } : {})
   };
 }
 
@@ -205,22 +401,6 @@ function mergeSimple<T extends { id: string }>(master: T[], incoming: T[], allow
     if (!masterIds.has(item.id)) result.push(item);
   }
   return result;
-}
-
-function mergeStates(master: PersistedState, incoming: PersistedState, allowDeletes: boolean): PersistedState {
-  const newerSettings =
-    (incoming.settings?.settingsUpdatedAt ?? 0) >= (master.settings?.settingsUpdatedAt ?? 0)
-      ? incoming.settings
-      : master.settings;
-  return {
-    version: 2,
-    vaults: mergeSimple(master.vaults, incoming.vaults, allowDeletes),
-    projects: mergeSimple(master.projects, incoming.projects, allowDeletes),
-    notes: mergeUpdated(master.notes, incoming.notes, (note) => note.updatedAt, allowDeletes),
-    maps: mergeUpdated(master.maps, incoming.maps, (map) => map.updatedAt, allowDeletes),
-    canvases: mergeUpdated(master.canvases, incoming.canvases, (canvas) => canvas.updatedAt, allowDeletes),
-    settings: newerSettings
-  };
 }
 
 function broadcastState(exceptSenderId?: number): void {
@@ -427,6 +607,15 @@ async function runSmokeMode(): Promise<void> {
   try {
     const code = await fs.readFile(path.resolve(scriptPath), 'utf8');
     const result = await win.webContents.executeJavaScript(code, true);
+    try {
+      const sampleHtml = `<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="lexi-asset://katex/katex.min.css"></head><body><h1>PDF Check</h1><p>Formula: \\(\\int_0^1 x^2\\,dx = \\frac{1}{3}\\)</p></body></html>`;
+      const pdfBuf = await renderHtmlToPdfBuffer(sampleHtml);
+      result.pdfBytes = pdfBuf.length;
+      result.pdfHeaderOk = pdfBuf.subarray(0, 5).toString('utf8') === '%PDF-';
+    } catch (pdfErr) {
+      result.pdfError = String(pdfErr);
+      result.pdfHeaderOk = false;
+    }
     console.log(`SMOKE_RESULT ${JSON.stringify(result)}`);
   } catch (error) {
     console.error('SMOKE_ERROR', error);
@@ -491,50 +680,275 @@ function registerIpc(): void {
 
   ipcMain.handle(
     'state:save',
-    async (event, payload: { state: PersistedState; baseRevision: number }): Promise<{ revision: number }> => {
+    async (
+      event,
+      payload: {
+        state: PersistedState;
+        baseRevision: number;
+        noteBases?: Record<string, string>;
+        dirtyNoteIds?: string[];
+      }
+    ): Promise<{
+      revision: number;
+      conflicts?: NoteConflictInfo[];
+      historyWarning?: string;
+      syncWarning?: string;
+    }> => {
       return enqueue(async () => {
         await ensureMaster();
         const incoming = normalizeIncoming(payload?.state);
         const baseRevision = Number(payload?.baseRevision) || 0;
+        const historyStore = getHistoryStore();
 
         if (!masterState) {
+          const { syncWarning } = await writeMasterFileState(incoming);
           masterState = incoming;
           dataRevision = Math.max(1, dataRevision);
-          await writeMasterFile();
+          await historyStore.clearDraftWal(payload?.dirtyNoteIds ?? incoming.notes.map((n) => n.id)).catch(() => {});
           broadcastState(event.sender.id);
-          return { revision: dataRevision };
+          return { revision: dataRevision, syncWarning };
         }
 
         const stale = baseRevision < dataRevision;
-        const merged = mergeStates(masterState, incoming, !stale);
+        const { merged, conflicts, replacedMasterNotes } = mergeWithConflictDetection(
+          masterState,
+          incoming,
+          !stale,
+          payload?.noteBases,
+          mergeSimple,
+          mergeUpdated
+        );
         const changed = JSON.stringify(merged) !== JSON.stringify(masterState);
-        masterState = merged;
+        const workspaceDataChanged =
+          changed &&
+          (JSON.stringify(merged.notes) !== JSON.stringify(masterState.notes) ||
+            JSON.stringify(merged.vaults) !== JSON.stringify(masterState.vaults) ||
+            JSON.stringify(merged.projects) !== JSON.stringify(masterState.projects) ||
+            JSON.stringify(merged.maps) !== JSON.stringify(masterState.maps) ||
+            JSON.stringify(merged.canvases) !== JSON.stringify(masterState.canvases));
+        let historyWarning: string | undefined;
+        let syncWarning: string | undefined;
 
         if (changed) {
+          try {
+            const writeRes = await writeMasterFileState(merged, { skipWorkspaceSync: !workspaceDataChanged });
+            syncWarning = writeRes.syncWarning;
+          } catch (error) {
+            throw new Error(friendlySaveError(error));
+          }
+          masterState = merged;
           dataRevision += 1;
-          await writeMasterFile();
+          const policy = merged.settings?.historyPolicy;
+          for (const prevNote of replacedMasterNotes) {
+            const res = await historyStore.recordSnapshot(prevNote, 'autosave', policy, false);
+            if (res.warning && !historyWarning) historyWarning = res.warning;
+          }
           broadcastState(event.sender.id);
         }
-        // A stale snapshot may have been repaired with newer data; let the
-        // sender catch up once without relying on another write.
+
+        // Preserve conflicting local versions in history so zero user work is lost.
+        const policy = masterState.settings?.historyPolicy;
+        for (const conflict of conflicts) {
+          const res = await historyStore.recordSnapshot(conflict.localNote, 'conflict-backup', policy, true);
+          if (res.warning && !historyWarning) historyWarning = res.warning;
+        }
+
+        const conflictIds = new Set(conflicts.map((c) => c.noteId));
+        const clearIds = (payload?.dirtyNoteIds ?? []).filter((id) => !conflictIds.has(id));
+        if (clearIds.length > 0) {
+          await historyStore.clearDraftWal(clearIds).catch(() => {});
+        }
+
         if (stale && !event.sender.isDestroyed()) {
           const sender = BrowserWindow.fromWebContents(event.sender);
           if (sender) sendSyncTo(sender);
         }
-        return { revision: dataRevision };
+        return {
+          revision: dataRevision,
+          conflicts: conflicts.length > 0 ? conflicts : undefined,
+          historyWarning,
+          syncWarning
+        };
       });
     }
   );
 
   ipcMain.handle('state:replace', async (event, state: PersistedState): Promise<{ revision: number }> => {
     return enqueue(async () => {
-      masterState = normalizeIncoming(state);
+      const next = normalizeIncoming(state);
+      try {
+        await writeMasterFileState(next);
+      } catch (error) {
+        throw new Error(friendlySaveError(error));
+      }
+      masterState = next;
       dataRevision += 1;
-      await writeMasterFile();
       broadcastState(event.sender.id);
       return { revision: dataRevision };
     });
   });
+
+  ipcMain.handle('history:list', async (_event, noteId: string): Promise<NoteRevision[]> => {
+    return getHistoryStore().getNoteHistory(noteId);
+  });
+
+  ipcMain.handle(
+    'history:snapshot',
+    async (
+      _event,
+      payload: { note: NoteItem }
+    ): Promise<{ revision: NoteRevision | null; revisions: NoteRevision[]; warning?: string }> => {
+      await ensureMaster();
+      const policy = masterState?.settings?.historyPolicy;
+      const store = getHistoryStore();
+      const res = await store.recordSnapshot(payload.note, 'manual', policy, true);
+      const revisions = await store.getNoteHistory(payload.note.id);
+      return { revision: res.revision, revisions, warning: res.warning };
+    }
+  );
+
+  ipcMain.handle(
+    'history:restore',
+    async (
+      event,
+      payload: {
+        noteId: string;
+        revisionId: string;
+        liveDraft?: Pick<NoteItem, 'title' | 'content' | 'tags' | 'properties'> | null;
+      }
+    ): Promise<{
+      revision: number;
+      restoredNote: NoteItem;
+      revisions: NoteRevision[];
+      warning?: string;
+    }> => {
+      return enqueue(async () => {
+        await ensureMaster();
+        if (!masterState) throw new Error('尚未加载知识库数据');
+        const idx = masterState.notes.findIndex((n) => n.id === payload.noteId);
+        if (idx < 0) throw new Error('笔记不存在');
+        const currentSaved = masterState.notes[idx];
+        const store = getHistoryStore();
+        const result = await store.restoreRevision(
+          currentSaved,
+          payload.revisionId,
+          payload.liveDraft,
+          masterState.settings?.historyPolicy
+        );
+        const nextNotes = masterState.notes.slice();
+        nextNotes[idx] = result.restoredNote;
+        const nextMaster: PersistedState = { ...masterState, notes: nextNotes };
+        try {
+          await writeMasterFileState(nextMaster);
+        } catch (error) {
+          throw new Error(friendlySaveError(error));
+        }
+        masterState = nextMaster;
+        dataRevision += 1;
+        await store.clearDraftWal([payload.noteId]).catch(() => {});
+        await store.dismissCrashRecovery(payload.noteId).catch(() => {});
+        broadcastState(event.sender.id);
+        return {
+          revision: dataRevision,
+          restoredNote: result.restoredNote,
+          revisions: result.revisions,
+          warning: result.warning
+        };
+      });
+    }
+  );
+
+  ipcMain.handle('history:usage', async (): Promise<HistoryUsageSummary> => {
+    return getHistoryStore().getUsage();
+  });
+
+  ipcMain.handle(
+    'history:prune',
+    async (_event, policy?: Partial<HistoryRetentionPolicy>): Promise<{ removedCount: number; summary: HistoryUsageSummary }> => {
+      await ensureMaster();
+      return getHistoryStore().pruneAll(policy ?? masterState?.settings?.historyPolicy);
+    }
+  );
+
+  ipcMain.handle('history:delete-note', async (_event, noteId: string): Promise<void> => {
+    await getHistoryStore().deleteNoteHistory(noteId);
+  });
+
+  ipcMain.handle('history:wal-write', async (_event, entry: DraftWalEntry): Promise<void> => {
+    await getHistoryStore().writeDraftWal(entry);
+  });
+
+  ipcMain.handle('history:wal-clear', async (_event, noteIds: string[]): Promise<void> => {
+    await getHistoryStore().clearDraftWal(noteIds);
+  });
+
+  ipcMain.handle('history:crash-list', async (): Promise<CrashRecoveryItem[]> => {
+    await ensureMaster();
+    return getHistoryStore().getPendingCrashRecoveries();
+  });
+
+  ipcMain.handle('history:crash-dismiss', async (_event, noteId: string): Promise<void> => {
+    await getHistoryStore().dismissCrashRecovery(noteId);
+  });
+
+  ipcMain.handle(
+    'history:resolve-conflict',
+    async (
+      event,
+      payload: { noteId: string; mode: ConflictResolutionMode; localNote: NoteItem }
+    ): Promise<{
+      revision: number;
+      resolvedNote: NoteItem;
+      copyNote?: NoteItem;
+    }> => {
+      return enqueue(async () => {
+        await ensureMaster();
+        if (!masterState) throw new Error('尚未加载知识库数据');
+        const store = getHistoryStore();
+        const policy = masterState.settings?.historyPolicy;
+        const idx = masterState.notes.findIndex((n) => n.id === payload.noteId);
+        if (idx < 0) throw new Error('原笔记已被删除');
+        const remote = masterState.notes[idx];
+        const nextNotes = masterState.notes.slice();
+        let resolvedNote = remote;
+        let copyNote: NoteItem | undefined;
+
+        if (payload.mode === 'use-mine-backup-theirs') {
+          await store.recordSnapshot(remote, 'conflict-backup', policy, true);
+          resolvedNote = { ...cloneNote(payload.localNote), updatedAt: Date.now() };
+          nextNotes[idx] = resolvedNote;
+        } else if (payload.mode === 'use-theirs-backup-mine') {
+          await store.recordSnapshot(payload.localNote, 'conflict-backup', policy, true);
+          resolvedNote = remote;
+        } else {
+          // 'save-copy': preserve remote on original, save local as standalone copy.
+          const copyTitle = `${payload.localNote.title || '未命名笔记'} (冲突副本 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })})`;
+          copyNote = {
+            ...cloneNote(payload.localNote),
+            id: `note-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+            title: copyTitle,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            path: ''
+          };
+          nextNotes.unshift(copyNote);
+          resolvedNote = remote;
+        }
+
+        const nextMaster: PersistedState = { ...masterState, notes: nextNotes };
+        try {
+          await writeMasterFileState(nextMaster);
+        } catch (error) {
+          throw new Error(friendlySaveError(error));
+        }
+        masterState = nextMaster;
+        dataRevision += 1;
+        await store.clearDraftWal([payload.noteId]).catch(() => {});
+        broadcastState(event.sender.id);
+        return { revision: dataRevision, resolvedNote, copyNote };
+      });
+    }
+  );
 
   ipcMain.on('state:flush-done', (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
@@ -659,12 +1073,14 @@ function registerIpc(): void {
     const scanned = scanWorkspaceFolder(destFolder, vaultId);
     return {
       folderPath: destFolder,
-      folderName,
+      folderName: scanned.vaultName || folderName,
+      description: scanned.description || '',
       vaultId,
       fileCount,
       notes: scanned.notes,
       maps: scanned.maps,
-      canvases: scanned.canvases
+      canvases: scanned.canvases,
+      warnings: scanned.warnings
     };
   });
 
@@ -746,29 +1162,117 @@ function registerIpc(): void {
     }
   );
 
+  ipcMain.handle(
+    'export:pdf',
+    async (event, payload: { html: string; suggestedName: string }) => {
+      const owner = senderWindow(event) ?? primaryWindow;
+      if (!owner) return { canceled: true };
+      const cleanName = (payload.suggestedName || '笔记').replace(/[\\/:*?"<>|]/g, '-');
+      const defaultName = cleanName.toLowerCase().endsWith('.pdf') ? cleanName : `${cleanName}.pdf`;
+      const result = await dialog.showSaveDialog(owner, {
+        title: '导出为 PDF',
+        defaultPath: path.join(app.getPath('documents'), defaultName),
+        filters: [{ name: 'PDF 文档', extensions: ['pdf'] }]
+      });
+      if (result.canceled || !result.filePath) return { canceled: true };
+      const targetPath = result.filePath.toLowerCase().endsWith('.pdf')
+        ? result.filePath
+        : `${result.filePath}.pdf`;
+      const pdfBuffer = await renderHtmlToPdfBuffer(payload.html);
+      await fs.writeFile(targetPath, pdfBuffer);
+      return { canceled: false, path: targetPath, fileName: path.basename(targetPath) };
+    }
+  );
+
+  ipcMain.handle('files:consume-external', async (): Promise<ImportedFile[]> => {
+    if (pendingExternalPaths.length === 0) return [];
+    const batch = pendingExternalPaths.splice(0, pendingExternalPaths.length);
+    return await readExternalImportedFiles(batch);
+  });
+
   ipcMain.handle('import:files', async (event): Promise<ImportedFile[]> => {
     const owner = senderWindow(event) ?? primaryWindow;
     if (!owner) return [];
     const result = await dialog.showOpenDialog(owner, {
-      title: '导入文件',
+      title: '导入或打开文件',
       properties: ['openFile', 'multiSelections'],
       filters: [
-        { name: 'Markdown', extensions: ['md', 'markdown', 'txt'] },
-        { name: 'LexiNote 备份', extensions: ['json'] }
+        { name: 'Markdown / JSON', extensions: ['md', 'markdown', 'txt', 'json'] }
       ]
     });
     if (result.canceled) return [];
-    const files: ImportedFile[] = [];
-    for (const filePath of result.filePaths) {
-      try {
-        const content = await fs.readFile(filePath, 'utf8');
-        files.push({ name: path.basename(filePath), content });
-      } catch {
-        // Skip unreadable files instead of failing the whole import.
-      }
-    }
-    return files;
+    return await readExternalImportedFiles(result.filePaths);
   });
+
+  ipcMain.handle(
+    'attachment:import',
+    async (
+      event,
+      payload: {
+        vaultId: string;
+        notebook?: string;
+        notePath?: string;
+        filePath?: string;
+        fileName?: string;
+        base64?: string;
+      }
+    ): Promise<ImportedAttachment | null> => {
+      const owner = senderWindow(event) ?? primaryWindow;
+      const vault = masterState?.vaults.find((v) => v.id === payload.vaultId);
+      if (!vault) return null;
+      const vaultRoot = resolveVaultFolder(app.getPath('userData'), vault);
+      const attachmentsDir = path.join(vaultRoot, 'attachments');
+      await fs.mkdir(attachmentsDir, { recursive: true });
+
+      let sourcePath = payload.filePath;
+      let rawBuffer: Buffer | null = null;
+      let origName = payload.fileName || 'attachment.png';
+
+      if (payload.base64) {
+        const cleanB64 = payload.base64.replace(/^data:[^;]+;base64,/, '');
+        rawBuffer = Buffer.from(cleanB64, 'base64');
+      } else if (!sourcePath) {
+        if (!owner) return null;
+        const pick = await dialog.showOpenDialog(owner, {
+          title: '选择图片或附件',
+          properties: ['openFile'],
+          filters: [
+            { name: '图片与附件', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'pdf', 'txt', 'md', 'zip'] }
+          ]
+        });
+        if (pick.canceled || !pick.filePaths[0]) return null;
+        sourcePath = pick.filePaths[0];
+        origName = path.basename(sourcePath);
+      } else {
+        origName = path.basename(sourcePath);
+      }
+
+      const ext = path.extname(origName);
+      const base = path.basename(origName, ext).replace(/[\\/:*?"<>|]/g, '_').trim() || 'file';
+      let targetName = `${base}${ext}`;
+      let counter = 1;
+      while (existsSync(path.join(attachmentsDir, targetName))) {
+        targetName = `${base}-${counter++}${ext}`;
+      }
+      const destPath = path.join(attachmentsDir, targetName);
+      if (rawBuffer) {
+        await fs.writeFile(destPath, rawBuffer);
+      } else if (sourcePath) {
+        await fs.copyFile(sourcePath, destPath);
+      } else {
+        return null;
+      }
+
+      const noteDir = payload.notePath
+        ? path.dirname(payload.notePath)
+        : payload.notebook && payload.notebook !== '默认'
+          ? path.join(vaultRoot, payload.notebook.replace(/[\\/:*?"<>|]/g, '_'))
+          : vaultRoot;
+      const relPath = path.relative(noteDir, destPath).split(path.sep).join('/');
+      const isImage = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(targetName);
+      return { relativePath: relPath, fileName: targetName, isImage };
+    }
+  );
 
   ipcMain.handle('shell:open-external', async (_event, url: string) => {
     if (/^(https?:|mailto:)/i.test(url)) await shell.openExternal(url);
@@ -928,7 +1432,16 @@ const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
+  pendingExternalPaths.push(...extractOpenableFileArgs(process.argv));
+  app.on('open-file', (event, filePath) => {
+    event.preventDefault();
+    if (OPENABLE_EXT_RE.test(filePath)) {
+      void deliverExternalFiles([filePath]);
+    }
+  });
+  app.on('second-instance', (_event, argv) => {
+    const incoming = extractOpenableFileArgs(argv);
+    if (incoming.length > 0) void deliverExternalFiles(incoming);
     if (!primaryWindow) return;
     if (primaryWindow.isMinimized()) primaryWindow.restore();
     primaryWindow.show();
@@ -938,6 +1451,56 @@ if (!hasSingleInstanceLock) {
 
 app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
+  protocol.handle('lexi-asset', (request) => {
+    try {
+      const url = new URL(request.url);
+      if (url.hostname === 'katex') {
+        const katexRoot = path.resolve(resolveKatexDir());
+        const rel = decodeURIComponent(url.pathname).replace(/^\/+/, '');
+        const resolved = path.resolve(katexRoot, rel);
+        if ((resolved === katexRoot || resolved.startsWith(katexRoot + path.sep)) && existsSync(resolved)) {
+          return net.fetch(pathToFileURL(resolved).toString());
+        }
+        return new Response('Not found', { status: 404 });
+      }
+      if (url.hostname === 'pdf-doc') {
+        const token = url.pathname.replace(/^\/+/, '');
+        const docHtml = pendingPdfDocs.get(token);
+        if (typeof docHtml === 'string') {
+          return new Response(docHtml, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+        }
+        return new Response('Not found', { status: 404 });
+      }
+      const vaultId = url.searchParams.get('vaultId') ?? '';
+      const src = url.searchParams.get('src') ?? '';
+      const notebook = url.searchParams.get('notebook') ?? '默认';
+      const notePath = url.searchParams.get('notePath') ?? '';
+      const vault = masterState?.vaults.find((v) => v.id === vaultId);
+      if (!vault || !src) return new Response('Not found', { status: 404 });
+
+      const vaultRoot = path.resolve(resolveVaultFolder(app.getPath('userData'), vault));
+      const cleanSrc = decodeURIComponent(src).replace(/^file:\/\//i, '');
+      const noteDir = notePath
+        ? path.dirname(notePath)
+        : notebook && notebook !== '默认'
+          ? path.join(vaultRoot, notebook.replace(/[\\/:*?"<>|]/g, '_'))
+          : vaultRoot;
+
+      const candidates = [
+        path.resolve(noteDir, cleanSrc),
+        path.resolve(vaultRoot, cleanSrc),
+        path.resolve(vaultRoot, cleanSrc.replace(/^(\.\.\/)+/, ''))
+      ];
+      for (const candidate of candidates) {
+        if ((candidate === vaultRoot || candidate.startsWith(vaultRoot + path.sep)) && existsSync(candidate)) {
+          return net.fetch(pathToFileURL(candidate).toString());
+        }
+      }
+      return new Response('Not found', { status: 404 });
+    } catch {
+      return new Response('Bad request', { status: 400 });
+    }
+  });
   installMenu();
   registerIpc();
   await ensureMaster();

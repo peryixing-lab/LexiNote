@@ -43,7 +43,10 @@ export function ChevronGlyph({
       strokeWidth={strokeWidth}
       strokeLinecap="round"
       strokeLinejoin="round"
-      style={{ transform: `rotate(${rotate}deg)`, transition: 'transform 150ms ease' }}
+      style={{
+        transform: `rotate(${rotate}deg)`,
+        transition: 'transform var(--dur-fast, 160ms) var(--ease-out, cubic-bezier(0.23, 1, 0.32, 1))'
+      }}
     >
       <path d="M9 5l7 7-7 7" />
     </svg>

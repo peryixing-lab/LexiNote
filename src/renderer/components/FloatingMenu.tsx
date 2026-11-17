@@ -40,11 +40,14 @@ export function FloatingMenu({ x, y, width = 228, entries, onClose, align = 'lef
     };
   }, [onClose]);
 
+  const estHeight = entries.length * 34 + 16;
   const left = Math.min(Math.max(8, align === 'left' ? x : x - width), window.innerWidth - width - 8);
-  const top = Math.min(y, window.innerHeight - 16 - entries.length * 34);
+  const flipUp = y > window.innerHeight - estHeight;
+  const top = Math.max(8, Math.min(y, window.innerHeight - estHeight));
+  const origin = `${flipUp ? 'bottom' : 'top'} ${align === 'right' ? 'right' : 'left'}`;
 
   return (
-    <div ref={ref} className="floating-menu" style={{ left, top, width }} role="menu">
+    <div ref={ref} className="floating-menu" style={{ left, top, width, transformOrigin: origin }} role="menu">
       {entries.map((entry, index) => {
         if (entry.separator) return <div key={`sep-${index}`} className="menu-separator" />;
         if (entry.header) {

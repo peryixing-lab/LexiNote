@@ -1,17 +1,22 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store/AppStore';
-import type { AppSettings, ThemeMode } from '../../shared/types';
+import type { AppSettings, ThemeMode, WorkspaceOpenMode } from '../../shared/types';
+import {
+  clampHistoryPolicy,
+  formatBytes,
+  type HistoryRetentionPolicy,
+  type HistoryUsageSummary
+} from '../../shared/noteHistory';
+import { COMMANDS, DEFAULT_HOTKEYS } from '../core/commands';
+import { DEFAULT_ACCENT, THEME_PRESETS, validAccent } from '../core/theme';
 import { Icon } from './Icon';
 import { PluginSettingsSection } from './PluginSettingsSection';
-
-const ACCENT_SWATCHES = ['#6E44D9', '#2563EB', '#16A34A', '#D97706', '#DC2626'];
 
 export type SettingsCategory =
   | 'about'
   | 'appearance'
-  | 'workspace'
+  | 'interface'
   | 'editor'
-  | 'files'
   | 'data'
   | 'shortcuts'
   | 'plugins';
@@ -24,30 +29,55 @@ interface CategoryItem {
 }
 
 const CATEGORIES: CategoryItem[] = [
-  { id: 'about', label: '关于', icon: 'info', keywords: 'about 版本 隐私 本地' },
-  { id: 'appearance', label: '外观', icon: 'sun', keywords: 'appearance 主题 强调色 字体 语言 侧边栏 标签栏' },
-  { id: 'workspace', label: '工作区', icon: 'folder', keywords: 'workspace 工作区 文件夹 默认打开方式' },
-  { id: 'editor', label: '编辑器', icon: 'note', keywords: 'editor 缩进 视图 模式 标题 宽度' },
-  { id: 'files', label: '文件与链接', icon: 'link', keywords: 'files links 双向链接 附件 路径' },
-  { id: 'data', label: '数据与备份', icon: 'export', keywords: 'data backup zip json 导出 导入 索引' },
-  { id: 'shortcuts', label: '快捷键', icon: 'spark', keywords: 'shortcuts 快捷键 命令面板' },
-  { id: 'plugins', label: '插件', icon: 'shield', keywords: 'plugins 插件 扩展 权限' }
+  { id: 'about', label: '关于', icon: 'info', keywords: 'about 版本 语言 帮助 工作区 文件夹 数据 备份' },
+  { id: 'appearance', label: '外观', icon: 'sun', keywords: 'appearance 主题 强调色 字体 预设 自定义' },
+  { id: 'interface', label: '界面', icon: 'canvas', keywords: 'interface 功能区 侧栏 标签页 标题栏 缩放 比例 ribbon zoom' },
+  { id: 'editor', label: '编辑器', icon: 'note', keywords: 'editor 缩进 视图 模式 标题 宽度 打开工作区' },
+  { id: 'data', label: '文件与链接', icon: 'folder', keywords: 'files links data backup 双向链接 附件 路径 备份 zip json 导出 导入 索引 历史 快照' },
+  { id: 'plugins', label: '插件', icon: 'spark', keywords: 'plugins 插件 扩展 权限 模型' },
+  { id: 'shortcuts', label: '快捷键', icon: 'spark', keywords: 'shortcuts 快捷键 命令面板' }
 ];
 
-const SHORTCUTS: Array<[string, string]> = [
-  ['Ctrl+N', '新建文档'],
-  ['Ctrl+K', '命令面板'],
-  ['Ctrl+F', '全局搜索'],
-  ['Ctrl+Shift+T', '打开标签管理器'],
-  ['Ctrl+G', '知识图谱'],
-  ['Ctrl+,', '打开设置'],
-  ['Ctrl+W', '关闭当前标签'],
-  ['Ctrl+S', '立即保存'],
-  ['Ctrl+B / I / K', '加粗 / 斜体 / 链接'],
-  ['Ctrl+1 / 2 / 3', '一级至三级标题'],
-  ['Ctrl+Z / Y', '撤销 / 重做'],
-  ['Ctrl+= / -', '放大 / 缩小']
-];
+function normalizeCategory(raw: string): SettingsCategory {
+  if (
+    raw === 'about' ||
+    raw === 'appearance' ||
+    raw === 'interface' ||
+    raw === 'editor' ||
+    raw === 'data' ||
+    raw === 'shortcuts' ||
+    raw === 'plugins'
+  ) {
+    return raw;
+  }
+  if (raw === 'hotkeys') return 'shortcuts';
+  if (raw === 'files') return 'data';
+  if (raw === 'workspace') return 'editor';
+  return 'about';
+}
+
+function formatKeyCombo(event: React.KeyboardEvent): string | null {
+  if (event.key === 'Control' || event.key === 'Shift' || event.key === 'Alt' || event.key === 'Meta') {
+    return null;
+  }
+  const parts: string[] = [];
+  if (event.ctrlKey || event.metaKey) parts.push('Ctrl');
+  if (event.altKey) parts.push('Alt');
+  if (event.shiftKey) parts.push('Shift');
+  const rawKey = event.key;
+  const isFKey = /^F([1-9]|1[0-2])$/i.test(rawKey);
+  if (parts.length === 0 && !isFKey) {
+    return null;
+  }
+  let keyLabel = rawKey.length === 1 ? rawKey.toUpperCase() : rawKey;
+  if (rawKey === ' ') keyLabel = 'Space';
+  if (rawKey === 'ArrowLeft') keyLabel = '←';
+  if (rawKey === 'ArrowRight') keyLabel = '→';
+  if (rawKey === 'ArrowUp') keyLabel = '↑';
+  if (rawKey === 'ArrowDown') keyLabel = '↓';
+  parts.push(keyLabel);
+  return parts.join('+');
+}
 
 function SettingRow({
   title,
@@ -71,16 +101,20 @@ function SettingRow({
 
 function Toggle({
   checked,
-  onChange
+  onChange,
+  label
 }: {
   checked: boolean;
   onChange: (next: boolean) => void;
+  label?: string;
 }): JSX.Element {
   return (
     <button
       type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
       className={`toggle ${checked ? 'on' : ''}`}
-      aria-pressed={checked}
       onClick={() => onChange(!checked)}
     >
       <span className="toggle-knob" />
@@ -104,6 +138,7 @@ function Segmented<T extends string>({
           key={opt.value}
           type="button"
           className={`settings-segmented-btn ${opt.value === value ? 'active' : ''}`}
+          aria-pressed={opt.value === value}
           onClick={() => onChange(opt.value)}
         >
           {opt.label}
@@ -113,11 +148,79 @@ function Segmented<T extends string>({
   );
 }
 
-export function SettingsDialog(): JSX.Element | null {
+export function SettingsDialog(): JSX.Element {
   const { state, derived, actions } = useStore();
   const { tr } = derived;
-  const [category, setCategory] = useState<SettingsCategory>('appearance');
+  const category = normalizeCategory(state.settingsCategory);
+  const setCategory = (next: SettingsCategory): void => {
+    actions.setSettingsCategory(next);
+  };
   const [searchQuery, setSearchQuery] = useState('');
+  const [customHex, setCustomHex] = useState(state.settings.accent || DEFAULT_ACCENT);
+  const [hexError, setHexError] = useState('');
+  const [hotkeyQuery, setHotkeyQuery] = useState('');
+  const [recordingCommandId, setRecordingCommandId] = useState('');
+  const [hotkeyNotice, setHotkeyNotice] = useState('');
+  const [historyUsage, setHistoryUsage] = useState<HistoryUsageSummary>({
+    noteCount: 0,
+    revisionCount: 0,
+    totalBytes: 0
+  });
+  const [historyBusy, setHistoryBusy] = useState(false);
+
+  const policy = clampHistoryPolicy(state.settings.historyPolicy);
+
+  useEffect(() => {
+    setCustomHex(state.settings.accent || DEFAULT_ACCENT);
+  }, [state.settings.accent]);
+
+  useEffect(() => {
+    if (!state.settingsOpen) {
+      setRecordingCommandId('');
+      setHotkeyNotice('');
+      return;
+    }
+    setSearchQuery('');
+    setHotkeyQuery('');
+    void window.lexi?.history.usage().then(setHistoryUsage).catch(() => {});
+  }, [state.settingsOpen]);
+
+  const updatePolicy = async (patchPolicy: Partial<HistoryRetentionPolicy>): Promise<void> => {
+    const nextPolicy = clampHistoryPolicy({ ...policy, ...patchPolicy });
+    actions.updateSettings({ historyPolicy: nextPolicy });
+    if (window.lexi?.history) {
+      setHistoryBusy(true);
+      try {
+        const res = await window.lexi.history.prune(nextPolicy);
+        setHistoryUsage(res.summary);
+      } finally {
+        setHistoryBusy(false);
+      }
+    }
+  };
+
+  const cleanupHistoryNow = async (): Promise<void> => {
+    if (!window.lexi?.history) return;
+    setHistoryBusy(true);
+    try {
+      const res = await window.lexi.history.prune(policy);
+      setHistoryUsage(res.summary);
+      actions.showToast(`清理完成，已移除 ${res.removedCount} 个过期或超额快照`);
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
+
+  const applyCustomHex = (raw: string): void => {
+    const formatted = raw.trim().startsWith('#') ? raw.trim().toUpperCase() : `#${raw.trim().toUpperCase()}`;
+    if (!validAccent(formatted)) {
+      setHexError(tr('请输入 6 位十六进制颜色，如 #6E44D9'));
+      return;
+    }
+    setHexError('');
+    setCustomHex(formatted);
+    actions.updateSettings({ accent: formatted, paletteMode: 'custom' });
+  };
 
   const filteredCategories = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -128,36 +231,101 @@ export function SettingsDialog(): JSX.Element | null {
     );
   }, [searchQuery, tr]);
 
-  if (!state.settingsOpen) return null;
+  const filteredCommands = useMemo(() => {
+    const q = hotkeyQuery.trim().toLowerCase();
+    if (!q) return COMMANDS;
+    return COMMANDS.filter((cmd) => {
+      const binding = state.settings.hotkeys?.[cmd.id] ?? cmd.shortcut ?? '';
+      return (
+        tr(cmd.title).toLowerCase().includes(q) ||
+        cmd.title.toLowerCase().includes(q) ||
+        cmd.id.toLowerCase().includes(q) ||
+        binding.toLowerCase().includes(q)
+      );
+    });
+  }, [hotkeyQuery, state.settings.hotkeys, tr]);
 
   const activeCategory = filteredCategories.some((c) => c.id === category)
     ? category
-    : (filteredCategories[0]?.id ?? 'appearance');
+    : (filteredCategories[0]?.id ?? 'about');
 
   const s = state.settings;
   const activeVault = derived.activeVault;
 
-  return (
-    <div
-      className="modal-backdrop"
-      onClick={actions.closeSettings}
-      role="dialog"
-      aria-modal="true"
-    >
-      <div className="settings-window" onClick={(e) => e.stopPropagation()}>
-        <div className="settings-topbar">
-          <div className="settings-topbar-title" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Icon name="sun" size={16} />
-            <span>{tr('设置')}</span>
+  const renderWorkspaceOpenSection = (): JSX.Element => (
+    <>
+      <div className="settings-group-header">{tr('打开工作区')}</div>
+      <div className="settings-card">
+        <SettingRow
+          title={tr('选择工作区时不再提示')}
+          description={tr('该开关对所有工作区生效，不按工作区保存；关闭后会重新显示询问。')}
+          control={
+            <Toggle
+              label={tr('选择工作区时不再提示')}
+              checked={s.workspacePromptSuppressed}
+              onChange={(v) => actions.setWorkspacePromptSuppressed(v)}
+            />
+          }
+        />
+        <div className="settings-divider" />
+        <SettingRow
+          title={tr('默认打开方式')}
+          description={tr('当工作区设为“每次询问”且已关闭提示时使用。')}
+          control={
+            <Segmented<AppSettings['workspaceDefaultOpenMode']>
+              value={s.workspaceDefaultOpenMode}
+              onChange={(v) => actions.setWorkspaceDefaultOpenMode(v)}
+              options={[
+                { value: 'current', label: tr('当前窗口') },
+                { value: 'new', label: tr('新窗口') }
+              ]}
+            />
+          }
+        />
+        <div className="settings-divider" />
+        <div className="setting-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+          <div className="setting-copy">
+            <div className="setting-title">{tr('每个工作区的打开方式')}</div>
+            <div className="setting-desc">
+              {tr('设置绑定工作区，而不是整个软件。打开方式保存在工作区本身，归档、备份和恢复会一并保留。')}
+            </div>
           </div>
+          <div className="workspace-mode-list">
+            {state.vaults.map((vault) => (
+              <div className="workspace-mode-row" key={vault.id}>
+                <span className="workspace-mode-name">{vault.name}</span>
+                <select
+                  className="select"
+                  value={vault.openMode ?? 'ask'}
+                  aria-label={tr('{0} 的打开方式', [vault.name])}
+                  onChange={(e) =>
+                    actions.setVaultOpenMode(vault.id, e.target.value as WorkspaceOpenMode)
+                  }
+                >
+                  <option value="ask">{tr('每次询问')}</option>
+                  <option value="current">{tr('在当前窗口打开')}</option>
+                  <option value="new">{tr('在新窗口打开')}</option>
+                </select>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+
+  return (
+    <>
+        <div className="settings-topbar settings-content-head">
+          <div className="settings-topbar-title">{tr('设置')}</div>
           <button
             type="button"
-            className="settings-topbar-close"
+            className="settings-topbar-close icon-btn"
             onClick={actions.closeSettings}
             aria-label={tr('关闭')}
             title={tr('关闭')}
           >
-            ✕
+            {tr('关闭')}
           </button>
         </div>
 
@@ -167,12 +335,17 @@ export function SettingsDialog(): JSX.Element | null {
               <Icon name="search" size={14} muted />
               <input
                 type="text"
-                placeholder={tr('搜索设置')}
+                placeholder={tr('搜索设置...')}
                 value={searchQuery}
+                aria-label={tr('搜索设置...')}
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
+              {searchQuery ? (
+                <button type="button" className="settings-search-clear" aria-label={tr('清空搜索')} onClick={() => setSearchQuery('')}>×</button>
+              ) : null}
             </div>
 
+            <div className="settings-rail-label">{tr('选项')}</div>
             <div className="settings-categories">
               {filteredCategories.map((item) => {
                 const active = activeCategory === item.id;
@@ -181,6 +354,7 @@ export function SettingsDialog(): JSX.Element | null {
                     key={item.id}
                     type="button"
                     className={`settings-category ${active ? 'active' : ''}`}
+                    aria-current={active ? 'page' : undefined}
                     onClick={() => setCategory(item.id)}
                   >
                     <Icon name={item.icon} size={16} muted={!active} />
@@ -192,34 +366,58 @@ export function SettingsDialog(): JSX.Element | null {
           </aside>
 
           <main className="settings-content">
-            <div className="settings-scroll">
+            <div className="settings-scroll" key={activeCategory}>
               <div className="settings-group">
             {activeCategory === 'about' ? (
               <div className="settings-page">
                 <h2 className="settings-page-title">{tr('关于')}</h2>
                 <div className="settings-card">
-                  <div className="settings-about-hero">
-                    <div className="settings-about-logo">L</div>
-                    <div>
-                      <div className="settings-about-name">LexiNote</div>
-                      <div className="settings-about-ver">v2.0.1 · Local-First Knowledge Workspace</div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="settings-group-header">{tr('应用信息')}</div>
-                <div className="settings-card">
                   <SettingRow
-                    title={tr('本地优先架构')}
-                    description={tr('所有 Markdown 笔记、思维导图与自由白板均以标准文件存储在工作区文件夹中。')}
-                    control={<span className="settings-badge-muted">{tr('离线可用')}</span>}
+                    title={tr('版本')}
+                    control={<span className="settings-version">{state.runtime?.appVersion || '2.0.1'}</span>}
                   />
                   <div className="settings-divider" />
                   <SettingRow
-                    title={tr('隐私与数据边界')}
-                    description={tr('不上传个人笔记内容；插件运行在无网络沙箱中并显式授予权限。')}
-                    control={<span className="settings-badge-muted">{tr('本地存储')}</span>}
+                    title={tr('语言')}
+                    control={
+                      <select className="select" value={s.language} aria-label={tr('语言')}
+                        onChange={(event) => actions.updateSettings({ language: event.target.value as AppSettings['language'] })}>
+                        <option value="zh-Hans">简体中文</option>
+                        <option value="en">English</option>
+                      </select>
+                    }
                   />
+                  <div className="settings-divider" />
+                  <SettingRow
+                    title={tr('使用帮助')}
+                    control={
+                      <button
+                        type="button"
+                        className="settings-btn-soft"
+                        onClick={() => {
+                          actions.closeSettings();
+                          actions.setHelpOpen(true);
+                        }}
+                      >
+                        {tr('打开')}
+                      </button>
+                    }
+                  />
+                </div>
+                <div className="settings-group-header">{tr('数据与备份')}</div>
+                <div className="settings-card padded">
+                  <div className="settings-storage-info">
+                    <Icon name="folder" size={20} />
+                    <div className="setting-copy">
+                      <div className="setting-title settings-storage-path" title={activeVault?.folderUri}>
+                        {tr('工作区文件夹：{0}', [activeVault?.folderUri || activeVault?.name || tr('默认工作区')])}
+                      </div>
+                      <div className="setting-desc">{tr('笔记 (.md)、思维导图与白板均直接保存在此工作区文件夹中。')}</div>
+                    </div>
+                  </div>
+                  <button type="button" className="settings-btn-soft settings-storage-button" onClick={() => void actions.chooseWorkspaceFolder()}>
+                    {tr('更改工作区文件夹')}
+                  </button>
                 </div>
               </div>
             ) : null}
@@ -228,90 +426,128 @@ export function SettingsDialog(): JSX.Element | null {
               <div className="settings-page">
                 <h2 className="settings-page-title">{tr('外观')}</h2>
 
-                <div className="settings-scope-banner">
-                  <Icon name="info" size={14} />
-                  <span>{tr('此处设置全局生效')}</span>
-                </div>
-
-                <div className="settings-group-header">{tr('主题与配色')}</div>
                 <div className="settings-card">
-                  <SettingRow
-                    title={tr('外观模式')}
-                    description={tr('浅色、深色或跟随系统')}
-                    control={
-                      <Segmented<ThemeMode>
-                        value={s.theme}
-                        onChange={(theme) => actions.updateSettings({ theme })}
-                        options={[
-                          { value: 'light', label: tr('浅色') },
-                          { value: 'dark', label: tr('深色') },
-                          { value: 'system', label: tr('跟随系统') }
-                        ]}
-                      />
-                    }
-                  />
+                  <div className="settings-theme-block">
+                    <div className="setting-copy">
+                      <div className="setting-title">{tr('基础颜色')}</div>
+                      <div className="setting-desc">{tr('设置应用的明暗外观。')}</div>
+                    </div>
+                    <Segmented<ThemeMode>
+                      value={s.theme}
+                      onChange={(theme) => actions.updateSettings({ theme })}
+                      options={[
+                        { value: 'system', label: tr('跟随系统') },
+                        { value: 'light', label: tr('浅色') },
+                        { value: 'dark', label: tr('深色') }
+                      ]}
+                    />
+                  </div>
                   <div className="settings-divider" />
-                  <SettingRow
-                    title={tr('强调色')}
-                    description={tr('主按钮、激活态与高亮标记颜色')}
-                    control={
-                      <div className="swatch-row">
-                        {ACCENT_SWATCHES.map((accent) => (
-                          <button
-                            key={accent}
-                            type="button"
-                            className={`swatch ${s.accent.toUpperCase() === accent.toUpperCase() ? 'active' : ''}`}
-                            style={{ backgroundColor: accent }}
-                            title={accent}
-                            onClick={() => actions.updateSettings({ accent })}
-                          />
-                        ))}
+                  <div className="settings-theme-block">
+                    <div className="settings-theme-heading">
+                      <div className="setting-title">{tr('全局色调')}</div>
+                      <span>{tr(s.paletteMode === 'original' ? '原配色调' : s.paletteMode === 'custom' ? '自定义' :
+                        THEME_PRESETS.find((preset) => preset.color.toUpperCase() === s.accent.toUpperCase())?.label || '主题色')}</span>
+                    </div>
+                    <div className="setting-desc">{tr('统一调整背景、侧栏、按钮和笔记链接，选择后自动保存。')}</div>
+                    <div className="settings-theme-preview" aria-label={tr('主题预览')}>
+                      <div className="settings-theme-preview-sidebar">
+                        <strong>{tr('知萤')}</strong>
+                        <span className="selected">{tr('笔记')}</span>
+                        <span>{tr('文件夹')}</span>
                       </div>
-                    }
-                  />
-                  <div className="settings-divider" />
-                  <SettingRow
-                    title={tr('界面色板')}
-                    description={tr('微调工作区背景层次')}
-                    control={
-                      <Segmented<AppSettings['paletteMode']>
-                        value={s.paletteMode}
-                        onChange={(paletteMode) => actions.updateSettings({ paletteMode })}
-                        options={[
-                          { value: 'original', label: tr('原色') },
-                          { value: 'preset', label: tr('预设') },
-                          { value: 'custom', label: tr('自定义') }
-                        ]}
+                      <div className="settings-theme-preview-page">
+                        <strong>{tr('主题预览')} <span>●</span></strong>
+                        <div className="settings-divider" />
+                        <span>{tr('让灵感拥有你的颜色')}</span>
+                        <span className="settings-theme-preview-link">[[ {tr('双向链接')} ]]</span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className={`theme-preset-pill settings-original-theme ${s.paletteMode === 'original' ? 'active' : ''}`}
+                      aria-pressed={s.paletteMode === 'original'}
+                      onClick={() => actions.updateSettings({ paletteMode: 'original', accent: DEFAULT_ACCENT })}
+                    >
+                      <span className="theme-preset-dot" style={{ backgroundColor: DEFAULT_ACCENT }} />
+                      <span>{tr('原配色调')}</span>
+                      {s.paletteMode === 'original' ? <span className="settings-theme-check">✓</span> : null}
+                    </button>
+                    <div className="theme-preset-grid">
+                      {THEME_PRESETS.map((preset) => {
+                        const isSelected = s.paletteMode === 'preset' && s.accent.toUpperCase() === preset.color.toUpperCase();
+                        return (
+                          <button
+                            key={preset.color}
+                            type="button"
+                            className={`theme-preset-pill ${isSelected ? 'active' : ''}`}
+                            aria-pressed={isSelected}
+                            onClick={() => actions.updateSettings({ accent: preset.color, paletteMode: 'preset' })}
+                          >
+                            <span className="theme-preset-dot" style={{ backgroundColor: preset.color }} />
+                            <span>{tr(preset.label)}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="setting-title">{tr('自定义')}</div>
+                    <div className="custom-color-bar">
+                      <input
+                        type="color"
+                        value={validAccent(customHex) ? customHex : s.accent}
+                        aria-label={tr('自定义主题色')}
+                        onChange={(e) => applyCustomHex(e.target.value)}
+                        style={{ width: 32, height: 30, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
                       />
-                    }
-                  />
+                      <input
+                        type="text"
+                        className="custom-hex-input"
+                        value={customHex}
+                        placeholder="#6E44D9"
+                        aria-label={tr('输入十六进制颜色，按回车或离开输入框即可保存。')}
+                        onChange={(e) => {
+                          setCustomHex(e.target.value);
+                          setHexError('');
+                        }}
+                        onBlur={() => applyCustomHex(customHex)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') applyCustomHex(customHex);
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="settings-btn-soft"
+                        onClick={() => applyCustomHex(customHex)}
+                      >
+                        {tr('应用')}
+                      </button>
+                      <button
+                        type="button"
+                        className="settings-btn-inset"
+                        onClick={() => {
+                          setCustomHex(DEFAULT_ACCENT);
+                          setHexError('');
+                          actions.updateSettings({ accent: DEFAULT_ACCENT, paletteMode: 'original' });
+                        }}
+                      >
+                        {tr('重置')}
+                      </button>
+                    </div>
+                    {hexError ? <div className="settings-note" style={{ color: 'var(--error)' }}>{hexError}</div> : null}
+                  </div>
                 </div>
 
-                <div className="settings-group-header">{tr('语言与排版')}</div>
+                <div className="settings-group-header">{tr('字体大小')}</div>
                 <div className="settings-card">
-                  <SettingRow
-                    title={tr('界面语言')}
-                    control={
-                      <Segmented<AppSettings['language']>
-                        value={s.language}
-                        onChange={(language) => actions.updateSettings({ language })}
-                        options={[
-                          { value: 'zh-Hans', label: '简体中文' },
-                          { value: 'en', label: 'English' }
-                        ]}
-                      />
-                    }
-                  />
-                  <div className="settings-divider" />
                   <SettingRow
                     title={tr('字体大小')}
-                    description={tr('正文与编辑器基础字号 ({0}px)', [s.fontSize])}
+                    description={tr('调整笔记编辑与预览中的文字大小。')}
                     control={
                       <div className="range-row">
                         <input
                           type="range"
-                          min={13}
-                          max={20}
+                          min={12}
+                          max={26}
                           value={s.fontSize}
                           onChange={(e) => actions.updateSettings({ fontSize: Number(e.target.value) })}
                         />
@@ -321,13 +557,31 @@ export function SettingsDialog(): JSX.Element | null {
                   />
                 </div>
 
-                <div className="settings-group-header">{tr('界面元素')}</div>
+              </div>
+            ) : null}
+
+            {activeCategory === 'interface' ? (
+              <div className="settings-page">
+                <h2 className="settings-page-title">{tr('界面')}</h2>
                 <div className="settings-card">
                   <SettingRow
-                    title={tr('显示功能区')}
-                    description={tr('左侧工作台导航与快捷入口')}
+                    title={tr('显示标签页标题栏')}
+                    description={tr('在每个标签页上方显示标题栏。')}
                     control={
                       <Toggle
+                        label={tr('显示标签页标题栏')}
+                        checked={s.showTabHeaders}
+                        onChange={(v) => actions.updateSettings({ showTabHeaders: v })}
+                      />
+                    }
+                  />
+                  <div className="settings-divider" />
+                  <SettingRow
+                    title={tr('显示功能区')}
+                    description={tr('显示窗口最左侧的功能区，以便快速执行命令。')}
+                    control={
+                      <Toggle
+                        label={tr('显示功能区')}
                         checked={s.showRibbon}
                         onChange={(v) => actions.updateSettings({ showRibbon: v })}
                       />
@@ -335,55 +589,36 @@ export function SettingsDialog(): JSX.Element | null {
                   />
                   <div className="settings-divider" />
                   <SettingRow
-                    title={tr('显示标签页标题栏')}
-                    description={tr('在编辑区顶部显示多文档标签栏')}
-                    control={
-                      <Toggle
-                        checked={s.showTabHeaders}
-                        onChange={(v) => actions.updateSettings({ showTabHeaders: v })}
-                      />
-                    }
-                  />
-                </div>
-              </div>
-            ) : null}
-
-            {activeCategory === 'workspace' ? (
-              <div className="settings-page">
-                <h2 className="settings-page-title">{tr('工作区')}</h2>
-
-                <div className="settings-group-header">{tr('当前工作区')}</div>
-                <div className="settings-card">
-                  <SettingRow
-                    title={activeVault?.name ?? tr('默认工作区')}
-                    description={
-                      activeVault?.folderUri
-                        ? activeVault.folderUri
-                        : tr('使用默认应用工作区文件夹')
-                    }
+                    title={tr('侧栏宽度')}
+                    description={tr('拖动侧栏边缘可随时调整；这里可以恢复默认宽度。')}
                     control={
                       <button
                         type="button"
                         className="settings-btn-inset"
-                        onClick={() => void actions.chooseWorkspaceFolder()}
+                        onClick={() => actions.updateSettings({ sidebarWidth: 244, rightSidebarWidth: 280 })}
                       >
-                        {tr('更换文件夹…')}
+                        {tr('恢复默认')}
                       </button>
                     }
                   />
-                  <div className="settings-divider" />
+                </div>
+                <div className="settings-group-header">{tr('高级')}</div>
+                <div className="settings-card">
                   <SettingRow
-                    title={tr('默认打开方式')}
-                    description={tr('点击文件或工作区链接时的打开行为')}
+                    title={tr('缩放比例')}
+                    description={tr('控制应用程序的整体缩放比例。')}
                     control={
-                      <Segmented<AppSettings['workspaceDefaultOpenMode']>
-                        value={s.workspaceDefaultOpenMode}
-                        onChange={(v) => actions.updateSettings({ workspaceDefaultOpenMode: v })}
-                        options={[
-                          { value: 'current', label: tr('当前窗口标签') },
-                          { value: 'new', label: tr('新窗口') }
-                        ]}
-                      />
+                      <div className="range-row">
+                        <input
+                          type="range"
+                          min={75}
+                          max={150}
+                          step={5}
+                          value={s.zoom || 100}
+                          onChange={(e) => actions.updateSettings({ zoom: Number(e.target.value) })}
+                        />
+                        <span className="range-value">{s.zoom || 100}%</span>
+                      </div>
                     }
                   />
                 </div>
@@ -394,17 +629,22 @@ export function SettingsDialog(): JSX.Element | null {
               <div className="settings-page">
                 <h2 className="settings-page-title">{tr('编辑器')}</h2>
 
+                <div className="settings-scope-banner">
+                  <Icon name="info" size={14} />
+                  <span>{tr('编辑器设置仅应用于工作区「{0}」。', [activeVault?.name ?? tr('个人知识库')])}</span>
+                </div>
+
                 <div className="settings-group-header">{tr('默认视图与模式')}</div>
                 <div className="settings-card">
                   <SettingRow
-                    title={tr('新标签默认视图')}
+                    title={tr('新标签页的默认视图')}
+                    description={tr('设置新打开笔记的默认视图。')}
                     control={
                       <Segmented<AppSettings['editorDefaultView']>
                         value={s.editorDefaultView}
                         onChange={(v) => actions.updateSettings({ editorDefaultView: v })}
                         options={[
-                          { value: 'live', label: tr('即时预览') },
-                          { value: 'source', label: tr('源码模式') },
+                          { value: 'live', label: tr('编辑视图') },
                           { value: 'reading', label: tr('阅读视图') }
                         ]}
                       />
@@ -413,12 +653,13 @@ export function SettingsDialog(): JSX.Element | null {
                   <div className="settings-divider" />
                   <SettingRow
                     title={tr('默认编辑模式')}
+                    description={tr('源码模式显示完整 Markdown；实时预览按块就地编辑。')}
                     control={
                       <Segmented<'live' | 'source'>
                         value={s.editorDefaultMode}
-                        onChange={(v) => actions.updateSettings({ editorDefaultMode: v })}
+                        onChange={(v) => actions.updateSettings({ editorDefaultMode: v, editorDefaultView: v })}
                         options={[
-                          { value: 'live', label: tr('即时预览') },
+                          { value: 'live', label: tr('实时预览') },
                           { value: 'source', label: tr('源码模式') }
                         ]}
                       />
@@ -426,13 +667,14 @@ export function SettingsDialog(): JSX.Element | null {
                   />
                 </div>
 
-                <div className="settings-group-header">{tr('版面与显示')}</div>
+                <div className="settings-group-header">{tr('显示')}</div>
                 <div className="settings-card">
                   <SettingRow
-                    title={tr('缩减行宽')}
-                    description={tr('限制正文最大阅读宽度以提升长文专注度')}
+                    title={tr('限制行宽')}
+                    description={tr('将正文宽度限制在便于阅读的范围内。')}
                     control={
                       <Toggle
+                        label={tr('限制行宽')}
                         checked={s.editorLimitWidth}
                         onChange={(v) => actions.updateSettings({ editorLimitWidth: v })}
                       />
@@ -440,9 +682,11 @@ export function SettingsDialog(): JSX.Element | null {
                   />
                   <div className="settings-divider" />
                   <SettingRow
-                    title={tr('显示内嵌标题')}
+                    title={tr('页面内标题')}
+                    description={tr('在正文顶部显示可编辑的大标题。')}
                     control={
                       <Toggle
+                        label={tr('页面内标题')}
                         checked={s.editorShowTitle}
                         onChange={(v) => actions.updateSettings({ editorShowTitle: v })}
                       />
@@ -450,19 +694,23 @@ export function SettingsDialog(): JSX.Element | null {
                   />
                   <div className="settings-divider" />
                   <SettingRow
-                    title={tr('显示编辑状态栏')}
+                    title={tr('视图状态')}
+                    description={tr('在底部状态栏显示当前视图模式与字数。')}
                     control={
                       <Toggle
+                        label={tr('视图状态')}
                         checked={s.editorViewStatus}
                         onChange={(v) => actions.updateSettings({ editorViewStatus: v })}
                       />
                     }
                   />
                 </div>
+
+                {renderWorkspaceOpenSection()}
               </div>
             ) : null}
 
-            {activeCategory === 'files' ? (
+            {activeCategory === 'data' ? (
               <div className="settings-page">
                 <h2 className="settings-page-title">{tr('文件与链接')}</h2>
 
@@ -492,12 +740,7 @@ export function SettingsDialog(): JSX.Element | null {
                     control={<span className="settings-badge-muted">[[Link]]</span>}
                   />
                 </div>
-              </div>
-            ) : null}
 
-            {activeCategory === 'data' ? (
-              <div className="settings-page">
-                <h2 className="settings-page-title">{tr('数据与备份')}</h2>
 
                 <div className="settings-group-header">{tr('工作区归档 (.zip)')}</div>
                 <div className="settings-card">
@@ -530,10 +773,10 @@ export function SettingsDialog(): JSX.Element | null {
                   />
                 </div>
 
-                <div className="settings-group-header">{tr('设置与插件合集 (.json)')}</div>
+                <div className="settings-group-header">{tr('设置与插件备份 (.json)')}</div>
                 <div className="settings-card">
                   <SettingRow
-                    title={tr('导出设置与插件合集')}
+                    title={tr('导出设置与插件 (.json)')}
                     description={tr('导出外观、编辑器、工作区偏好及已安装插件清单为 JSON')}
                     control={
                       <button
@@ -547,7 +790,7 @@ export function SettingsDialog(): JSX.Element | null {
                   />
                   <div className="settings-divider" />
                   <SettingRow
-                    title={tr('导入设置与插件合集')}
+                    title={tr('导入设置与插件 (.json)')}
                     description={tr('从导出的 .json 恢复应用偏好设置与插件配置')}
                     control={
                       <button
@@ -564,7 +807,7 @@ export function SettingsDialog(): JSX.Element | null {
                 <div className="settings-group-header">{tr('索引维护')}</div>
                 <div className="settings-card">
                   <SettingRow
-                    title={tr('重建工作区索引')}
+                    title={tr('重建索引')}
                     description={tr('从当前工作区文件夹重新扫描笔记、思维导图、白板与双向链接')}
                     control={
                       <button
@@ -572,8 +815,78 @@ export function SettingsDialog(): JSX.Element | null {
                         className="settings-btn-inset"
                         onClick={() => void actions.rebuildIndex()}
                       >
-                        {tr('立即重建')}
+                        {tr('重建索引')}
                       </button>
+                    }
+                  />
+                </div>
+
+                <div className="settings-group-header">{tr('版本历史与自动清理')}</div>
+                <div className="settings-card">
+                  <SettingRow
+                    title={tr('当前快照占用')}
+                    description={tr('已保留 {0} 个快照（涉及 {1} 篇笔记），总计 {2}', [
+                      historyUsage.revisionCount,
+                      historyUsage.noteCount,
+                      formatBytes(historyUsage.totalBytes)
+                    ])}
+                    control={
+                      <button
+                        type="button"
+                        className="settings-btn-inset"
+                        disabled={historyBusy}
+                        onClick={() => void cleanupHistoryNow()}
+                      >
+                        {tr('立即按规则清理')}
+                      </button>
+                    }
+                  />
+                  <div className="settings-divider" />
+                  <SettingRow
+                    title={tr('快照保留天数')}
+                    description={tr('超过所选天数的旧历史快照会在保存和清理时自动移除')}
+                    control={
+                      <Segmented
+                        value={String(policy.maxAgeDays)}
+                        options={[
+                          { value: '7', label: tr('7 天') },
+                          { value: '30', label: tr('30 天') },
+                          { value: '90', label: tr('90 天') }
+                        ]}
+                        onChange={(v) => void updatePolicy({ maxAgeDays: Number(v) })}
+                      />
+                    }
+                  />
+                  <div className="settings-divider" />
+                  <SettingRow
+                    title={tr('单篇笔记快照上限')}
+                    description={tr('每篇笔记最多保留的历史快照数量')}
+                    control={
+                      <Segmented
+                        value={String(policy.maxCountPerNote)}
+                        options={[
+                          { value: '20', label: tr('20 条') },
+                          { value: '30', label: tr('30 条') },
+                          { value: '50', label: tr('50 条') }
+                        ]}
+                        onChange={(v) => void updatePolicy({ maxCountPerNote: Number(v) })}
+                      />
+                    }
+                  />
+                  <div className="settings-divider" />
+                  <SettingRow
+                    title={tr('历史快照总存储上限')}
+                    description={tr('当全部历史快照总容量超限时，自动从最旧快照开始淘汰')}
+                    control={
+                      <Segmented
+                        value={String(Math.round(policy.maxTotalBytes / (1024 * 1024)))}
+                        options={[
+                          { value: '20', label: '20 MB' },
+                          { value: '50', label: '50 MB' },
+                          { value: '100', label: '100 MB' }
+                        ]}
+                        onChange={(v) => void updatePolicy({ maxTotalBytes: Number(v) * 1024 * 1024 })}
+                      />
                     }
                   />
                 </div>
@@ -583,20 +896,118 @@ export function SettingsDialog(): JSX.Element | null {
             {activeCategory === 'shortcuts' ? (
               <div className="settings-page">
                 <h2 className="settings-page-title">{tr('快捷键')}</h2>
+                <p className="settings-note" style={{ margin: '0 0 8px' }}>
+                  {tr('搜索命令，点击「+」后按下组合键；Esc 取消录制。')}
+                </p>
 
-                <div className="settings-group-header">{tr('常用快捷键')}</div>
+                <div className="settings-search" style={{ marginBottom: 10 }}>
+                  <Icon name="search" size={14} muted />
+                  <input
+                    type="text"
+                    placeholder={tr('搜索命令或快捷键')}
+                    value={hotkeyQuery}
+                    onChange={(e) => setHotkeyQuery(e.target.value)}
+                  />
+                </div>
+
+                {hotkeyNotice ? (
+                  <div className="settings-scope-banner" style={{ marginBottom: 8 }}>
+                    <span>{hotkeyNotice}</span>
+                  </div>
+                ) : null}
+
                 <div className="settings-card">
-                  {SHORTCUTS.map(([keys, label], idx) => (
-                    <React.Fragment key={keys}>
-                      {idx > 0 ? <div className="settings-divider" /> : null}
-                      <div className="setting-row">
-                        <div className="setting-copy">
-                          <div className="setting-title">{tr(label)}</div>
+                  {filteredCommands.map((cmd, idx) => {
+                    const currentKey = s.hotkeys?.[cmd.id] ?? cmd.shortcut ?? '';
+                    const isRecording = recordingCommandId === cmd.id;
+                    const defaultKey = DEFAULT_HOTKEYS[cmd.id] ?? '';
+                    return (
+                      <React.Fragment key={cmd.id}>
+                        {idx > 0 ? <div className="settings-divider" /> : null}
+                        <div className="setting-row">
+                          <div className="setting-copy">
+                            <div className="setting-title">{tr(cmd.title)}</div>
+                            <div className="setting-desc">{tr(cmd.group)}</div>
+                          </div>
+                          <div className="setting-control">
+                            {isRecording ? (
+                              <button
+                                type="button"
+                                className="settings-pill-btn"
+                                autoFocus
+                                onBlur={() => setRecordingCommandId('')}
+                                onKeyDown={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  if (e.key === 'Escape') {
+                                    setRecordingCommandId('');
+                                    return;
+                                  }
+                                  const combo = formatKeyCombo(e);
+                                  if (!combo) {
+                                    setHotkeyNotice(tr('请同时按下修饰键（Ctrl / Alt / Shift）与按键，或直接按 F1–F12。'));
+                                    return;
+                                  }
+                                  const conflictCmd = COMMANDS.find(
+                                    (other) =>
+                                      other.id !== cmd.id &&
+                                      (s.hotkeys?.[other.id] ?? other.shortcut ?? '').toLowerCase() ===
+                                        combo.toLowerCase()
+                                  );
+                                  if (conflictCmd) {
+                                    setHotkeyNotice(`${tr('快捷键已被占用：')}${tr(conflictCmd.title)} (${combo})`);
+                                    return;
+                                  }
+                                  actions.updateSettings({
+                                    hotkeys: { ...(s.hotkeys ?? {}), [cmd.id]: combo }
+                                  });
+                                  setHotkeyNotice(`${tr('已绑定')} ${tr(cmd.title)} → ${combo}`);
+                                  setRecordingCommandId('');
+                                }}
+                              >
+                                {tr('按下快捷键…')}
+                              </button>
+                            ) : (
+                              <>
+                                {currentKey ? (
+                                  <kbd className="kbd">{currentKey}</kbd>
+                                ) : (
+                                  <span className="settings-badge-muted">{tr('未设置')}</span>
+                                )}
+                                <button
+                                  type="button"
+                                  className="settings-btn-soft"
+                                  style={{ height: 28, padding: '0 10px' }}
+                                  title={tr('添加快捷键')}
+                                  onClick={() => {
+                                    setHotkeyNotice('');
+                                    setRecordingCommandId(cmd.id);
+                                  }}
+                                >
+                                  +
+                                </button>
+                                {currentKey !== defaultKey ? (
+                                  <button
+                                    type="button"
+                                    className="settings-btn-inset"
+                                    style={{ height: 28, padding: '0 10px' }}
+                                    onClick={() => {
+                                      const next = { ...(s.hotkeys ?? {}) };
+                                      if (defaultKey) next[cmd.id] = defaultKey;
+                                      else delete next[cmd.id];
+                                      actions.updateSettings({ hotkeys: next });
+                                    }}
+                                  >
+                                    {tr('重置')}
+                                  </button>
+                                ) : null}
+                              </>
+                            )}
+                          </div>
                         </div>
-                        <kbd className="kbd">{keys}</kbd>
-                      </div>
-                    </React.Fragment>
-                  ))}
+                      </React.Fragment>
+                    );
+                  })}
                 </div>
               </div>
             ) : null}
@@ -610,7 +1021,6 @@ export function SettingsDialog(): JSX.Element | null {
             </div>
           </main>
         </div>
-      </div>
-    </div>
+    </>
   );
 }

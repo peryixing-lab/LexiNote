@@ -1,21 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import katex from 'katex';
 import 'katex/dist/katex.min.css';
-import hljs from 'highlight.js/lib/core';
-import typescript from 'highlight.js/lib/languages/typescript';
-import javascript from 'highlight.js/lib/languages/javascript';
-import json from 'highlight.js/lib/languages/json';
-import bash from 'highlight.js/lib/languages/bash';
-import python from 'highlight.js/lib/languages/python';
-import css from 'highlight.js/lib/languages/css';
-import xml from 'highlight.js/lib/languages/xml';
-import markdown from 'highlight.js/lib/languages/markdown';
-import go from 'highlight.js/lib/languages/go';
-import rust from 'highlight.js/lib/languages/rust';
-import java from 'highlight.js/lib/languages/java';
-import sql from 'highlight.js/lib/languages/sql';
-import yaml from 'highlight.js/lib/languages/yaml';
-import cpp from 'highlight.js/lib/languages/cpp';
 import type { NoteItem } from '../../shared/types';
 import {
   MarkdownBlock,
@@ -26,69 +10,12 @@ import {
   displayTitle,
   extractEmbeddedSection
 } from '../core/markdown';
+import { CALLOUT_LABELS, highlightCodeHtml, renderMathHtml } from '../core/mathRender';
 import { CheckGlyph } from './Symbols';
+import { LinkPreviewPopover } from './LinkPreviewPopover';
 import { tr } from '../core/i18n';
 
-hljs.registerLanguage('typescript', typescript);
-hljs.registerLanguage('javascript', javascript);
-hljs.registerLanguage('json', json);
-hljs.registerLanguage('bash', bash);
-hljs.registerLanguage('python', python);
-hljs.registerLanguage('css', css);
-hljs.registerLanguage('html', xml);
-hljs.registerLanguage('markdown', markdown);
-hljs.registerLanguage('go', go);
-hljs.registerLanguage('rust', rust);
-hljs.registerLanguage('java', java);
-hljs.registerLanguage('sql', sql);
-hljs.registerLanguage('yaml', yaml);
-hljs.registerLanguage('cpp', cpp);
-
-const LANGUAGE_ALIASES: Record<string, string> = {
-  ts: 'typescript',
-  tsx: 'typescript',
-  js: 'javascript',
-  jsx: 'javascript',
-  sh: 'bash',
-  shell: 'bash',
-  zsh: 'bash',
-  py: 'python',
-  yml: 'yaml',
-  xml: 'html',
-  vue: 'html',
-  c: 'cpp',
-  'c++': 'cpp',
-  h: 'cpp'
-};
-
-const CALLOUT_LABELS: Record<string, { label: string; mark: string }> = {
-  NOTE: { label: '注意', mark: '✦' },
-  TIP: { label: '提示', mark: '✦' },
-  IMPORTANT: { label: '重要', mark: '!' },
-  WARNING: { label: '警告', mark: '△' },
-  CAUTION: { label: '谨慎', mark: '⚑' },
-  QUESTION: { label: '问题', mark: '?' },
-  EXAMPLE: { label: '示例', mark: '≡' },
-  QUOTE: { label: '引用', mark: '“' },
-  SUCCESS: { label: '完成', mark: '✓' },
-  ABSTRACT: { label: '摘要', mark: '§' },
-  TODO: { label: '待办', mark: '☐' }
-};
-
-export function renderMath(tex: string, displayMode: boolean): string {
-  try {
-    return katex.renderToString(tex, {
-      displayMode,
-      throwOnError: true,
-      errorColor: 'var(--error)',
-      strict: false,
-      trust: false,
-      output: 'html'
-    });
-  } catch {
-    return '';
-  }
-}
+export const renderMath = renderMathHtml;
 
 export function MathSpan({ tex, display }: { tex: string; display: boolean }): JSX.Element {
   const html = useMemo(() => renderMath(tex, display), [tex, display]);
@@ -109,17 +36,7 @@ export function MathSpan({ tex, display }: { tex: string; display: boolean }): J
 
 function CodeBlock({ code, language }: { code: string; language: string }): JSX.Element {
   const [copied, setCopied] = useState(false);
-  const rendered = useMemo(() => {
-    const lang = LANGUAGE_ALIASES[language.toLowerCase()] ?? language.toLowerCase();
-    try {
-      if (lang && hljs.getLanguage(lang)) {
-        return hljs.highlight(code, { language: lang, ignoreIllegals: true }).value;
-      }
-      return hljs.highlightAuto(code).value;
-    } catch {
-      return code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
-  }, [code, language]);
+  const rendered = useMemo(() => highlightCodeHtml(code, language), [code, language]);
 
   const copy = (): void => {
     void navigator.clipboard.writeText(code);
@@ -174,22 +91,28 @@ export function InlineContent({ text, notes = [], onOpenTarget }: InlineProps): 
             );
           case 'link': {
             const target = span.target ?? '';
+            const baseTarget = (target.split('#')[0] ?? target).trim().toLowerCase();
             const internal = notes.some(
-              (note) => note.id === target || displayTitle(note).trim().toLowerCase() === target.toLowerCase()
+              (note) =>
+                note.trashedAt === 0 &&
+                (note.id === target ||
+                  note.id.toLowerCase() === baseTarget ||
+                  displayTitle(note).trim().toLowerCase() === baseTarget)
             );
             return (
-              <a
-                key={span.id}
-                className={internal ? 'wiki-link' : 'md-link'}
-                href="#"
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  onOpenTarget?.(target);
-                }}
-              >
-                {span.text}
-              </a>
+              <LinkPreviewPopover key={span.id} target={target} onOpenTarget={onOpenTarget}>
+                <a
+                  className={internal ? 'wiki-link' : 'wiki-link missing'}
+                  href="#"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onOpenTarget?.(target);
+                  }}
+                >
+                  {span.text}
+                </a>
+              </LinkPreviewPopover>
             );
           }
           case 'url':
@@ -222,6 +145,7 @@ export function InlineContent({ text, notes = [], onOpenTarget }: InlineProps): 
 interface MarkdownBlocksProps {
   content: string;
   notes?: NoteItem[];
+  currentNote?: NoteItem;
   onOpenTarget?: (target: string) => void;
   onToggleTodo?: (lineIndex: number) => void;
   anchorPrefix?: string;
@@ -232,6 +156,7 @@ interface MarkdownBlocksProps {
 export function MarkdownBlocks({
   content,
   notes = [],
+  currentNote,
   onOpenTarget,
   onToggleTodo,
   anchorPrefix = 'md'
@@ -247,6 +172,7 @@ export function MarkdownBlocks({
           block={block}
           notes={notes}
           notesById={notesById}
+          currentNote={currentNote}
           onOpenTarget={onOpenTarget}
           onToggleTodo={onToggleTodo}
           readOnly
@@ -260,6 +186,7 @@ interface BlockViewProps {
   block: MarkdownBlock;
   notes: NoteItem[];
   notesById: Map<string, NoteItem>;
+  currentNote?: NoteItem;
   onOpenTarget?: (target: string) => void;
   onToggleTodo?: (lineIndex: number) => void;
   readOnly?: boolean;
@@ -271,6 +198,7 @@ export function BlockView({
   block,
   notes,
   notesById,
+  currentNote,
   onOpenTarget,
   onToggleTodo,
   readOnly = true,
@@ -387,16 +315,18 @@ export function BlockView({
     case 'image': {
       const src = block.meta?.trim() ?? '';
       const isRemote = /^(https?:|data:image\/|blob:)/i.test(src);
+      const localUrl =
+        !isRemote && src && currentNote
+          ? `lexi-asset://local/?vaultId=${encodeURIComponent(currentNote.vaultId)}&notebook=${encodeURIComponent(currentNote.notebook || '默认')}&notePath=${encodeURIComponent(currentNote.path || '')}&src=${encodeURIComponent(src)}`
+          : '';
+      const resolvedSrc = isRemote ? src : localUrl;
       return (
         <figure {...lineAttr} className="md-block md-image">
-          {isRemote ? (
-            <img src={src} alt={block.text || tr('图片')} loading="lazy" />
+          {resolvedSrc ? (
+            <img src={resolvedSrc} alt={block.text || tr('图片')} loading="lazy" />
           ) : (
             <div className="md-image-missing">
               <span>{tr('本地图片：{0}', undefined, [src])}</span>
-              <span>
-                {tr('Windows 版暂不支持直接读取外部图片路径，请使用在线图片或粘贴图片链接。')}
-              </span>
             </div>
           )}
           {block.text ? <figcaption>{block.text}</figcaption> : null}
@@ -404,13 +334,21 @@ export function BlockView({
       );
     }
     case 'embed': {
-      const target = notesById.get(block.meta) ?? notes.find((note) => displayTitle(note) === block.meta);
-      const excerpt = target ? extractEmbeddedSection(target.content, '') : '';
+      const [baseTarget, anchorTarget = ''] = block.meta.split('#');
+      const cleanBase = baseTarget.trim();
+      const target =
+        notesById.get(cleanBase) ??
+        notes.find((note) => note.trashedAt === 0 && displayTitle(note).trim().toLowerCase() === cleanBase.toLowerCase());
+      const excerpt = target ? extractEmbeddedSection(target.content, anchorTarget) : '';
       return (
         <div {...lineAttr} className="md-block md-embed">
-          <button type="button" className="embed-title" onClick={() => onOpenTarget?.(block.meta)}>
-            {block.text || block.meta}
-          </button>
+          <div className="embed-head">
+            <LinkPreviewPopover target={block.meta} showTriggerButton onOpenTarget={onOpenTarget}>
+              <button type="button" className="embed-title" onClick={() => onOpenTarget?.(block.meta)}>
+                {block.text || block.meta}
+              </button>
+            </LinkPreviewPopover>
+          </div>
           <div className="embed-body">
             {excerpt ? (
               <InlineContent text={excerpt.replace(/\n+/g, ' ').slice(0, 240)} notes={notes} onOpenTarget={onOpenTarget} />

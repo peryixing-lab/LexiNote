@@ -3,7 +3,8 @@ import { useStore } from '../store/AppStore';
 import { usePluginHost } from '../plugins/PluginHostController';
 import { COMMANDS } from '../core/commands';
 import { displayTitle, extractSnippet } from '../core/markdown';
-import { rankTitle } from '../core/search';
+import { matchesSearch, rankTitle, sortNotes } from '../core/search';
+import { HighlightText } from './HighlightText';
 import { CloseGlyph } from './Symbols';
 import { Icon } from './Icon';
 
@@ -66,16 +67,18 @@ export function CommandPalette(): JSX.Element {
         .sort((a, b) => rankTitle(a.title, needle) - rankTitle(b.title, needle));
     }
 
-    const notes = state.notes
-      .filter((note) => note.vaultId === state.activeVaultId && note.trashedAt === 0)
-      .sort((a, b) => b.updatedAt - a.updatedAt)
-      .map<PaletteItem>((note) => ({
-        id: note.id,
-        title: displayTitle(note),
-        hint: extractSnippet(note).slice(0, 42),
-        kind: 'note',
-        icon: note.noteType === 'study' ? 'study' : 'note'
-      }));
+    const activeNotes = sortNotes(
+      derived.hydratedNotes.filter((note) => note.vaultId === state.activeVaultId && note.trashedAt === 0),
+      'accessed'
+    );
+    const noteMap = new Map(activeNotes.map((n) => [n.id, n]));
+    const notes: PaletteItem[] = activeNotes.map<PaletteItem>((note) => ({
+      id: note.id,
+      title: displayTitle(note),
+      hint: extractSnippet(note, needle).slice(0, 64),
+      kind: 'note',
+      icon: note.noteType === 'study' ? 'study' : 'note'
+    }));
     const maps = state.maps
       .filter((map) => map.vaultId === state.activeVaultId && map.trashedAt === 0)
       .map<PaletteItem>((map) => ({
@@ -97,7 +100,15 @@ export function CommandPalette(): JSX.Element {
     const all = [...notes, ...maps, ...canvases];
     const filtered = needle
       ? all
-          .map((item) => ({ item, rank: rankTitle(item.title, needle) }))
+          .map((item) => {
+            const titleRank = rankTitle(item.title, needle);
+            if (titleRank >= 0) return { item, rank: titleRank };
+            if (item.kind === 'note') {
+              const note = noteMap.get(item.id);
+              if (note && matchesSearch(note, needle)) return { item, rank: 500 };
+            }
+            return { item, rank: -1 };
+          })
           .filter((entry) => entry.rank >= 0)
           .sort((a, b) => a.rank - b.rank)
           .map((entry) => entry.item)
@@ -114,7 +125,7 @@ export function CommandPalette(): JSX.Element {
     return filtered;
   }, [
     state.paletteMode,
-    state.notes,
+    derived.hydratedNotes,
     state.maps,
     state.canvases,
     state.activeVaultId,
@@ -222,9 +233,24 @@ export function CommandPalette(): JSX.Element {
                 <Icon name={item.icon} size={15} muted={rowIndex !== index} />
               )}
               <span className="palette-row-text">
-                <span className="palette-row-title">{item.title}</span>
-                {item.hint ? <span className="palette-row-hint">{item.hint}</span> : null}
+                <span className="palette-row-title">
+                  {state.paletteMode === 'commands' || item.kind === 'create' ? (
+                    item.title
+                  ) : (
+                    <HighlightText text={item.title} query={query} />
+                  )}
+                </span>
+                {item.kind === 'command' ? (
+                  item.group ? <span className="palette-row-hint">{item.group}</span> : null
+                ) : item.hint ? (
+                  <span className="palette-row-hint">
+                    {item.kind === 'create' ? item.hint : <HighlightText text={item.hint} query={query} />}
+                  </span>
+                ) : null}
               </span>
+              {item.kind === 'command' && item.hint ? (
+                <kbd className="palette-shortcut">{item.hint}</kbd>
+              ) : null}
             </div>
           ))}
         </div>

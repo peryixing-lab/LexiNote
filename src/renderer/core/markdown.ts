@@ -1,5 +1,6 @@
 import type { MindMapDoc, MindMapNode, NoteItem, NoteProperty, OutlineHeading } from '../../shared/types';
 import { displayBlock, inlineTokens } from './math';
+import { extractHighlightTerms } from './search';
 
 /**
  * Markdown engine ported from the HarmonyOS app (core/MarkdownEngine.ets and
@@ -193,39 +194,40 @@ export function parseFrontmatter(raw: string): FrontmatterResult {
 /** Rewrites frontmatter for exported files without touching note bodies. */
 export function serializeFrontmatter(note: NoteItem): string {
   const parsed = parseFrontmatter(note.content);
-  if (!parsed.hasFrontmatter && note.tags.length === 0 && note.properties.length === 0) return note.content;
-  const output: string[] = [];
-  const used: string[] = [];
+  const now = Date.now();
+  const iso = (ms: number | undefined): string =>
+    new Date(typeof ms === 'number' && Number.isFinite(ms) && ms > 0 ? ms : now).toISOString();
   const tags = note.tags.filter((tag) => !!tag.trim()).map((tag) => tag.replace(/^#/, '').trim());
-  for (const field of yamlFields(parsed.rawHeader)) {
-    if (field.key === 'tag' || field.key === 'tags') {
-      if (!used.includes('tags')) {
-        output.push(`tags: ${JSON.stringify(tags)}`);
-        used.push('tags');
-      }
-    } else if (!field.key || !field.supported) {
-      if (field.text.trim()) output.push(field.text);
-      if (field.key) used.push(field.key);
-    } else {
-      const prop = note.properties.find((item) => item.key === field.key);
-      if (prop) {
-        output.push(
-          prop.value === field.parsed
-            ? field.text
-            : `${JSON.stringify(prop.key)}: ${JSON.stringify(prop.value)}`
-        );
-        used.push(prop.key);
-      }
+  const systemKeys = new Set([
+    'id', 'title', 'notebook', 'type', 'level', 'pinned', 'favorite',
+    'tags', 'tag', 'created', 'updated', 'trashed', 'properties'
+  ]);
+  const output: string[] = [
+    `id: ${JSON.stringify(note.id)}`,
+    `title: ${JSON.stringify(note.title || '未命名笔记')}`,
+    `notebook: ${JSON.stringify(note.notebook || '默认')}`,
+    `type: ${note.noteType || 'markdown'}`,
+    `level: ${note.editorLevel || 'pro'}`,
+    `pinned: ${note.pinned ? 'true' : 'false'}`,
+    `favorite: ${note.favorite ? 'true' : 'false'}`,
+    `tags: [${tags.map((t) => JSON.stringify(t)).join(', ')}]`,
+    `created: ${iso(note.createdAt)}`,
+    `updated: ${iso(note.updatedAt)}`
+  ];
+  if (note.trashedAt && note.trashedAt > 0) {
+    output.push(`trashed: ${iso(note.trashedAt)}`);
+  }
+  const customProps = note.properties.filter(
+    (prop) => prop.key.trim() && !systemKeys.has(prop.key.toLowerCase())
+  );
+  if (customProps.length > 0) {
+    output.push('properties:');
+    for (const prop of customProps) {
+      output.push(`  - key: ${JSON.stringify(prop.key)}`);
+      output.push(`    value: ${JSON.stringify(prop.value)}`);
     }
   }
-  if (tags.length > 0 && !used.includes('tags')) output.push(`tags: ${JSON.stringify(tags)}`);
-  for (const prop of note.properties) {
-    if (prop.key.trim() && prop.key !== 'tag' && prop.key !== 'tags' && !used.includes(prop.key)) {
-      output.push(`${JSON.stringify(prop.key)}: ${JSON.stringify(prop.value)}`);
-      used.push(prop.key);
-    }
-  }
-  return `---\n${output.join('\n')}\n---\n${parsed.body}`;
+  return `---\n${output.join('\n')}\n---\n\n${parsed.body.replace(/^\n+/, '')}`;
 }
 
 export function extractInlineTags(markdown: string): string[] {
@@ -702,10 +704,19 @@ export function extractSnippet(note: NoteItem, query = ''): string {
   }
   const plain = segments.join(' ');
   if (!plain) return '点击继续记录内容…';
-  const q = query.trim().toLowerCase();
-  const match = q ? plain.toLowerCase().indexOf(q) : -1;
+  const terms = extractHighlightTerms(query);
+  const lowerPlain = plain.toLowerCase();
+  let match = -1;
+  let matchLen = 0;
+  for (const term of terms) {
+    const idx = lowerPlain.indexOf(term);
+    if (idx >= 0 && (match < 0 || idx < match || (idx === match && term.length > matchLen))) {
+      match = idx;
+      matchLen = term.length;
+    }
+  }
   const start = match >= 0 ? Math.max(0, match - 18) : 0;
-  const end = Math.min(plain.length, match >= 0 ? match + q.length + 42 : 86);
+  const end = Math.min(plain.length, match >= 0 ? match + matchLen + 48 : 86);
   return `${start > 0 ? '…' : ''}${plain.slice(start, end)}${end < plain.length ? '…' : ''}`;
 }
 
@@ -923,4 +934,171 @@ export function wordCount(text: string): number {
   const cjk = (clean.match(/[\u4e00-\u9fff]/g) || []).length;
   const latin = clean.replace(/[\u4e00-\u9fff]/g, ' ').trim().split(/\s+/).filter(Boolean).length;
   return cjk + latin;
+}
+
+export interface LinkTargetPreview {
+  exists: boolean;
+  noteId: string;
+  title: string;
+  targetName: string;
+  anchor: string;
+  notebook: string;
+  tags: string[];
+  snippet: string;
+  outgoingCount: number;
+  backlinkCount: number;
+  updatedAt: number;
+  lastOpenedAt: number;
+}
+
+export interface LinkCandidate {
+  noteId: string;
+  title: string;
+  notebook: string;
+  reason: string;
+  score: number;
+}
+
+export function resolveLinkTargetPreview(
+  rawTarget: string,
+  notes: NoteItem[],
+  links: ExtractedLink[],
+  vaultId = ''
+): LinkTargetPreview {
+  const cleaned = rawTarget.trim();
+  const hashIdx = cleaned.indexOf('#');
+  const targetName = (hashIdx >= 0 ? cleaned.slice(0, hashIdx) : cleaned).replace(/\.md$/i, '').trim();
+  const anchor = hashIdx >= 0 ? cleaned.slice(hashIdx + 1).trim() : '';
+  const empty: LinkTargetPreview = {
+    exists: false,
+    noteId: '',
+    title: targetName,
+    targetName,
+    anchor,
+    notebook: '',
+    tags: [],
+    snippet: '目标笔记尚未创建，点击可新建并打开。',
+    outgoingCount: 0,
+    backlinkCount: 0,
+    updatedAt: 0,
+    lastOpenedAt: 0
+  };
+  if (!targetName) return empty;
+  const lower = targetName.toLowerCase();
+  const active = notes.filter((n) => n.trashedAt === 0);
+  const scoped = vaultId ? active.filter((n) => n.vaultId === vaultId) : active;
+  const pick = (pool: NoteItem[]) =>
+    pool.find(
+      (n) =>
+        n.id === targetName ||
+        n.title.trim().toLowerCase() === lower ||
+        displayTitle(n).trim().toLowerCase() === lower
+    );
+  const found = pick(scoped) ?? pick(active);
+  if (!found) return empty;
+
+  const outgoingCount = links.filter((l) => l.sourceId === found.id).length;
+  const backlinkCount = links.filter((l) => l.targetId === found.id && l.sourceId !== found.id).length;
+  let snippet = '';
+  if (anchor) {
+    const section = extractEmbeddedSection(found.content, anchor).replace(/\s+/g, ' ').trim();
+    if (section) {
+      snippet = section.length > 140 ? `${section.slice(0, 140)}…` : section;
+    }
+  }
+  if (!snippet) {
+    snippet = extractSnippet(found);
+  }
+  return {
+    exists: true,
+    noteId: found.id,
+    title: displayTitle(found),
+    targetName,
+    anchor,
+    notebook: found.notebook || '默认',
+    tags: found.tags.slice(0, 4),
+    snippet,
+    outgoingCount,
+    backlinkCount,
+    updatedAt: found.updatedAt,
+    lastOpenedAt: found.lastOpenedAt ?? 0
+  };
+}
+
+export function connectedNoteIds(links: ExtractedLink[]): Set<string> {
+  const ids = new Set<string>();
+  for (const link of links) {
+    if (!link.targetId || link.sourceId === link.targetId) continue;
+    ids.add(link.sourceId);
+    ids.add(link.targetId);
+  }
+  return ids;
+}
+
+export function findUnconnectedNotes(notes: NoteItem[], links: ExtractedLink[], vaultId = ''): NoteItem[] {
+  const connected = connectedNoteIds(links);
+  return notes.filter(
+    (n) => n.trashedAt === 0 && (!vaultId || n.vaultId === vaultId) && !connected.has(n.id)
+  );
+}
+
+export function isNoteUnconnected(noteId: string, links: ExtractedLink[]): boolean {
+  if (!noteId) return false;
+  return !links.some(
+    (link) => Boolean(link.targetId) && link.sourceId !== link.targetId && (link.sourceId === noteId || link.targetId === noteId)
+  );
+}
+
+export function suggestLinkCandidatesForNote(
+  note: NoteItem,
+  notes: NoteItem[],
+  links: ExtractedLink[],
+  limit = 4
+): LinkCandidate[] {
+  const active = notes.filter((n) => n.trashedAt === 0 && n.id !== note.id && n.vaultId === note.vaultId);
+  const linked = new Set<string>();
+  for (const link of links) {
+    if (link.sourceId === note.id && link.targetId) linked.add(link.targetId);
+    if (link.targetId === note.id && link.sourceId) linked.add(link.sourceId);
+  }
+  const sourceTitleLower = (note.title.trim() || displayTitle(note)).toLowerCase();
+  const sourceBodyLower = note.content.toLowerCase();
+  const sourceTags = new Set(note.tags.map((t) => t.trim().toLowerCase()).filter(Boolean));
+  const candidates: LinkCandidate[] = [];
+
+  for (const other of active) {
+    if (linked.has(other.id)) continue;
+    const otherTitle = displayTitle(other);
+    const otherLower = otherTitle.toLowerCase();
+    let score = 0;
+    let reason = '';
+    if (otherTitle.length >= 2 && sourceBodyLower.includes(otherLower)) {
+      score += 5;
+      reason = '正文中提及此笔记';
+    } else if (sourceTitleLower.length >= 2 && other.content.toLowerCase().includes(sourceTitleLower)) {
+      score += 4;
+      reason = '对方正文中提及本笔记';
+    }
+    const sharedTags = other.tags.filter((t) => sourceTags.has(t.trim().toLowerCase()));
+    if (sharedTags.length > 0) {
+      score += sharedTags.length * 2;
+      if (!reason) reason = `共享标签 #${sharedTags[0]}`;
+    }
+    if (!reason && other.notebook && other.notebook === note.notebook) {
+      score += 1;
+      reason = `同一笔记本「${other.notebook}」`;
+    }
+    if (score > 0) {
+      candidates.push({
+        noteId: other.id,
+        title: otherTitle,
+        notebook: other.notebook || '默认',
+        reason,
+        score
+      });
+    }
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates.slice(0, limit);
 }

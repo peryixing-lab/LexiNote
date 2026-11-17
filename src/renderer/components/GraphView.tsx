@@ -1,7 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store/AppStore';
-import { displayTitle, extractSnippet } from '../core/markdown';
+import {
+  displayTitle,
+  extractSnippet,
+  isNoteUnconnected,
+  suggestLinkCandidatesForNote
+} from '../core/markdown';
 import { Icon } from './Icon';
+import { LinkPreviewPopover } from './LinkPreviewPopover';
 
 interface GraphNode {
   id: string;
@@ -111,15 +117,24 @@ export function GraphView(): JSX.Element {
   const { tr } = derived;
   const [showMaps, setShowMaps] = useState(true);
   const [showTags, setShowTags] = useState(true);
+  const [showUnconnectedOnly, setShowUnconnectedOnly] = useState(false);
+  const [showAllUnconnected, setShowAllUnconnected] = useState(false);
   const [selected, setSelected] = useState('');
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const dragRef = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
+  const unconnectedIds = useMemo(
+    () => new Set(derived.unconnectedNotes.map((n) => n.id)),
+    [derived.unconnectedNotes]
+  );
 
   const graph = useMemo(() => {
-    const notes = state.notes.filter((note) => note.vaultId === state.activeVaultId && note.trashedAt === 0);
+    const allVaultNotes = derived.hydratedNotes.filter(
+      (note) => note.vaultId === state.activeVaultId && note.trashedAt === 0
+    );
+    const notes = showUnconnectedOnly ? allVaultNotes.filter((n) => unconnectedIds.has(n.id)) : allVaultNotes;
     const maps = state.maps.filter(
-      (map) => map.vaultId === state.activeVaultId && map.trashedAt === 0 && showMaps
+      (map) => !showUnconnectedOnly && map.vaultId === state.activeVaultId && map.trashedAt === 0 && showMaps
     );
     const nodes: GraphNode[] = [];
     const edges: GraphEdge[] = [];
@@ -184,12 +199,20 @@ export function GraphView(): JSX.Element {
     }
     for (const node of nodes) node.degree = degree.get(node.id) || 0;
     return { nodes: layoutGraph(nodes, edges), edges };
-  }, [state.notes, state.maps, state.activeVaultId, derived.links, showMaps, showTags]);
+  }, [derived.hydratedNotes, state.maps, state.activeVaultId, derived.links, showMaps, showTags, showUnconnectedOnly, unconnectedIds]);
 
   const selectedNode = graph.nodes.find((node) => node.id === selected);
   const selectedNote = selectedNode?.kind === 'note'
-    ? state.notes.find((note) => note.id === selectedNode.id)
+    ? derived.hydratedNotes.find((note) => note.id === selectedNode.id)
     : undefined;
+  const selectedIsUnconnected = selectedNote ? unconnectedIds.has(selectedNote.id) : false;
+  const selectedCandidates = useMemo(
+    () =>
+      selectedNote && selectedIsUnconnected
+        ? suggestLinkCandidatesForNote(selectedNote, derived.hydratedNotes, derived.links, 4)
+        : [],
+    [selectedNote, selectedIsUnconnected, derived.hydratedNotes, derived.links]
+  );
   const related = graph.edges.filter((edge) => edge.source === selected || edge.target === selected);
 
   useEffect(() => {
@@ -226,6 +249,18 @@ export function GraphView(): JSX.Element {
             <input type="checkbox" checked={showTags} onChange={(event) => setShowTags(event.target.checked)} />
             {tr('显示标签')}
           </label>
+          {derived.unconnectedNotes.length > 0 ? (
+            <button
+              type="button"
+              className={`small-btn${showUnconnectedOnly ? ' active' : ''}`}
+              onClick={() => {
+                setShowUnconnectedOnly((prev) => !prev);
+                setSelected('');
+              }}
+            >
+              {tr('未连接 {0}', [derived.unconnectedNotes.length])}
+            </button>
+          ) : null}
           <button type="button" className="small-btn" onClick={() => setScale((value) => Math.min(2, value + 0.15))}>
             +
           </button>
@@ -294,10 +329,11 @@ export function GraphView(): JSX.Element {
                       ? 11
                       : 8;
                 const active = selected === node.id;
+                const isIso = node.kind === 'note' && unconnectedIds.has(node.id);
                 return (
                   <g
                     key={node.id}
-                    className={`graph-node ${node.kind}${active ? ' active' : ''}`}
+                    className={`graph-node ${node.kind}${active ? ' active' : ''}${isIso ? ' unconnected' : ''}`}
                     transform={`translate(${node.x} ${node.y})`}
                     onClick={(event) => {
                       event.stopPropagation();
@@ -333,15 +369,26 @@ export function GraphView(): JSX.Element {
         <aside className="graph-panel">
           {selectedNote ? (
             <>
-              <button type="button" className="graph-open" onClick={() => actions.openDocument(selectedNote.id)}>
-                {tr('打开笔记')}
-              </button>
+              <div className="graph-panel-actions">
+                <button type="button" className="graph-open" onClick={() => actions.openDocument(selectedNote.id)}>
+                  {tr('打开笔记')}
+                </button>
+                <LinkPreviewPopover target={selectedNote.id} showTriggerButton>
+                  <span className="sr-only">{displayTitle(selectedNote)}</span>
+                </LinkPreviewPopover>
+              </div>
               <h3>{displayTitle(selectedNote)}</h3>
               <p className="graph-snippet">{extractSnippet(selectedNote).slice(0, 180)}</p>
               <div className="graph-meta">
                 <span>{selectedNote.notebook}</span>
                 <span>·</span>
                 <span>{related.length} {tr('条连接')}</span>
+                {selectedIsUnconnected ? (
+                  <>
+                    <span>·</span>
+                    <span className="unconnected-pill">{tr('未连接')}</span>
+                  </>
+                ) : null}
               </div>
               {selectedNote.tags.length > 0 ? (
                 <div className="tag-wrap">
@@ -352,15 +399,57 @@ export function GraphView(): JSX.Element {
                   ))}
                 </div>
               ) : null}
+              {selectedIsUnconnected ? (
+                <div className="unconnected-banner">
+                  <div className="unconnected-banner-title">{tr('当前笔记尚未建立连接')}</div>
+                  {selectedCandidates.length > 0 ? (
+                    <div className="unconnected-candidates">
+                      {selectedCandidates.map((cand) => (
+                        <div key={cand.noteId} className="unconnected-cand-row">
+                          <LinkPreviewPopover target={cand.noteId} showTriggerButton>
+                            <button
+                              type="button"
+                              className="unconnected-cand-title"
+                              onClick={() => setSelected(cand.noteId)}
+                            >
+                              <span>{cand.title}</span>
+                              <small>{tr(cand.reason)}</small>
+                            </button>
+                          </LinkPreviewPopover>
+                          <button
+                            type="button"
+                            className="small-btn accent"
+                            onClick={() => actions.insertWikiLink(cand.title, selectedNote.id)}
+                          >
+                            + [[...]]
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="unconnected-banner-desc">{tr('可点击“打开笔记”补充 [[双向链接]] 建立关联。')}</p>
+                  )}
+                </div>
+              ) : null}
               <div className="right-section-title spaced">{tr('连接的笔记')}</div>
               {related.map((edge) => {
                 const other = edge.source === selected ? edge.target : edge.source;
                 const node = graph.nodes.find((item) => item.id === other);
                 if (!node) return null;
                 return (
-                  <button key={other} type="button" className="right-link" onClick={() => setSelected(other)}>
-                    {node.label}
-                  </button>
+                  <div key={other} className="right-link-row">
+                    {node.kind === 'note' ? (
+                      <LinkPreviewPopover target={node.id} showTriggerButton onOpenTarget={() => setSelected(other)}>
+                        <button type="button" className="right-link" onClick={() => setSelected(other)}>
+                          {node.label}
+                        </button>
+                      </LinkPreviewPopover>
+                    ) : (
+                      <button type="button" className="right-link" onClick={() => setSelected(other)}>
+                        {node.label}
+                      </button>
+                    )}
+                  </div>
                 );
               })}
             </>
@@ -382,6 +471,60 @@ export function GraphView(): JSX.Element {
                   {tr('标签')}
                 </span>
               </div>
+              {derived.unconnectedNotes.length > 0 ? (
+                <>
+                  <div className="right-section-head spaced">
+                    <span className="right-section-title">{tr('未连接笔记提示 · {0}', [derived.unconnectedNotes.length])}</span>
+                    {derived.unconnectedNotes.length > 4 ? (
+                      <button
+                        type="button"
+                        className="btn-inline"
+                        onClick={() => setShowAllUnconnected((v) => !v)}
+                      >
+                        {showAllUnconnected ? tr('收起') : tr('展开全部')}
+                      </button>
+                    ) : null}
+                  </div>
+                  {(showAllUnconnected ? derived.unconnectedNotes : derived.unconnectedNotes.slice(0, 4)).map((iso) => {
+                    const topCand = suggestLinkCandidatesForNote(iso, derived.hydratedNotes, derived.links, 1)[0];
+                    return (
+                      <div key={iso.id} className="unconnected-card">
+                        <div className="unconnected-card-head">
+                          <LinkPreviewPopover target={iso.id} showTriggerButton>
+                            <button
+                              type="button"
+                              className="unconnected-card-title"
+                              onClick={() => setSelected(iso.id)}
+                            >
+                              {displayTitle(iso)}
+                            </button>
+                          </LinkPreviewPopover>
+                          <span className="unconnected-pill">{iso.notebook || tr('默认')}</span>
+                        </div>
+                        <p className="unconnected-card-snippet">{extractSnippet(iso).slice(0, 72)}</p>
+                        <div className="unconnected-card-actions">
+                          {topCand ? (
+                            <button
+                              type="button"
+                              className="small-btn accent"
+                              onClick={() => actions.insertWikiLink(topCand.title, iso.id)}
+                            >
+                              {tr('关联 [[{0}]]', [topCand.title.slice(0, 14)])}
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            className="small-btn"
+                            onClick={() => actions.openDocument(iso.id)}
+                          >
+                            {tr('打开并连接')}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </>
+              ) : null}
               {derived.mentions.length > 0 ? (
                 <>
                   <div className="right-section-title spaced">{tr('未连接的提及')}</div>

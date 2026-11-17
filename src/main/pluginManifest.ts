@@ -10,7 +10,7 @@ import {
 
 export const PLUGIN_ID_PATTERN = /^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9])?$/;
 export const PLUGIN_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
-const ACCEPTED_DESKTOP_TARGETS = new Set(['windows', 'win32', 'desktop', 'harmonyos']);
+const ACCEPTED_DESKTOP_TARGETS = new Set(['windows', 'win32', 'desktop', 'harmonyos', 'all']);
 
 export function detectPluginKind(rawManifest: string): PluginKindValue {
   try {

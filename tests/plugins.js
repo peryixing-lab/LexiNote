@@ -101,10 +101,16 @@
       'ungranted_rpc_returns_permission_denied',
       bootProbes
     );
+    assert(
+      bootProbes.ungrantedEditorEventReady === false,
+      'ungranted_event_subscription_denied',
+      bootProbes
+    );
     results.checks.sandboxIsolation = {
       noPreload: !bootProbes.hasPreloadBridge,
       noFsModule: String(bootProbes.unsupportedModuleBlocked).includes('E_UNSUPPORTED_MODULE'),
-      ungrantedDenied: String(bootProbes.ungrantedVaultReadError).includes('E_PERMISSION_DENIED')
+      ungrantedDenied: String(bootProbes.ungrantedVaultReadError).includes('E_PERMISSION_DENIED'),
+      ungrantedEventDenied: bootProbes.ungrantedEditorEventReady === false
     };
 
     // Assert sandbox iframe DOM isolation from parent
@@ -176,6 +182,7 @@
     );
     const editorFlow = JSON.parse(editorFlowRaw);
     assert(editorFlow.hadActive === true, 'editor_active_present', editorFlow);
+    assert(editorFlow.hasSelection === true, 'editor_active_includes_selection_range', editorFlow);
     assert(editorFlow.afterContent.includes('[INSERTED]'), 'editor_replace_selection_applied', editorFlow);
     await waitFor(
       () => document.body.textContent && document.body.textContent.includes('[INSERTED]'),
@@ -372,7 +379,30 @@
     const obsDataAfterPurge = await window.lexi.plugins.storageGet('test-obsidian-suite', vaultId, 'plugin-data');
     assert(obsDataAfterPurge === '', 'uninstall_purge_removes_kv', obsDataAfterPurge);
 
+    const credConfigure = await window.lexi.plugins.aiConfigure('lexinote.harness', {
+      provider: 'openai-compatible',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4.1-mini',
+      apiKey: 'sk-electron-dsh-store-verify',
+      compat: { maxTokensField: 'max_completion_tokens' }
+    });
+    const credStatus = await window.lexi.plugins.aiStatus('lexinote.harness');
+    assert(
+      credConfigure.configured === true &&
+        credStatus.configured === true &&
+        credStatus.credentialRef === 'OPENAI_API_KEY' &&
+        credStatus.credentialSource === 'store' &&
+        credStatus.credential?.configured === true &&
+        typeof credStatus.maskedApiKey === 'string' &&
+        credStatus.maskedApiKey.includes('••••') &&
+        credStatus.compat?.maxTokensField === 'max_completion_tokens' &&
+        !JSON.stringify(credStatus).includes('sk-electron-dsh-store-verify'),
+      'harness_ai_dsh_configure',
+      credStatus
+    );
     await window.lexi.plugins.uninstall('lexinote.harness', false);
+    const afterUninstallAi = await window.lexi.plugins.aiStatus('lexinote.harness');
+    assert(afterUninstallAi.configured === false, 'harness_uninstall_clears_ai', afterUninstallAi);
     const finalCatalog = await window.lexi.plugins.list();
     assert(finalCatalog.records.length === 0, 'all_plugins_uninstalled', finalCatalog.records.length);
 

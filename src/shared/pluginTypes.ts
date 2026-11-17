@@ -271,6 +271,23 @@ export function capabilityOfRpcMethod(method: string): string {
   return '';
 }
 
+export function capabilityOfPluginEvent(eventName: string): string {
+  const name = eventName.trim();
+  if (name.startsWith('vault.')) {
+    return PluginCapability.VAULT_READ;
+  }
+  if (name.startsWith('workspace.')) {
+    return PluginCapability.WORKSPACE_VIEWS;
+  }
+  if (name.startsWith('editor.')) {
+    return PluginCapability.EDITOR_READ;
+  }
+  if (name.startsWith('metadata.')) {
+    return PluginCapability.METADATA_READ;
+  }
+  return '';
+}
+
 export interface PluginManifest {
   format: string;
   formatVersion: number;
@@ -455,6 +472,46 @@ export interface PluginRuntimeInfo {
   presentRequested: boolean;
 }
 
+export interface PluginAiCompatConfig {
+  maxTokensField?: 'max_tokens' | 'max_completion_tokens';
+  thinkingFormat?: 'auto' | 'openai' | 'deepseek' | 'openrouter' | 'zai' | 'qwen' | 'chat-template';
+  supportsDeveloperRole?: boolean;
+}
+
+export interface PluginAiRetryPolicy {
+  mode?: 'normal' | 'off';
+  maxRetries?: number;
+}
+
+export interface PluginAiCredentialInfo {
+  ref: string;
+  configured: boolean;
+  source?: 'store' | 'env';
+  writable: boolean;
+  masked?: string;
+}
+
+export interface PluginAiProfileSummary {
+  profileId: string;
+  name: string;
+  provider: string;
+  baseUrl: string;
+  model: string;
+  maxTokens: number;
+  temperature: number;
+  balanceProvider: string;
+  hasKey: boolean;
+  configured: boolean;
+  needsApiKey: boolean;
+  credentialRef: string;
+  credentialSource: string;
+  credentialWritable: boolean;
+  maskedApiKey: string;
+  credential: PluginAiCredentialInfo;
+  compat?: PluginAiCompatConfig;
+  retryPolicy?: PluginAiRetryPolicy;
+}
+
 export interface PluginAiStatus {
   configured: boolean;
   profileId: string;
@@ -466,6 +523,14 @@ export interface PluginAiStatus {
   temperature: number;
   balanceProvider: string;
   needsApiKey: boolean;
+  credentialRef?: string;
+  credentialSource?: string;
+  credentialWritable?: boolean;
+  maskedApiKey?: string;
+  credential?: PluginAiCredentialInfo;
+  compat?: PluginAiCompatConfig;
+  retryPolicy?: PluginAiRetryPolicy;
+  profiles?: PluginAiProfileSummary[];
 }
 
 export interface PluginAiQuotaWindow {

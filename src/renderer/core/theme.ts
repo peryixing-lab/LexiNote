@@ -192,34 +192,34 @@ export function originalPalette(dark = false): LexiThemePalette {
     });
   } else {
     Object.assign(palette, {
-      background: '#F7F6FB',
+      background: '#F6F4FB',
       surface: '#FFFFFF',
-      soft_surface: '#F0EDF7',
-      text_primary: '#231E2D',
-      text_secondary: '#625C70',
+      soft_surface: '#EEEAF8',
+      text_primary: '#231B36',
+      text_secondary: '#6E6385',
       brand: '#6E44D9',
-      brand_soft: '#F2ECFF',
-      brand_ink: '#5C35C4',
+      brand_soft: '#E9E0FF',
+      brand_ink: '#4E2B9E',
       inverse_text: '#FFFFFF',
-      divider: '#E6E1F0',
-      success: '#2F8A6E',
+      divider: '#E4DDF2',
+      success: '#348672',
       warning: '#C9822B',
       error: '#C44D62',
-      hero: '#EFE8FF',
-      dock_light: '#B69CFF',
+      hero: '#E9E0FF',
+      dock_light: '#D8C7FF',
       dock_fallback: '#EEFFFFFF',
-      dock_surface: '#70FFFFFF',
-      title_chip_active: '#388C6CE5',
-      title_chip_surface: '#66FFFFFF',
-      title_scrim: '#00F7F6FB',
-      canvas_surface: '#F7F6FB',
-      workspace_rail: '#EDE9F5',
-      workspace_sidebar: '#F6F3FB',
-      workspace_tabs: '#F0ECF8',
+      dock_surface: '#26FFFFFF',
+      title_chip_active: '#386E44D9',
+      title_chip_surface: '#33FFFFFF',
+      title_scrim: '#00F6F4FB',
+      canvas_surface: '#1C162B',
+      workspace_rail: '#EAE4F5',
+      workspace_sidebar: '#F4F0FA',
+      workspace_tabs: '#F0EBF8',
       workspace_page: '#FFFFFF',
-      workspace_inspector: '#FCFBFF',
-      workspace_selection: '#E7E0F6',
-      workspace_line: '#E3DDEF'
+      workspace_inspector: '#FCFAFF',
+      workspace_selection: '#E4D8FA',
+      workspace_line: '#DDD5EA'
     });
   }
   return palette;
@@ -268,7 +268,19 @@ export function applyPalette(palette: LexiThemePalette, dark: boolean): void {
   for (const key of Object.keys(CSS_VARIABLES) as (keyof LexiThemePalette)[]) {
     root.style.setProperty(CSS_VARIABLES[key], palette[key]);
   }
-  root.style.setProperty('--shadow-color', dark ? 'rgba(0,0,0,0.55)' : 'rgba(24,20,40,0.14)');
+  root.style.setProperty('--shadow-color', dark ? 'rgba(0,0,0,0.52)' : 'rgba(24,20,40,0.14)');
+  root.style.setProperty('--hover', `color-mix(in srgb, ${palette.workspace_selection} ${dark ? 55 : 60}%, transparent)`);
+  root.style.setProperty('--pressed', `color-mix(in srgb, ${palette.workspace_selection} ${dark ? 82 : 88}%, transparent)`);
+  root.style.setProperty('--hover-surface', `color-mix(in srgb, ${palette.text_primary} ${dark ? 6 : 4}%, ${palette.surface})`);
+  root.style.setProperty('--pressed-surface', `color-mix(in srgb, ${palette.text_primary} ${dark ? 11 : 8}%, ${palette.surface})`);
+  root.style.setProperty('--focus-ring', `color-mix(in srgb, ${palette.brand} 42%, transparent)`);
+  root.style.setProperty('--scrim', dark ? 'rgba(10, 10, 16, 0.56)' : 'rgba(20, 16, 36, 0.28)');
+  root.style.setProperty('--line-strong', `color-mix(in srgb, ${palette.workspace_line} 82%, ${palette.text_primary})`);
+  root.style.setProperty('--callout-bg', `color-mix(in srgb, ${palette.brand} ${dark ? 14 : 9}%, ${palette.surface})`);
+  root.style.setProperty('--callout-border', `color-mix(in srgb, ${palette.brand} ${dark ? 32 : 22}%, ${palette.workspace_line})`);
+  root.style.setProperty('--elev-1', dark ? '0 1px 3px rgba(0, 0, 0, 0.24)' : '0 1px 3px rgba(24, 20, 40, 0.06)');
+  root.style.setProperty('--elev-2', dark ? '0 8px 20px rgba(0, 0, 0, 0.36)' : '0 4px 14px rgba(24, 20, 40, 0.12)');
+  root.style.setProperty('--elev-3', dark ? '0 18px 46px rgba(0, 0, 0, 0.52)' : '0 14px 36px rgba(24, 20, 40, 0.18)');
   root.dataset.theme = dark ? 'dark' : 'light';
   document.body.classList.toggle('dark', dark);
 }

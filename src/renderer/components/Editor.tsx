@@ -410,7 +410,7 @@ export function Editor(): JSX.Element {
         revision: Math.max(1, revisionRef.current.rev),
         baseContent: text,
         content: text,
-        dirty: saveStatusRef.current === 'saving',
+        dirty: saveStatusRef.current === 'saving' || saveStatusRef.current === 'unsaved',
         readOnly: mode === 'reading',
         focused:
           (sourceRef.current !== null && document.activeElement === sourceRef.current) ||
@@ -585,6 +585,30 @@ export function Editor(): JSX.Element {
         setReplaceOpen(true);
       }
     },
+    {
+      id: 'insert-attachment',
+      label: tr('插入图片 / 附件'),
+      onSelect: () => {
+        if (!window.lexi) return;
+        void window.lexi
+          .importAttachment({
+            vaultId: note.vaultId,
+            notebook: note.notebook,
+            notePath: note.path
+          })
+          .then((res) => {
+            if (!res) return;
+            const snippet = res.isImage
+              ? `![${res.fileName}](${res.relativePath})`
+              : `[${res.fileName}](${res.relativePath})`;
+            const next = latestContentRef.current
+              ? `${latestContentRef.current.replace(/\n+$/, '')}\n\n${snippet}\n`
+              : `${snippet}\n`;
+            latestContentRef.current = next;
+            actions.updateNote(note.id, { content: next });
+          });
+      }
+    },
     { separator: true },
     {
       id: 'convert',
@@ -614,6 +638,14 @@ export function Editor(): JSX.Element {
       onSelect: () => actions.duplicateNote(note.id)
     },
     {
+      id: 'history',
+      label: tr('版本历史与差异对比'),
+      onSelect: () => {
+        commitTitle();
+        actions.openNoteHistory(note.id);
+      }
+    },
+    {
       id: 'copy-uri',
       label: tr('复制知萤 URI'),
       onSelect: () => void actions.executeCommand('copy-uri')
@@ -626,8 +658,13 @@ export function Editor(): JSX.Element {
     },
     {
       id: 'export-pdf',
-      label: tr('导出为 HTML / PDF'),
+      label: tr('导出为 PDF'),
       onSelect: () => void actions.executeCommand('export-pdf')
+    },
+    {
+      id: 'export-html',
+      label: tr('导出为 HTML'),
+      onSelect: () => void actions.executeCommand('export-html')
     },
     { separator: true },
     {
@@ -754,6 +791,64 @@ export function Editor(): JSX.Element {
       ) : null}
 
       <div className="editor-body" ref={scrollRef}>
+        {state.noteConflicts[note.id] ? (
+          <div className="editor-safety-banner warn">
+            <span>{tr('检测到多窗口同时编辑冲突：当前草稿与其他窗口保存版本存在差异')}</span>
+            <button
+              type="button"
+              className="primary-btn"
+              onClick={() => {
+                commitTitle();
+                actions.openNoteHistory(note.id);
+              }}
+            >
+              {tr('查看差异并解决')}
+            </button>
+          </div>
+        ) : null}
+        {state.crashRecoveries.find((c) => c.noteId === note.id) ? (
+          <div className="editor-safety-banner info">
+            <span>{tr('发现上次异常退出前未落盘的草稿')}</span>
+            <div className="editor-safety-actions">
+              <button
+                type="button"
+                className="primary-btn"
+                onClick={() => {
+                  const found = state.crashRecoveries.find((c) => c.noteId === note.id);
+                  if (found) void actions.restoreCrashRecovery(found);
+                }}
+              >
+                {tr('恢复草稿')}
+              </button>
+              <button
+                type="button"
+                className="small-btn"
+                onClick={() => {
+                  commitTitle();
+                  actions.openNoteHistory(note.id);
+                }}
+              >
+                {tr('对比版本')}
+              </button>
+              <button
+                type="button"
+                className="small-btn"
+                onClick={() => void actions.dismissCrashRecovery(note.id)}
+              >
+                {tr('忽略')}
+              </button>
+            </div>
+          </div>
+        ) : null}
+        {(state.saveStatus === 'error' || (state.saveStatus === 'saved' && !!state.lastSaveError)) &&
+        state.lastSaveError ? (
+          <div className={`editor-safety-banner ${state.saveStatus === 'error' ? 'error' : 'warn'}`}>
+            <span>{state.lastSaveError}</span>
+            <button type="button" className="small-btn" onClick={() => void actions.saveNow()}>
+              {tr('重试保存')}
+            </button>
+          </div>
+        ) : null}
         <div
           className={`document${state.settings.editorLimitWidth ? ' limited' : ' wide'}`}
           style={{ fontSize: state.settings.fontSize }}
@@ -800,6 +895,7 @@ export function Editor(): JSX.Element {
             <MarkdownBlocks
               content={content}
               notes={state.notes}
+              currentNote={note}
               onOpenTarget={openTarget}
               onToggleTodo={toggleTodo}
               anchorPrefix={`reading-${note.id}`}
@@ -890,6 +986,7 @@ export function Editor(): JSX.Element {
                       block={block}
                       notes={state.notes}
                       notesById={new Map(state.notes.map((item) => [item.id, item]))}
+                      currentNote={note}
                       onOpenTarget={openTarget}
                       onToggleTodo={toggleTodo}
                       readOnly={false}
@@ -940,14 +1037,35 @@ export function Editor(): JSX.Element {
         ))}
         <button
           type="button"
-          className={`save-status ${state.saveStatus}`}
+          className={`save-status ${state.saveStatus === 'saved' && state.lastSaveError ? 'warn' : state.saveStatus}`}
+          title={
+            state.lastSaveError ||
+            (state.lastSavedAt
+              ? tr('本地保存时间：{0}', [new Date(state.lastSavedAt).toLocaleTimeString()])
+              : undefined)
+          }
           onClick={() => void actions.saveNow()}
         >
           {state.saveStatus === 'saving'
             ? tr('正在保存…')
-            : state.saveStatus === 'error'
-              ? tr('保存失败 · 点击重试')
-              : tr('已保存到本机')}
+            : state.saveStatus === 'unsaved'
+              ? tr('未保存 · Ctrl+S')
+              : state.saveStatus === 'error'
+                ? tr('保存失败 · 点击重试')
+                : state.noteConflicts[note.id]
+                  ? tr('存在并发冲突 · 已保留草稿')
+                  : state.lastSaveError
+                    ? tr('已存主库 · 同步受限')
+                    : state.lastSavedAt
+                      ? tr('已保存到本机 {0}', [
+                          new Date(state.lastSavedAt).toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            second: '2-digit',
+                            hour12: false
+                          })
+                        ])
+                      : tr('已保存到本机')}
         </button>
       </div>
 

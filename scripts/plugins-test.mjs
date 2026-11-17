@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { deflateRawSync } from 'node:zlib';
 
 const require = createRequire(import.meta.url);
@@ -133,6 +133,7 @@ module.exports = definePlugin({
       hasPreloadBridge: typeof globalThis.lexi !== 'undefined',
       unsupportedModuleBlocked: false,
       ungrantedVaultReadError: '',
+      ungrantedEditorEventReady: null,
       vaultModifiedEvents: []
     };
     try {
@@ -145,6 +146,9 @@ module.exports = definePlugin({
     } catch (err) {
       probes.ungrantedVaultReadError = String(err && err.message || err);
     }
+    const deniedEventSub = ctx.events.on('editor.changed', () => {});
+    probes.ungrantedEditorEventReady = await deniedEventSub.ready;
+    ctx.subscriptions.add(deniedEventSub);
     try {
       await ctx.storage.set('boot_probes', probes);
     } catch (err) {
@@ -200,6 +204,7 @@ module.exports = definePlugin({
         await ctx.storage.set('editor_flow', {
           hadActive: Boolean(before),
           noteId: before ? before.noteId : '',
+          hasSelection: Boolean(before && before.selection && typeof before.selection.from === 'number' && typeof before.selection.to === 'number'),
           afterContent: after ? after.content : ''
         });
       }
@@ -395,6 +400,7 @@ module.exports = class TestObsidianPlugin extends Plugin {
   if (existsSync(HARNESS_ZIP)) {
     copyFileSync(HARNESS_ZIP, path.join(FIXTURES_DIR, 'harness-lexinote-harness.zip'));
   }
+
   return {
     harnessExists: existsSync(HARNESS_ZIP)
   };
@@ -446,7 +452,9 @@ child.on('exit', (code) => {
       passed = false;
     }
   }
-  const finalCode = code && code !== 0 ? code : (!errorMatch && passed ? 0 : 1);
+  const storeFile = path.join(USER_DATA_DIR, 'plugin-ai.json');
+  const storeClean = !existsSync(storeFile) || !readFileSync(storeFile, 'utf8').includes('sk-electron-safe-storage');
+  const finalCode = code && code !== 0 ? code : (!errorMatch && passed && storeClean ? 0 : 1);
   rmSync(WORK_DIR, { recursive: true, force: true });
   console.log(`plugins-test exited with ${finalCode} (electronExit=${code ?? 0}, passed=${passed})`);
   process.exit(finalCode);

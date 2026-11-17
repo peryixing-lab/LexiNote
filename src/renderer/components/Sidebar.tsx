@@ -1,7 +1,10 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { useStore } from '../store/AppStore';
-import type { NoteItem } from '../../shared/types';
-import { displayTitle, extractSnippet } from '../core/markdown';
+import type { NoteItem, NoteSortMode } from '../../shared/types';
+import { formatDateTime } from '../core/i18n';
+import { displayTitle, extractSnippet, isNoteUnconnected } from '../core/markdown';
+import { sortNotes } from '../core/search';
+import { HighlightText } from './HighlightText';
 import { Icon } from './Icon';
 import { ChevronGlyph, CloseGlyph, SearchGlyph } from './Symbols';
 import { FloatingMenu, MenuEntry } from './FloatingMenu';
@@ -12,20 +15,26 @@ export function Sidebar(): JSX.Element {
   const [vaultMenu, setVaultMenu] = useState<{ x: number; y: number } | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const { tr } = derived;
+  const sidebarSort: NoteSortMode = state.settings.sidebarSort ?? 'updated';
+  const flatRecencyView = sidebarSort === 'accessed';
+  const sortedVisible = useMemo(
+    () => sortNotes(derived.visibleNotes, sidebarSort),
+    [derived.visibleNotes, sidebarSort]
+  );
 
   const folderNotes = useMemo(() => {
     const map = new Map<string, NoteItem[]>();
-    for (const note of derived.visibleNotes) {
-      if (!state.activeProjectId && !state.searchText && note.projectId) continue;
+    for (const note of sortedVisible) {
+      if (!state.activeProjectId && !state.searchText && !state.unconnectedOnly && !flatRecencyView && note.projectId) continue;
       const name = note.notebook || tr('未分类');
       const list = map.get(name) ?? [];
       list.push(note);
       map.set(name, list);
     }
     return map;
-  }, [derived.visibleNotes, state.activeProjectId, state.searchText, tr]);
+  }, [sortedVisible, state.activeProjectId, state.searchText, state.unconnectedOnly, flatRecencyView, tr]);
 
-  const projectRows = !state.activeProjectId && !state.searchText;
+  const projectRows = !state.activeProjectId && !state.searchText && !state.unconnectedOnly && !flatRecencyView;
   const maps = state.maps.filter(
     (map) => map.trashedAt === 0 && map.vaultId === state.activeVaultId && (!state.activeProjectId || map.projectId === state.activeProjectId)
   );
@@ -71,6 +80,14 @@ export function Sidebar(): JSX.Element {
           id: 'duplicate',
           label: tr('创建副本'),
           onSelect: () => actions.duplicateNote(noteMenu.note.id)
+        },
+        {
+          id: 'history',
+          label: tr('版本历史与差异对比'),
+          onSelect: () => {
+            actions.openDocument(noteMenu.note.id);
+            actions.openNoteHistory(noteMenu.note.id);
+          }
         },
         { separator: true },
         {
@@ -150,22 +167,43 @@ export function Sidebar(): JSX.Element {
         <button type="button" className="ghost-btn" onClick={() => actions.setTemplatesOpen(true)}>
           {tr('模板')}
         </button>
+        <select
+          className="sidebar-sort-select"
+          value={sidebarSort}
+          aria-label={tr('排序')}
+          onChange={(event) => actions.setSidebarSort(event.target.value as NoteSortMode)}
+        >
+          <option value="updated">{tr('最近编辑')}</option>
+          <option value="accessed">{tr('最近访问')}</option>
+          <option value="created">{tr('最近创建')}</option>
+          <option value="title">{tr('按标题')}</option>
+        </select>
       </div>
 
       <div className="sidebar-filters">
         <button
           type="button"
-          className={`chip${state.favoritesOnly ? '' : ' active'}`}
-          onClick={() => actions.setFavoritesOnly(false)}
+          className={`chip${!state.favoritesOnly && !state.unconnectedOnly ? ' active' : ''}`}
+          onClick={() => {
+            actions.setFavoritesOnly(false);
+            actions.setUnconnectedOnly(false);
+          }}
         >
           {tr('全部笔记')}
         </button>
         <button
           type="button"
           className={`chip${state.favoritesOnly ? ' active' : ''}`}
-          onClick={() => actions.setFavoritesOnly(true)}
+          onClick={() => actions.setFavoritesOnly(!state.favoritesOnly)}
         >
           {tr('收藏')}
+        </button>
+        <button
+          type="button"
+          className={`chip${state.unconnectedOnly ? ' active' : ''}`}
+          onClick={() => actions.setUnconnectedOnly(!state.unconnectedOnly)}
+        >
+          {tr('未连接 ({0})', [derived.unconnectedNotes.length])}
         </button>
       </div>
 
@@ -188,46 +226,100 @@ export function Sidebar(): JSX.Element {
               ))
           : null}
 
-        {[...folderNotes.entries()].map(([folder, notes]) => {
-          const closed = state.closedFolders.includes(folder) && !state.searchText;
-          return (
-            <div className="folder-group" key={folder}>
-              <button type="button" className="folder-row" onClick={() => actions.toggleFolder(folder)}>
-                <ChevronGlyph size={9} direction={closed ? 'right' : 'down'} color="var(--text-2)" />
-                <Icon name="folder" size={15} muted />
-                <span className="folder-name">{folder}</span>
-                <span className="folder-count">{notes.length}</span>
-              </button>
-              {!closed
-                ? notes.map((note) => (
-                    <button
-                      key={note.id}
-                      type="button"
-                      className={`note-row${state.selectedId === note.id && state.activeSection <= 1 ? ' active' : ''}`}
-                      onClick={() => actions.openDocument(note.id)}
-                      onContextMenu={(event) => openNoteMenu(event, note)}
-                      title={extractSnippet(note)}
-                    >
-                      <Icon name={note.noteType === 'study' ? 'study' : 'note'} size={15} muted={state.selectedId !== note.id} />
-                      <span className="note-title">{displayTitle(note)}</span>
-                      {note.favorite ? <Icon name="star" size={11} /> : null}
-                    </button>
-                  ))
-                : null}
-            </div>
-          );
-        })}
+        {flatRecencyView
+          ? sortedVisible.map((note) => {
+              const snippet = extractSnippet(note, state.searchText);
+              const unconnected = isNoteUnconnected(note.id, derived.links);
+              const accessedAt = note.lastOpenedAt && note.lastOpenedAt > 0 ? note.lastOpenedAt : note.updatedAt;
+              return (
+                <button
+                  key={note.id}
+                  type="button"
+                  className={`note-row${state.selectedId === note.id && state.activeSection <= 1 ? ' active' : ''}${state.searchText.trim() || flatRecencyView ? ' rich' : ''}`}
+                  onClick={() => actions.openDocument(note.id)}
+                  onContextMenu={(event) => openNoteMenu(event, note)}
+                  title={snippet}
+                >
+                  <Icon name={note.noteType === 'study' ? 'study' : 'note'} size={15} muted={state.selectedId !== note.id} />
+                  <span className="note-row-body">
+                    <span className="note-row-top">
+                      <HighlightText className="note-title" text={displayTitle(note)} query={state.searchText} />
+                      <span className="note-row-badges">
+                        {unconnected ? <span className="unconnected-dot-badge">{tr('未连')}</span> : null}
+                        {note.favorite ? <Icon name="star" size={11} /> : null}
+                      </span>
+                    </span>
+                    <span className="note-row-sub">
+                      {state.searchText.trim() ? (
+                        <HighlightText className="sidebar-note-snippet" text={snippet} query={state.searchText} />
+                      ) : (
+                        <span className="sidebar-note-meta">
+                          {note.notebook || tr('未分类')} · {formatDateTime(accessedAt, state.settings.language)}
+                        </span>
+                      )}
+                    </span>
+                  </span>
+                </button>
+              );
+            })
+          : [...folderNotes.entries()].map(([folder, notes]) => {
+              const closed = state.closedFolders.includes(folder) && !state.searchText && !state.unconnectedOnly;
+              return (
+                <div className="folder-group" key={folder}>
+                  <button type="button" className="folder-row" onClick={() => actions.toggleFolder(folder)}>
+                    <ChevronGlyph size={9} direction={closed ? 'right' : 'down'} color="var(--text-2)" />
+                    <Icon name="folder" size={15} muted />
+                    <span className="folder-name">{folder}</span>
+                    <span className="folder-count">{notes.length}</span>
+                  </button>
+                  {!closed
+                    ? notes.map((note) => {
+                        const snippet = state.searchText.trim() ? extractSnippet(note, state.searchText) : extractSnippet(note);
+                        const unconnected = isNoteUnconnected(note.id, derived.links);
+                        return (
+                          <button
+                            key={note.id}
+                            type="button"
+                            className={`note-row${state.selectedId === note.id && state.activeSection <= 1 ? ' active' : ''}${state.searchText.trim() ? ' rich' : ''}`}
+                            onClick={() => actions.openDocument(note.id)}
+                            onContextMenu={(event) => openNoteMenu(event, note)}
+                            title={snippet}
+                          >
+                            <Icon name={note.noteType === 'study' ? 'study' : 'note'} size={15} muted={state.selectedId !== note.id} />
+                            <span className="note-row-body">
+                              <span className="note-row-top">
+                                <HighlightText className="note-title" text={displayTitle(note)} query={state.searchText} />
+                                <span className="note-row-badges">
+                                  {unconnected ? <span className="unconnected-dot-badge">{tr('未连')}</span> : null}
+                                  {note.favorite ? <Icon name="star" size={11} /> : null}
+                                </span>
+                              </span>
+                              {state.searchText.trim() ? (
+                                <span className="note-row-sub">
+                                  <HighlightText className="sidebar-note-snippet" text={snippet} query={state.searchText} />
+                                </span>
+                              ) : null}
+                            </span>
+                          </button>
+                        );
+                      })
+                    : null}
+                </div>
+              );
+            })}
 
         {derived.visibleNotes.length === 0 ? (
           <div className="sidebar-empty">
             <span>
               {state.searchText
                 ? tr('没有找到匹配的笔记')
-                : state.favoritesOnly
-                  ? tr('收藏的笔记会出现在这里')
-                  : tr('写下第一条笔记')}
+                : state.unconnectedOnly
+                  ? tr('所有笔记均已建立双向链接')
+                  : state.favoritesOnly
+                    ? tr('收藏的笔记会出现在这里')
+                    : tr('写下第一条笔记')}
             </span>
-            {!state.searchText && !state.favoritesOnly ? (
+            {!state.searchText && !state.favoritesOnly && !state.unconnectedOnly ? (
               <button type="button" className="small-btn" onClick={() => actions.createNote('markdown')}>
                 {tr('新建笔记')}
               </button>
@@ -235,7 +327,7 @@ export function Sidebar(): JSX.Element {
           </div>
         ) : null}
 
-        {!state.searchText && !state.favoritesOnly && (maps.length > 0 || canvases.length > 0) ? (
+        {!state.searchText && !state.favoritesOnly && !state.unconnectedOnly && (maps.length > 0 || canvases.length > 0) ? (
           <>
             <div className="sidebar-divider" />
             <div className="sidebar-section-title">{tr('可视化空间')}</div>

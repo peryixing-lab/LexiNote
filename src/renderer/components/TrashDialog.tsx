@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useStore } from '../store/AppStore';
 import { displayTitle } from '../core/markdown';
 import { formatDateTime } from '../core/i18n';
@@ -9,27 +9,44 @@ export function TrashDialog(): JSX.Element {
   const { state, actions, derived } = useStore();
   const { tr } = derived;
   const [confirmEmpty, setConfirmEmpty] = useState(false);
+  const count = derived.trashNotes.length + derived.trashMaps.length;
+
+  useEffect(() => {
+    if (state.trashOpen) setConfirmEmpty(false);
+  }, [state.trashOpen]);
 
   return (
-    <div className="overlay dialog-overlay" onPointerDown={(event) => {
-      if (event.target === event.currentTarget) actions.setTrashOpen(false);
-    }}>
-      <div className="dialog trash-dialog" role="dialog" aria-modal="true" aria-label={tr('回收站')}>
+    <>
         <div className="dialog-head">
           <div>
             <h2>{tr('回收站')}</h2>
-            <p>{tr('已删除的笔记和导图会保留在这里，直到你永久删除。')}</p>
+            <p>{tr('{0} 个已删除项目', [count])}</p>
           </div>
+          {count > 0 ? (
+            <button type="button" className="small-btn danger trash-clear" onClick={() => setConfirmEmpty(true)}>{tr('清空')}</button>
+          ) : null}
           <button type="button" className="icon-btn tiny" aria-label={tr('关闭')} onClick={() => actions.setTrashOpen(false)}>
             <CloseGlyph size={12} color="var(--text-2)" />
           </button>
         </div>
 
         <div className="dialog-body">
-          {derived.trashNotes.length === 0 && derived.trashMaps.length === 0 ? (
+          <p className="trash-description">{tr('已删除的笔记和导图会保留在这里，直到你永久删除。')}</p>
+          {confirmEmpty && count > 0 ? (
+            <div className="trash-confirm" role="alert">
+              <span className="foot-hint danger-text">{tr('清空后无法恢复，确定吗？')}</span>
+              <button type="button" className="small-btn danger" onClick={() => {
+                setConfirmEmpty(false);
+                actions.emptyTrash();
+              }}>{tr('确认清空')}</button>
+              <button type="button" className="small-btn" onClick={() => setConfirmEmpty(false)}>{tr('取消')}</button>
+            </div>
+          ) : null}
+          {count === 0 ? (
             <div className="trash-empty">
-              <Icon name="trash" size={30} />
-              <p>{tr('回收站是空的')}</p>
+              <div className="trash-empty-icon"><Icon name="trash" size={25} /></div>
+              <h3>{tr('回收站是空的')}</h3>
+              <p>{tr('删除的笔记会先来到这里，随时可以恢复。')}</p>
             </div>
           ) : null}
 
@@ -76,40 +93,6 @@ export function TrashDialog(): JSX.Element {
           ))}
         </div>
 
-        <div className="dialog-foot">
-          <span className="foot-hint">
-            {derived.trashNotes.length + derived.trashMaps.length} {tr('个项目')}
-          </span>
-          {confirmEmpty ? (
-            <>
-              <span className="foot-hint danger-text">{tr('清空后无法恢复，确定吗？')}</span>
-              <button
-                type="button"
-                className="small-btn"
-                onClick={() => {
-                  setConfirmEmpty(false);
-                  actions.setTrashOpen(false);
-                  actions.emptyTrash();
-                }}
-              >
-                {tr('确认清空')}
-              </button>
-              <button type="button" className="small-btn" onClick={() => setConfirmEmpty(false)}>
-                {tr('取消')}
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              className="small-btn danger"
-              disabled={derived.trashNotes.length + derived.trashMaps.length === 0}
-              onClick={() => setConfirmEmpty(true)}
-            >
-              {tr('清空回收站')}
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
+    </>
   );
 }

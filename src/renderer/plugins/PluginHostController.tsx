@@ -11,6 +11,7 @@ import React, {
 import type { NoteItem } from '../../shared/types';
 import {
   ALL_PLUGIN_RPC_METHODS,
+  capabilityOfPluginEvent,
   capabilityOfRpcMethod,
   codeOfPluginError,
   isKnownRpcMethod,
@@ -444,12 +445,20 @@ export function PluginHostProvider({ children }: { children: React.ReactNode }):
 
   const publishEvent = useCallback(
     (eventType: string, vaultId: string, detail: Record<string, unknown>): void => {
+      const requiredCap = capabilityOfPluginEvent(eventType);
+      const latestRecords = catalogRef.current.records;
       for (const session of sessionsRef.current.values()) {
         if (session.disposed || !session.booted || !session.port || session.vaultId !== vaultId) {
           continue;
         }
-        const subscribed = Array.from(session.subscriptions.values()).includes(eventType);
-        if (!subscribed) { continue; }
+        const subscribed = Array.from(session.subscriptions.values());
+        if (!subscribed.includes(eventType) && !subscribed.includes('*')) { continue; }
+        if (requiredCap) {
+          const rec = latestRecords.find((item) => item.id === session.pluginId);
+          if (!rec || !rec.requestedCapabilities.includes(requiredCap) || !rec.grantedCapabilities.includes(requiredCap)) {
+            continue;
+          }
+        }
         session.eventSeq += 1;
         const envelope = JSON.stringify({
           protocol: PLUGIN_PROTOCOL_VERSION,
@@ -905,7 +914,14 @@ export function PluginHostProvider({ children }: { children: React.ReactNode }):
       if (method === PluginRpcMethod.WORKSPACE_OPEN_FILE) {
         const requestedVaultId = typeof params.vaultId === 'string' ? params.vaultId : '';
         const vaultId = resolveVault(record, requestedVaultId, session.vaultId);
-        const fileId = String(params.fileId ?? params.id ?? '');
+        let fileId = String(params.fileId ?? params.id ?? '');
+        if (!fileId && typeof params.path === 'string' && params.path.trim()) {
+          const registry = ensurePathRegistryFresh(vaultId);
+          fileId = registry.noteIdForPath(vaultId, normalizeMarkdownPath(params.path));
+          if (!fileId) {
+            raisePluginError(PluginErrorCode.NOT_FOUND, `文件不存在：${params.path}`);
+          }
+        }
         getAuthorizedNote(vaultId, fileId);
         actionsRef.current.openDocument(fileId);
         return null;
@@ -1088,9 +1104,18 @@ export function PluginHostProvider({ children }: { children: React.ReactNode }):
           return;
         }
         if (method === PluginRpcMethod.EVENTS_ON) {
-          const eventName = typeof params.event === 'string' ? params.event : '';
-          if (!(Object.values(PluginEventType) as string[]).includes(eventName)) {
+          const eventName = typeof params.event === 'string' ? params.event.trim() : '';
+          if (eventName !== '*' && !(Object.values(PluginEventType) as string[]).includes(eventName)) {
             raisePluginError(PluginErrorCode.INVALID_ARGUMENT, `未知事件 ${eventName}`);
+          }
+          const requiredEventCap = capabilityOfPluginEvent(eventName);
+          if (requiredEventCap) {
+            if (!record.requestedCapabilities.includes(requiredEventCap)) {
+              raisePluginError(PluginErrorCode.PERMISSION_DENIED, `插件清单未声明能力 ${requiredEventCap}`);
+            }
+            if (!record.grantedCapabilities.includes(requiredEventCap)) {
+              raisePluginError(PluginErrorCode.PERMISSION_DENIED, `插件缺少权限 ${requiredEventCap}`);
+            }
           }
           if (session.subscriptions.size >= PluginLimits.MAX_SUBSCRIPTIONS_PER_PLUGIN) {
             raisePluginError(PluginErrorCode.RATE_LIMITED, '事件订阅数已达上限');

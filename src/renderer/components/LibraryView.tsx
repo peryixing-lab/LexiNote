@@ -1,8 +1,10 @@
 import React, { useMemo, useState } from 'react';
 import { useStore } from '../store/AppStore';
-import { displayTitle, extractSnippet } from '../core/markdown';
+import type { NoteSortMode } from '../../shared/types';
+import { displayTitle, extractSnippet, isNoteUnconnected } from '../core/markdown';
 import { formatDateTime } from '../core/i18n';
-import { matchesSearch } from '../core/search';
+import { matchesSearch, sortNotes } from '../core/search';
+import { HighlightText } from './HighlightText';
 import { Icon } from './Icon';
 import { CloseGlyph, SearchGlyph } from './Symbols';
 
@@ -11,24 +13,31 @@ export function LibraryView(): JSX.Element {
   const { tr } = derived;
   const [query, setQuery] = useState('');
   const [tagFilter, setTagFilter] = useState('');
-  const [sort, setSort] = useState<'updated' | 'created' | 'title'>('updated');
+  const [unconnectedOnly, setUnconnectedOnly] = useState(false);
+  const sort: NoteSortMode = state.settings.librarySort ?? 'updated';
   const [view, setView] = useState<'grid' | 'list'>('grid');
 
   const notes = useMemo(() => {
-    const list = state.notes.filter(
+    const list = derived.hydratedNotes.filter(
       (note) =>
         note.vaultId === state.activeVaultId &&
         note.trashedAt === 0 &&
         (!state.activeProjectId || note.projectId === state.activeProjectId) &&
         matchesSearch(note, query) &&
-        (!tagFilter || note.tags.includes(tagFilter))
+        (!tagFilter || note.tags.includes(tagFilter)) &&
+        (!unconnectedOnly || isNoteUnconnected(note.id, derived.links))
     );
-    return list.sort((a, b) => {
-      if (sort === 'title') return displayTitle(a).localeCompare(displayTitle(b), 'zh-CN');
-      if (sort === 'created') return b.createdAt - a.createdAt;
-      return b.updatedAt - a.updatedAt;
-    });
-  }, [state.notes, state.activeVaultId, state.activeProjectId, query, tagFilter, sort]);
+    return sortNotes(list, sort, { pinnedFirst: true });
+  }, [
+    derived.hydratedNotes,
+    derived.links,
+    state.activeVaultId,
+    state.activeProjectId,
+    query,
+    tagFilter,
+    unconnectedOnly,
+    sort
+  ]);
 
   const tags = useMemo(() => {
     const counter = new Map<string, number>();
@@ -68,10 +77,11 @@ export function LibraryView(): JSX.Element {
           <select
             className="select compact"
             value={sort}
-            onChange={(event) => setSort(event.target.value as typeof sort)}
+            onChange={(event) => actions.setLibrarySort(event.target.value as NoteSortMode)}
             aria-label={tr('排序')}
           >
             <option value="updated">{tr('最近更新')}</option>
+            <option value="accessed">{tr('最近访问')}</option>
             <option value="created">{tr('最近创建')}</option>
             <option value="title">{tr('按标题')}</option>
           </select>
@@ -89,27 +99,35 @@ export function LibraryView(): JSX.Element {
         </div>
       </div>
 
-      {tags.length > 0 ? (
-        <div className="library-tags">
+      <div className="library-tags">
+        <button
+          type="button"
+          className={`tag-chip${!tagFilter && !unconnectedOnly ? ' active' : ''}`}
+          onClick={() => {
+            setTagFilter('');
+            setUnconnectedOnly(false);
+          }}
+        >
+          {tr('全部')}
+        </button>
+        <button
+          type="button"
+          className={`tag-chip${unconnectedOnly ? ' active' : ''}`}
+          onClick={() => setUnconnectedOnly((v) => !v)}
+        >
+          {tr('未连接')} <small>{derived.unconnectedNotes.length}</small>
+        </button>
+        {tags.map(([tag, count]) => (
           <button
+            key={tag}
             type="button"
-            className={`tag-chip${tagFilter ? '' : ' active'}`}
-            onClick={() => setTagFilter('')}
+            className={`tag-chip${tagFilter === tag ? ' active' : ''}`}
+            onClick={() => setTagFilter(tagFilter === tag ? '' : tag)}
           >
-            {tr('全部')}
+            #{tag} <small>{count}</small>
           </button>
-          {tags.map(([tag, count]) => (
-            <button
-              key={tag}
-              type="button"
-              className={`tag-chip${tagFilter === tag ? ' active' : ''}`}
-              onClick={() => setTagFilter(tagFilter === tag ? '' : tag)}
-            >
-              #{tag} <small>{count}</small>
-            </button>
-          ))}
-        </div>
-      ) : null}
+        ))}
+      </div>
 
       <div className={`library-scroll ${view}`}>
         {notes.length === 0 ? (
@@ -129,6 +147,9 @@ export function LibraryView(): JSX.Element {
                 <header>
                   <Icon name={note.noteType === 'study' ? 'study' : 'note'} size={16} muted />
                   <span className="note-card-notebook">{note.notebook}</span>
+                  {isNoteUnconnected(note.id, derived.links) ? (
+                    <span className="unconnected-pill">{tr('未连接')}</span>
+                  ) : null}
                   <span className="note-card-spacer" />
                   <button
                     type="button"
@@ -153,10 +174,18 @@ export function LibraryView(): JSX.Element {
                     <Icon name="pin" size={13} muted={!note.pinned} />
                   </button>
                 </header>
-                <h3>{displayTitle(note)}</h3>
-                <p>{extractSnippet(note, query)}</p>
+                <h3>
+                  <HighlightText text={displayTitle(note)} query={query} />
+                </h3>
+                <p>
+                  <HighlightText text={extractSnippet(note, query)} query={query} />
+                </p>
                 <footer>
-                  <span>{formatDateTime(note.updatedAt, state.settings.language)}</span>
+                  <span>
+                    {sort === 'accessed' && note.lastOpenedAt && note.lastOpenedAt > 0
+                      ? tr('访问 {0}', [formatDateTime(note.lastOpenedAt, state.settings.language)])
+                      : formatDateTime(note.updatedAt, state.settings.language)}
+                  </span>
                   <span>{note.tags.slice(0, 2).map((tag) => `#${tag}`).join(' ')}</span>
                 </footer>
               </article>
@@ -168,7 +197,7 @@ export function LibraryView(): JSX.Element {
               <span>{tr('标题')}</span>
               <span>{tr('文件夹')}</span>
               <span>{tr('标签')}</span>
-              <span>{tr('更新时间')}</span>
+              <span>{sort === 'accessed' ? tr('最近访问') : tr('更新时间')}</span>
               <span />
             </div>
             {notes.map((note) => (
@@ -180,12 +209,20 @@ export function LibraryView(): JSX.Element {
               >
                 <span className="list-title">
                   <Icon name={note.noteType === 'study' ? 'study' : 'note'} size={15} muted />
-                  {displayTitle(note)}
+                  <HighlightText text={displayTitle(note)} query={query} />
+                  {isNoteUnconnected(note.id, derived.links) ? (
+                    <span className="unconnected-pill">{tr('未连接')}</span>
+                  ) : null}
                   {note.favorite ? <Icon name="star" size={11} /> : null}
                 </span>
                 <span>{note.notebook}</span>
                 <span className="list-tags">{note.tags.slice(0, 2).map((tag) => `#${tag}`).join(' ') || '—'}</span>
-                <span>{formatDateTime(note.updatedAt, state.settings.language)}</span>
+                <span>
+                  {formatDateTime(
+                    sort === 'accessed' && note.lastOpenedAt && note.lastOpenedAt > 0 ? note.lastOpenedAt : note.updatedAt,
+                    state.settings.language
+                  )}
+                </span>
                 <span
                   className="list-trash"
                   role="button"

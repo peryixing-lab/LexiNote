@@ -1,4 +1,13 @@
-import type { ImportedFile, PersistedState, RuntimeInfo } from '../shared/types';
+import type { ImportedAttachment, ImportedFile, NoteItem, PersistedState, RuntimeInfo } from '../shared/types';
+import type {
+  ConflictResolutionMode,
+  CrashRecoveryItem,
+  DraftWalEntry,
+  HistoryRetentionPolicy,
+  HistoryUsageSummary,
+  NoteConflictInfo,
+  NoteRevision
+} from '../shared/noteHistory';
 import type {
   PluginAiBalance,
   PluginAiStatus,
@@ -17,12 +26,44 @@ export interface StateSyncPayload {
   revision: number;
 }
 
+export interface SaveStateResponse {
+  revision: number;
+  conflicts?: NoteConflictInfo[];
+  historyWarning?: string;
+  syncWarning?: string;
+}
+
 export interface LexiBridge {
   runtimeInfo: () => Promise<RuntimeInfo>;
   loadState: () => Promise<StateEnvelope>;
-  saveState: (state: PersistedState, baseRevision: number) => Promise<{ revision: number }>;
+  saveState: (
+    state: PersistedState,
+    baseRevision: number,
+    options?: { noteBases?: Record<string, string>; dirtyNoteIds?: string[] }
+  ) => Promise<SaveStateResponse>;
   replaceState: (state: PersistedState) => Promise<{ revision: number }>;
   onStateSync: (listener: (payload: StateSyncPayload) => void) => () => void;
+  history: {
+    list: (noteId: string) => Promise<NoteRevision[]>;
+    snapshot: (note: NoteItem) => Promise<{ revision: NoteRevision | null; revisions: NoteRevision[]; warning?: string }>;
+    restore: (payload: {
+      noteId: string;
+      revisionId: string;
+      liveDraft?: Pick<NoteItem, 'title' | 'content' | 'tags' | 'properties'> | null;
+    }) => Promise<{ revision: number; restoredNote: NoteItem; revisions: NoteRevision[]; warning?: string }>;
+    usage: () => Promise<HistoryUsageSummary>;
+    prune: (policy?: Partial<HistoryRetentionPolicy>) => Promise<{ removedCount: number; summary: HistoryUsageSummary }>;
+    deleteNoteHistory: (noteId: string) => Promise<void>;
+    writeDraftWal: (entry: DraftWalEntry) => Promise<void>;
+    clearDraftWal: (noteIds: string[]) => Promise<void>;
+    listCrashRecoveries: () => Promise<CrashRecoveryItem[]>;
+    dismissCrashRecovery: (noteId: string) => Promise<void>;
+    resolveConflict: (payload: {
+      noteId: string;
+      mode: ConflictResolutionMode;
+      localNote: NoteItem;
+    }) => Promise<{ revision: number; resolvedNote: NoteItem; copyNote?: NoteItem }>;
+  };
   openWorkspaceWindow: (vaultId: string) => Promise<boolean>;
   window: {
     minimize: () => Promise<void>;
@@ -47,11 +88,13 @@ export interface LexiBridge {
     notes: PersistedState['notes'];
     maps: PersistedState['maps'];
     canvases: PersistedState['canvases'];
+    warnings?: string[];
   } | null>;
   scanWorkspaceFolder: (folderPath: string, vaultId: string) => Promise<{
     notes: PersistedState['notes'];
     maps: PersistedState['maps'];
     canvases: PersistedState['canvases'];
+    warnings?: string[];
   }>;
   exportSettingsPlugins: (settings: Record<string, unknown>) => Promise<string | null>;
   importSettingsPlugins: () => Promise<Record<string, unknown> | null>;
@@ -62,7 +105,20 @@ export interface LexiBridge {
     suggestedName: string,
     filters: { name: string; extensions: string[] }[]
   ) => Promise<string | null>;
+  exportPdf: (payload: { html: string; suggestedName: string }) => Promise<{ canceled: boolean; path?: string; fileName?: string }>;
   importFiles: () => Promise<ImportedFile[]>;
+  externalFiles: {
+    consume: () => Promise<ImportedFile[]>;
+    onOpen: (listener: (files: ImportedFile[]) => void) => () => void;
+  };
+  importAttachment: (payload: {
+    vaultId: string;
+    notebook?: string;
+    notePath?: string;
+    filePath?: string;
+    fileName?: string;
+    base64?: string;
+  }) => Promise<ImportedAttachment | null>;
   openExternal: (url: string) => Promise<void>;
   showItemInFolder: (target: string) => Promise<void>;
   writeClipboard: (text: string) => Promise<void>;

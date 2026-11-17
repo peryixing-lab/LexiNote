@@ -1,5 +1,21 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { ImportedFile, MarkdownExportFile, PersistedState, RuntimeInfo } from '../shared/types';
+import type {
+  ImportedAttachment,
+  ImportedFile,
+  MarkdownExportFile,
+  NoteItem,
+  PersistedState,
+  RuntimeInfo
+} from '../shared/types';
+import type {
+  ConflictResolutionMode,
+  CrashRecoveryItem,
+  DraftWalEntry,
+  HistoryRetentionPolicy,
+  HistoryUsageSummary,
+  NoteConflictInfo,
+  NoteRevision
+} from '../shared/noteHistory';
 import {
   PluginTaggedError,
   type PluginAiBalance,
@@ -29,17 +45,61 @@ export interface StateSyncPayload {
   revision: number;
 }
 
+export interface SaveStateResponse {
+  revision: number;
+  conflicts?: NoteConflictInfo[];
+  historyWarning?: string;
+  syncWarning?: string;
+}
+
 const api = {
   runtimeInfo: (): Promise<RuntimeInfo> => ipcRenderer.invoke('runtime:info'),
   loadState: (): Promise<StateEnvelope> => ipcRenderer.invoke('state:load'),
-  saveState: (state: PersistedState, baseRevision: number): Promise<{ revision: number }> =>
-    ipcRenderer.invoke('state:save', { state, baseRevision }),
+  saveState: (
+    state: PersistedState,
+    baseRevision: number,
+    options?: { noteBases?: Record<string, string>; dirtyNoteIds?: string[] }
+  ): Promise<SaveStateResponse> =>
+    ipcRenderer.invoke('state:save', {
+      state,
+      baseRevision,
+      noteBases: options?.noteBases,
+      dirtyNoteIds: options?.dirtyNoteIds
+    }),
   replaceState: (state: PersistedState): Promise<{ revision: number }> =>
     ipcRenderer.invoke('state:replace', state),
   onStateSync: (listener: (payload: StateSyncPayload) => void): (() => void) => {
     const handler = (_event: unknown, payload: StateSyncPayload): void => listener(payload);
     ipcRenderer.on('state:sync', handler);
     return () => ipcRenderer.removeListener('state:sync', handler);
+  },
+
+  history: {
+    list: (noteId: string): Promise<NoteRevision[]> => ipcRenderer.invoke('history:list', noteId),
+    snapshot: (
+      note: NoteItem
+    ): Promise<{ revision: NoteRevision | null; revisions: NoteRevision[]; warning?: string }> =>
+      ipcRenderer.invoke('history:snapshot', { note }),
+    restore: (payload: {
+      noteId: string;
+      revisionId: string;
+      liveDraft?: Pick<NoteItem, 'title' | 'content' | 'tags' | 'properties'> | null;
+    }): Promise<{ revision: number; restoredNote: NoteItem; revisions: NoteRevision[]; warning?: string }> =>
+      ipcRenderer.invoke('history:restore', payload),
+    usage: (): Promise<HistoryUsageSummary> => ipcRenderer.invoke('history:usage'),
+    prune: (policy?: Partial<HistoryRetentionPolicy>): Promise<{ removedCount: number; summary: HistoryUsageSummary }> =>
+      ipcRenderer.invoke('history:prune', policy),
+    deleteNoteHistory: (noteId: string): Promise<void> => ipcRenderer.invoke('history:delete-note', noteId),
+    writeDraftWal: (entry: DraftWalEntry): Promise<void> => ipcRenderer.invoke('history:wal-write', entry),
+    clearDraftWal: (noteIds: string[]): Promise<void> => ipcRenderer.invoke('history:wal-clear', noteIds),
+    listCrashRecoveries: (): Promise<CrashRecoveryItem[]> => ipcRenderer.invoke('history:crash-list'),
+    dismissCrashRecovery: (noteId: string): Promise<void> => ipcRenderer.invoke('history:crash-dismiss', noteId),
+    resolveConflict: (payload: {
+      noteId: string;
+      mode: ConflictResolutionMode;
+      localNote: NoteItem;
+    }): Promise<{ revision: number; resolvedNote: NoteItem; copyNote?: NoteItem }> =>
+      ipcRenderer.invoke('history:resolve-conflict', payload)
   },
 
   window: {
@@ -87,7 +147,27 @@ const api = {
     suggestedName: string,
     filters: { name: string; extensions: string[] }[]
   ): Promise<string | null> => ipcRenderer.invoke('export:text', { content, suggestedName, filters }),
+  exportPdf: (payload: {
+    html: string;
+    suggestedName: string;
+  }): Promise<{ canceled: boolean; path?: string; fileName?: string }> => ipcRenderer.invoke('export:pdf', payload),
   importFiles: (): Promise<ImportedFile[]> => ipcRenderer.invoke('import:files', []),
+  externalFiles: {
+    consume: (): Promise<ImportedFile[]> => ipcRenderer.invoke('files:consume-external'),
+    onOpen: (listener: (files: ImportedFile[]) => void): (() => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, files: ImportedFile[]): void => listener(files);
+      ipcRenderer.on('files:external-open', handler);
+      return () => ipcRenderer.removeListener('files:external-open', handler);
+    }
+  },
+  importAttachment: (payload: {
+    vaultId: string;
+    notebook?: string;
+    notePath?: string;
+    filePath?: string;
+    fileName?: string;
+    base64?: string;
+  }): Promise<ImportedAttachment | null> => ipcRenderer.invoke('attachment:import', payload),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke('shell:open-external', url),
   showItemInFolder: (target: string): Promise<void> => ipcRenderer.invoke('shell:show-item', target),
   writeClipboard: (text: string): Promise<void> => ipcRenderer.invoke('clipboard:write-text', text),

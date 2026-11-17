@@ -1,5 +1,5 @@
 import { build } from 'esbuild';
-import { rmSync } from 'node:fs';
+import { cpSync, mkdirSync, rmSync } from 'node:fs';
 
 rmSync('dist/main', { recursive: true, force: true });
 
@@ -27,3 +27,7 @@ await build({
   entryPoints: ['src/preload/preload.ts'],
   outfile: 'dist/main/preload.js'
 });
+
+mkdirSync('dist/main/katex', { recursive: true });
+cpSync('node_modules/katex/dist/katex.min.css', 'dist/main/katex/katex.min.css');
+cpSync('node_modules/katex/dist/fonts', 'dist/main/katex/fonts', { recursive: true });

@@ -12,9 +12,11 @@ import { CanvasView } from './components/CanvasView';
 import { CommandPalette } from './components/CommandPalette';
 import { SettingsDialog } from './components/SettingsDialog';
 import { TrashDialog } from './components/TrashDialog';
+import { WorkspaceSheet } from './components/WorkspaceSheet';
 import { WorkspaceDialog } from './components/WorkspaceDialog';
 import { TemplateDialog } from './components/TemplateDialog';
 import { HelpDialog } from './components/HelpDialog';
+import { NoteHistoryModal } from './components/NoteHistoryModal';
 import { WorkspaceOpenDialog } from './components/WorkspaceOpenDialog';
 import { Icon } from './components/Icon';
 import { usePluginHost } from './plugins/PluginHostController';
@@ -97,7 +99,7 @@ export function App(): JSX.Element {
   const [dragFiles, setDragFiles] = useState(false);
   const resizeRef = useRef<{ startX: number; startWidth: number; kind: 'left' | 'right' } | null>(null);
 
-  const leftWidth = (state.settings.showRibbon ? 56 : 0) + (state.sidebarOpen ? state.settings.sidebarWidth : 0);
+  const leftWidth = (state.settings.showRibbon ? 52 : 0) + (state.sidebarOpen ? state.settings.sidebarWidth : 0);
   const rightWidth = state.rightSidebarOpen ? state.settings.rightSidebarWidth : 0;
 
   useEffect(() => {
@@ -291,14 +293,30 @@ export function App(): JSX.Element {
       return;
     }
     let imported = 0;
+    let firstTitle = '';
+    const failed: string[] = [];
     for (const file of files) {
-      const content = await file.text();
-      const title = file.name.replace(/\.(md|markdown|txt)$/i, '');
-      const id = actions.createNote('markdown', title);
-      actions.updateNote(id, { content, notebook: '外部导入' });
-      imported += 1;
+      try {
+        const content = await file.text();
+        const title = file.name.replace(/\.(md|markdown|txt)$/i, '');
+        if (!firstTitle) firstTitle = title;
+        const id = actions.createNote('markdown', title);
+        actions.updateNote(id, { content, notebook: '外部导入' });
+        imported += 1;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : '读取失败';
+        failed.push(`${file.name}（${reason}）`);
+      }
     }
-    actions.showToast(`已导入 ${imported} 篇笔记`);
+    if (imported === 0) {
+      actions.showToast(`打开失败：${failed[0] || '无法读取文件'}`);
+      return;
+    }
+    if (failed.length > 0) {
+      actions.showToast(`已打开 ${imported} 篇笔记，${failed.length} 个失败：${failed[0]}`);
+      return;
+    }
+    actions.showToast(imported === 1 ? `已打开文件「${firstTitle}」` : `已导入并打开 ${imported} 篇笔记`);
   };
 
   return (
@@ -315,11 +333,19 @@ export function App(): JSX.Element {
       }}
       onDrop={(event) => void onDropFiles(event)}
     >
-      <div className="app-left" style={{ width: leftWidth }}>
+      <div className={`app-left${state.sidebarOpen ? ' sidebar-open' : ' sidebar-closed'}`} style={{ width: leftWidth }}>
         <BrandBar />
         <div className="left-body">
           {state.settings.showRibbon ? <Rail /> : null}
-          {state.sidebarOpen ? <Sidebar /> : null}
+          <div
+            className={`sidebar-slot${state.sidebarOpen ? ' open' : ''}`}
+            style={{ width: state.sidebarOpen ? state.settings.sidebarWidth : 0 }}
+            aria-hidden={!state.sidebarOpen}
+          >
+            <div className="sidebar-slot-inner" style={{ width: state.settings.sidebarWidth }}>
+              <Sidebar />
+            </div>
+          </div>
         </div>
       </div>
 
@@ -352,19 +378,30 @@ export function App(): JSX.Element {
               }}
             />
           ) : null}
-          <div className="right-slot" style={{ width: rightWidth }}>
-            {state.rightSidebarOpen ? <RightSidebar /> : null}
+          <div
+            className={`right-slot${state.rightSidebarOpen ? ' open' : ''}`}
+            style={{ width: rightWidth }}
+            aria-hidden={!state.rightSidebarOpen}
+          >
+            <div className="right-slot-inner" style={{ width: state.settings.rightSidebarWidth }}>
+              <RightSidebar />
+            </div>
           </div>
         </div>
       </div>
 
       {state.paletteOpen ? <CommandPalette /> : null}
-      {state.settingsOpen ? <SettingsDialog /> : null}
-      {state.trashOpen ? <TrashDialog /> : null}
+      <WorkspaceSheet open={state.settingsOpen} onDismiss={actions.closeSettings} label={derived.tr('设置')} className="settings-window">
+        <SettingsDialog />
+      </WorkspaceSheet>
+      <WorkspaceSheet open={state.trashOpen} onDismiss={() => actions.setTrashOpen(false)} label={derived.tr('回收站')} className="trash-dialog">
+        <TrashDialog />
+      </WorkspaceSheet>
       {state.workspacesOpen ? <WorkspaceDialog /> : null}
       {state.workspacePrompt ? <WorkspaceOpenDialog /> : null}
       {state.templatesOpen ? <TemplateDialog /> : null}
       {state.helpOpen ? <HelpDialog /> : null}
+      {state.historyModalNoteId ? <NoteHistoryModal /> : null}
 
       {dragFiles ? (
         <div className="drop-overlay">

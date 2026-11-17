@@ -1,12 +1,228 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useStore } from '../store/AppStore';
 import {
   HARNESS_PLUGIN_ID,
   PLUGIN_CAPABILITY_META,
   usePluginHost
 } from '../plugins/PluginHostController';
-import type { PluginRecord, PluginRuntimeInfo } from '../../shared/pluginTypes';
+import {
+  PluginCapability,
+  type PluginAiStatus,
+  type PluginRecord,
+  type PluginRuntimeInfo
+} from '../../shared/pluginTypes';
 import { Icon } from './Icon';
+
+interface AiPresetItem {
+  id: string;
+  title: string;
+  provider: 'openai-compatible' | 'anthropic-compatible';
+  baseUrl: string;
+  model: string;
+}
+
+const AI_PRESETS: AiPresetItem[] = [
+  {
+    id: 'deepseek',
+    title: 'DeepSeek',
+    provider: 'openai-compatible',
+    baseUrl: 'https://api.deepseek.com',
+    model: 'deepseek-chat'
+  },
+  {
+    id: 'openai',
+    title: 'OpenAI',
+    provider: 'openai-compatible',
+    baseUrl: 'https://api.openai.com',
+    model: 'gpt-4o-mini'
+  },
+  {
+    id: 'anthropic',
+    title: 'Anthropic',
+    provider: 'anthropic-compatible',
+    baseUrl: 'https://api.anthropic.com',
+    model: 'claude-3-5-sonnet-latest'
+  },
+  {
+    id: 'siliconflow',
+    title: 'SiliconFlow',
+    provider: 'openai-compatible',
+    baseUrl: 'https://api.siliconflow.cn',
+    model: 'deepseek-ai/DeepSeek-V3'
+  },
+  {
+    id: 'ollama',
+    title: 'Ollama Local',
+    provider: 'openai-compatible',
+    baseUrl: 'http://localhost:11434',
+    model: 'qwen2.5:7b'
+  }
+];
+
+function PluginAiConfigPanel({
+  pluginId,
+  tr
+}: {
+  pluginId: string;
+  tr: (source: string, args?: (string | number)[]) => string;
+}): JSX.Element {
+  const [presetId, setPresetId] = useState('deepseek');
+  const [provider, setProvider] = useState<'openai-compatible' | 'anthropic-compatible'>('openai-compatible');
+  const [baseUrl, setBaseUrl] = useState('https://api.deepseek.com');
+  const [modelName, setModelName] = useState('deepseek-chat');
+  const [apiKey, setApiKey] = useState('');
+  const [status, setStatus] = useState<PluginAiStatus | null>(null);
+  const [feedback, setFeedback] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    void window.lexi?.plugins
+      .aiStatus(pluginId)
+      .then((res) => {
+        setStatus(res);
+        if (res.baseUrl) setBaseUrl(res.baseUrl);
+        if (res.model) setModelName(res.model);
+        if (res.provider === 'anthropic-compatible' || res.provider === 'openai-compatible') {
+          setProvider(res.provider);
+        }
+        if (res.profileId) setPresetId(res.profileId);
+      })
+      .catch(() => {});
+  }, [pluginId]);
+
+  const handleSave = async (): Promise<void> => {
+    if (!window.lexi?.plugins || saving) return;
+    setSaving(true);
+    setFeedback('');
+    try {
+      const preset = AI_PRESETS.find((item) => item.id === presetId);
+      const res = await window.lexi.plugins.aiConfigure(pluginId, {
+        profileId: presetId || 'default',
+        name: preset?.title || modelName || 'Default',
+        provider,
+        baseUrl: baseUrl.trim(),
+        model: modelName.trim(),
+        ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {})
+      });
+      setStatus(res);
+      setApiKey('');
+      setFeedback(tr('已保存到宿主模型代理'));
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleClear = async (): Promise<void> => {
+    if (!window.lexi?.plugins || saving) return;
+    setSaving(true);
+    setFeedback('');
+    try {
+      const res = await window.lexi.plugins.aiConfigure(pluginId, { clear: true });
+      setStatus(res);
+      setApiKey('');
+      setFeedback(tr('已清除当前插件模型配置'));
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="plugin-details" style={{ marginTop: 10 }}>
+      <div className="plugin-details-section">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <div className="plugin-details-title" style={{ margin: 0 }}>
+            {tr('AI 服务商与密钥配置（仅宿主存储，插件不可见 Key）')}
+          </div>
+          {status ? (
+            <span className={`plugin-badge ${status.configured ? 'tone-active' : 'tone-warn'}`}>
+              {status.configured ? tr('已配置密钥') : tr('未填密钥')}
+            </span>
+          ) : null}
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+          {AI_PRESETS.map((preset) => (
+            <button
+              key={preset.id}
+              type="button"
+              className={`small-btn ${presetId === preset.id ? 'active' : ''}`}
+              onClick={() => {
+                setPresetId(preset.id);
+                setProvider(preset.provider);
+                setBaseUrl(preset.baseUrl);
+                setModelName(preset.model);
+              }}
+            >
+              {preset.title}
+            </button>
+          ))}
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+            <span style={{ width: 72, color: 'var(--text-2)' }}>Base URL</span>
+            <input
+              type="text"
+              className="custom-hex-input"
+              style={{ flex: 1 }}
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder="https://api.deepseek.com"
+            />
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+            <span style={{ width: 72, color: 'var(--text-2)' }}>{tr('模型')}</span>
+            <input
+              type="text"
+              className="custom-hex-input"
+              style={{ flex: 1 }}
+              value={modelName}
+              onChange={(e) => setModelName(e.target.value)}
+              placeholder="deepseek-chat"
+            />
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+            <span style={{ width: 72, color: 'var(--text-2)' }}>API Key</span>
+            <input
+              type="password"
+              className="custom-hex-input"
+              style={{ flex: 1 }}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder={tr('仅写入宿主安全文件，不回显')}
+            />
+          </label>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+          <button
+            type="button"
+            className="settings-btn-primary"
+            style={{ height: 28, padding: '0 12px', fontSize: 12 }}
+            disabled={saving}
+            onClick={() => void handleSave()}
+          >
+            {tr('保存配置')}
+          </button>
+          {status?.profileId ? (
+            <button
+              type="button"
+              className="small-btn danger-btn"
+              disabled={saving}
+              onClick={() => void handleClear()}
+            >
+              {tr('清除配置')}
+            </button>
+          ) : null}
+          {feedback ? (
+            <span style={{ fontSize: 11.5, color: 'var(--brand-ink)', marginLeft: 'auto' }}>{feedback}</span>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function stateBadgeLabel(
   record: PluginRecord,
@@ -50,6 +266,7 @@ export function PluginSettingsSection(): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
+  const [aiExpandedIds, setAiExpandedIds] = useState<Record<string, boolean>>({});
   const [confirmGrantAllPlugin, setConfirmGrantAllPlugin] = useState<PluginRecord | null>(null);
   const [confirmUninstallPlugin, setConfirmUninstallPlugin] = useState<PluginRecord | null>(null);
   const [purgeOnUninstall, setPurgeOnUninstall] = useState(false);
@@ -71,6 +288,10 @@ export function PluginSettingsSection(): JSX.Element {
 
   const toggleExpand = (pluginId: string): void => {
     setExpandedIds((previous) => ({ ...previous, [pluginId]: !previous[pluginId] }));
+  };
+
+  const toggleAiExpand = (pluginId: string): void => {
+    setAiExpandedIds((previous) => ({ ...previous, [pluginId]: !previous[pluginId] }));
   };
 
   const handleInstallZip = (): void => {
@@ -188,6 +409,8 @@ export function PluginSettingsSection(): JSX.Element {
             const info = pluginHost.runtimeInfoById[record.id];
             const badge = stateBadgeLabel(record, info, enabled, tr);
             const expanded = Boolean(expandedIds[record.id]);
+            const aiExpanded = Boolean(aiExpandedIds[record.id]);
+            const declaresAi = record.requestedCapabilities.includes(PluginCapability.AI_INFERENCE);
             const allGranted =
               record.requestedCapabilities.length > 0 &&
               record.requestedCapabilities.every((cap) => record.grantedCapabilities.includes(cap));
@@ -220,6 +443,16 @@ export function PluginSettingsSection(): JSX.Element {
                   </div>
 
                   <div className="plugin-card-controls">
+                    {declaresAi ? (
+                      <button
+                        type="button"
+                        className="small-btn"
+                        disabled={busy}
+                        onClick={() => toggleAiExpand(record.id)}
+                      >
+                        <Icon name="spark" size={12} /> {tr('模型设置')}
+                      </button>
+                    ) : null}
                     {enabled && canOpenView ? (
                       <button
                         type="button"
@@ -308,6 +541,10 @@ export function PluginSettingsSection(): JSX.Element {
                     {tr('卸载')}
                   </button>
                 </div>
+
+                {aiExpanded && declaresAi ? (
+                  <PluginAiConfigPanel pluginId={record.id} tr={tr} />
+                ) : null}
 
                 {expanded ? (
                   <div className="plugin-details">

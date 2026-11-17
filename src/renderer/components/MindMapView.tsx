@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store/AppStore';
 import type { MindMapColor, MindMapDoc, MindMapNode } from '../../shared/types';
-import { computeMindMapLayout, mindMapToMarkdownOutline } from '../core/markdown';
+import { computeMindMapLayout, displayTitle, mindMapToMarkdownOutline } from '../core/markdown';
 import { Icon } from './Icon';
 import { PlusGlyph } from './Symbols';
 
@@ -42,18 +42,22 @@ export function MindMapView(): JSX.Element {
   const [editingId, setEditingId] = useState('');
   const [draft, setDraft] = useState('');
   const [zoom, setZoom] = useState(1);
+  const [inspectorOpen, setInspectorOpen] = useState(true);
   const [drag, setDrag] = useState<{ id: string; x: number; y: number; baseX: number; baseY: number } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const layout = useMemo(() => (doc ? computeMindMapLayout(doc) : []), [doc]);
-  const selected = layout.find((node) => node.id === selectedId);
+  const activeNodeId = selectedId || doc?.rootNodeId || '';
+  const selected =
+    doc?.nodes.find((node) => node.id === activeNodeId) ??
+    layout.find((node) => node.id === activeNodeId);
 
   useEffect(() => {
-    setSelectedId('');
+    setSelectedId(doc?.rootNodeId || '');
     setEditingId('');
     setZoom(1);
-  }, [doc?.id]);
+  }, [doc?.id, doc?.rootNodeId]);
 
   useEffect(() => {
     if (editingId) {
@@ -116,8 +120,31 @@ export function MindMapView(): JSX.Element {
     if (!doc || id === doc.rootNodeId) return;
     const doomed = descendantIds(doc.nodes, id);
     save({ ...doc, nodes: doc.nodes.filter((node) => !doomed.has(node.id)) });
-    if (doomed.has(selectedId)) setSelectedId('');
+    if (doomed.has(selectedId)) setSelectedId(doc.rootNodeId);
     if (doomed.has(editingId)) setEditingId('');
+  };
+
+  const moveSibling = (id: string, delta: -1 | 1): void => {
+    if (!doc || id === doc.rootNodeId) return;
+    const target = doc.nodes.find((node) => node.id === id);
+    if (!target) return;
+    const siblings = doc.nodes
+      .filter((node) => node.parentId === target.parentId)
+      .sort((a, b) => a.order - b.order);
+    const idx = siblings.findIndex((node) => node.id === id);
+    const swapIdx = idx + delta;
+    if (idx < 0 || swapIdx < 0 || swapIdx >= siblings.length) return;
+    const reordered = siblings.slice();
+    const [moved] = reordered.splice(idx, 1);
+    reordered.splice(swapIdx, 0, moved);
+    const orderMap = new Map<string, number>();
+    reordered.forEach((item, index) => orderMap.set(item.id, index + 1));
+    save({
+      ...doc,
+      nodes: doc.nodes.map((node) =>
+        orderMap.has(node.id) ? { ...node, order: orderMap.get(node.id)! } : node
+      )
+    });
   };
 
   const commitText = (): void => {
@@ -133,11 +160,9 @@ export function MindMapView(): JSX.Element {
     updateNode(selected.id, { colorTag: COLOR_TAGS[(index + 1) % COLOR_TAGS.length] });
   };
 
-  const cycleLayout = (): void => {
+  const setLayoutKind = (layoutKind: MindMapDoc['layoutKind']): void => {
     if (!doc) return;
-    const order: MindMapDoc['layoutKind'][] = ['right', 'balanced', 'org'];
-    const next = order[(order.indexOf(doc.layoutKind) + 1) % order.length];
-    save({ ...doc, layoutKind: next });
+    save({ ...doc, layoutKind });
   };
 
   const exportOutline = (): void => {
@@ -154,8 +179,23 @@ export function MindMapView(): JSX.Element {
     actions.updateNote(id, { content: markdown, notebook: '思维导图' });
   };
 
+  const createNoteFromSelectedNode = (): void => {
+    if (!doc || !selected) return;
+    const title = selected.text.trim() || tr('未命名节点');
+    const body = selected.note.trim()
+      ? `# ${title}\n\n${selected.note.trim()}\n`
+      : `# ${title}\n\n`;
+    const id = actions.createNote('markdown', title);
+    actions.updateNote(id, { content: body, notebook: '思维导图' });
+    updateNode(selected.id, { noteRefId: id, noteRefTitle: title });
+  };
+
   const onKeyDown = (event: React.KeyboardEvent): void => {
     if (!selected || editingId) return;
+    const activeEl = document.activeElement;
+    if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'SELECT')) {
+      return;
+    }
     if (event.key === 'Tab') {
       event.preventDefault();
       addNode(selected.id, 'child');
@@ -207,6 +247,13 @@ export function MindMapView(): JSX.Element {
     return `M ${x1} ${parentCenter} C ${x1 + (toLeft ? -bend : bend)} ${parentCenter}, ${x2 + (toLeft ? bend : -bend)} ${childCenter}, ${x2} ${childCenter}`;
   };
 
+  const vaultNotes = state.notes.filter(
+    (note) => note.vaultId === state.activeVaultId && note.trashedAt === 0
+  );
+  const selectedChildrenCount = selected
+    ? doc.nodes.filter((item) => item.parentId === selected.id).length
+    : 0;
+
   return (
     <div className="mindmap-view" tabIndex={0} onKeyDown={onKeyDown}>
       <div className="mindmap-header">
@@ -218,9 +265,32 @@ export function MindMapView(): JSX.Element {
           aria-label={tr('导图标题')}
         />
         <div className="mindmap-actions">
-          <button type="button" className="small-btn" onClick={cycleLayout} title={tr('切换布局')}>
-            {doc.layoutKind === 'right' ? tr('向右树') : doc.layoutKind === 'balanced' ? tr('平衡图') : tr('组织结构')}
-          </button>
+          <div className="settings-segmented" style={{ padding: 2 }}>
+            <button
+              type="button"
+              className={doc.layoutKind === 'right' ? 'active' : ''}
+              style={{ height: 24, padding: '0 8px', fontSize: 11.5 }}
+              onClick={() => setLayoutKind('right')}
+            >
+              {tr('向右')}
+            </button>
+            <button
+              type="button"
+              className={doc.layoutKind === 'balanced' ? 'active' : ''}
+              style={{ height: 24, padding: '0 8px', fontSize: 11.5 }}
+              onClick={() => setLayoutKind('balanced')}
+            >
+              {tr('双向')}
+            </button>
+            <button
+              type="button"
+              className={doc.layoutKind === 'org' ? 'active' : ''}
+              style={{ height: 24, padding: '0 8px', fontSize: 11.5 }}
+              onClick={() => setLayoutKind('org')}
+            >
+              {tr('组织')}
+            </button>
+          </div>
           <span className="toolbar-separator" />
           <button
             type="button"
@@ -267,137 +337,270 @@ export function MindMapView(): JSX.Element {
           <button type="button" className="small-btn" onClick={() => setZoom(1)}>
             {tr('重置')}
           </button>
+          <button
+            type="button"
+            className={`small-btn ${inspectorOpen ? 'active' : ''}`}
+            onClick={() => setInspectorOpen((prev) => !prev)}
+            title={tr('节点属性')}
+          >
+            {tr('节点属性')}
+          </button>
         </div>
       </div>
 
-      <div className="mindmap-canvas-wrap" ref={scrollRef}>
-        <div
-          className="mindmap-canvas"
-          style={{
-            width: bounds.width,
-            height: bounds.height,
-            transform: `scale(${zoom})`,
-            transformOrigin: '0 0'
-          }}
-          onPointerDown={(event) => {
-            if (event.target === event.currentTarget) setSelectedId('');
-          }}
-          onPointerMove={(event) => {
-            if (!drag) return;
-            updateNode(drag.id, {
-              offsetX: Math.round(drag.baseX + (event.clientX - drag.x) / zoom),
-              offsetY: Math.round(drag.baseY + (event.clientY - drag.y) / zoom)
-            });
-          }}
-          onPointerUp={() => setDrag(null)}
-          onPointerLeave={() => setDrag(null)}
-        >
-          <svg className="mindmap-edges" width={bounds.width} height={bounds.height}>
+      <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        <div className="mindmap-canvas-wrap" ref={scrollRef} style={{ flex: 1 }}>
+          <div
+            className="mindmap-canvas"
+            style={{
+              width: bounds.width,
+              height: bounds.height,
+              transform: `scale(${zoom})`,
+              transformOrigin: '0 0'
+            }}
+            onPointerDown={(event) => {
+              if (event.target === event.currentTarget) setSelectedId(doc.rootNodeId);
+            }}
+            onPointerMove={(event) => {
+              if (!drag) return;
+              updateNode(drag.id, {
+                offsetX: Math.round(drag.baseX + (event.clientX - drag.x) / zoom),
+                offsetY: Math.round(drag.baseY + (event.clientY - drag.y) / zoom)
+              });
+            }}
+            onPointerUp={() => setDrag(null)}
+            onPointerLeave={() => setDrag(null)}
+          >
+            <svg className="mindmap-edges" width={bounds.width} height={bounds.height}>
+              {layout.map((node) => {
+                const parent = layout.find((item) => item.id === node.parentId);
+                if (!parent) return null;
+                return (
+                  <path
+                    key={`edge-${node.id}`}
+                    d={edgePath(parent, node)}
+                    stroke={TAG_COLORS[node.colorTag]}
+                    className="mindmap-edge"
+                  />
+                );
+              })}
+            </svg>
+
             {layout.map((node) => {
-              const parent = layout.find((item) => item.id === node.parentId);
-              if (!parent) return null;
+              const color = TAG_COLORS[node.colorTag];
+              const isRoot = node.id === doc.rootNodeId;
+              const isSelected = activeNodeId === node.id;
+              const children = doc.nodes.filter((item) => item.parentId === node.id);
               return (
-                <path
-                  key={`edge-${node.id}`}
-                  d={edgePath(parent, node)}
-                  stroke={TAG_COLORS[node.colorTag]}
-                  className="mindmap-edge"
-                />
+                <div
+                  key={node.id}
+                  className={`mindmap-node${isRoot ? ' root' : ''}${isSelected ? ' selected' : ''}`}
+                  style={{
+                    left: node.x,
+                    top: node.y,
+                    width: node.boxWidth,
+                    minHeight: node.boxHeight,
+                    borderColor: color
+                  }}
+                  onPointerDown={(event) => {
+                    if ((event.target as HTMLElement).closest('button, input')) return;
+                    (event.currentTarget.closest('.mindmap-view') as HTMLElement | null)?.focus();
+                    setSelectedId(node.id);
+                    setDrag({ id: node.id, x: event.clientX, y: event.clientY, baseX: node.offsetX, baseY: node.offsetY });
+                    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+                  }}
+                  onDoubleClick={() => {
+                    setEditingId(node.id);
+                    setDraft(node.text);
+                  }}
+                >
+                  {editingId === node.id ? (
+                    <input
+                      ref={inputRef}
+                      className="mindmap-node-input"
+                      value={draft}
+                      onChange={(event) => setDraft(event.target.value)}
+                      onBlur={commitText}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          commitText();
+                        }
+                        if (event.key === 'Escape') setEditingId('');
+                      }}
+                    />
+                  ) : (
+                    <div className="mindmap-node-label">{node.text}</div>
+                  )}
+                  {node.noteRefTitle ? (
+                    <button
+                      type="button"
+                      className="mindmap-note-ref"
+                      title={tr('打开关联笔记：{0}', [node.noteRefTitle])}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (node.noteRefId) actions.openDocument(node.noteRefId);
+                      }}
+                    >
+                      <Icon name="link" size={11} muted />
+                      <span>{node.noteRefTitle}</span>
+                    </button>
+                  ) : node.note ? (
+                    <div className="mindmap-note">{node.note}</div>
+                  ) : null}
+                  {children.length > 0 ? (
+                    <button
+                      type="button"
+                      className="mindmap-collapse"
+                      aria-label={node.collapsed ? tr('展开分支') : tr('收起分支')}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        updateNode(node.id, { collapsed: !node.collapsed });
+                      }}
+                    >
+                      {node.collapsed ? `+${children.length}` : '−'}
+                    </button>
+                  ) : null}
+                  <span className="mindmap-add" aria-hidden>
+                    <button
+                      type="button"
+                      title={tr('添加子节点')}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        addNode(node.id, 'child');
+                      }}
+                    >
+                      +
+                    </button>
+                  </span>
+                </div>
               );
             })}
-          </svg>
+          </div>
+        </div>
 
-          {layout.map((node) => {
-            const color = TAG_COLORS[node.colorTag];
-            const isRoot = node.id === doc.rootNodeId;
-            const isSelected = selectedId === node.id;
-            const children = doc.nodes.filter((item) => item.parentId === node.id);
-            return (
-              <div
-                key={node.id}
-                className={`mindmap-node${isRoot ? ' root' : ''}${isSelected ? ' selected' : ''}`}
-                style={{
-                  left: node.x,
-                  top: node.y,
-                  width: node.boxWidth,
-                  minHeight: node.boxHeight,
-                  borderColor: color
-                }}
-                onPointerDown={(event) => {
-                  if ((event.target as HTMLElement).closest('button, input')) return;
-                  (event.currentTarget.closest('.mindmap-view') as HTMLElement | null)?.focus();
-                  setSelectedId(node.id);
-                  setDrag({ id: node.id, x: event.clientX, y: event.clientY, baseX: node.offsetX, baseY: node.offsetY });
-                  (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-                }}
-                onDoubleClick={() => {
-                  setEditingId(node.id);
-                  setDraft(node.text);
+        {inspectorOpen && selected ? (
+          <aside className="mindmap-inspector">
+            <div className="mindmap-inspector-head">
+              <strong>{tr('节点属性')}</strong>
+              <span className="settings-badge-muted">
+                {selected.id === doc.rootNodeId ? tr('根节点') : tr('分支节点')}
+              </span>
+            </div>
+
+            <div className="mindmap-inspector-field">
+              <label>{tr('主题文字')}</label>
+              <input
+                type="text"
+                className="custom-hex-input"
+                value={selected.text}
+                onChange={(e) => updateNode(selected.id, { text: e.target.value })}
+              />
+            </div>
+
+            <div className="mindmap-inspector-field">
+              <label>{tr('节点备注')}</label>
+              <textarea
+                className="mindmap-inspector-textarea"
+                rows={3}
+                placeholder={tr('补充节点说明或复习要点…')}
+                value={selected.note}
+                onChange={(e) => updateNode(selected.id, { note: e.target.value })}
+              />
+            </div>
+
+            <div className="mindmap-inspector-field">
+              <label>{tr('分支操作')}</label>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {selectedChildrenCount > 0 ? (
+                  <button
+                    type="button"
+                    className="small-btn"
+                    onClick={() => updateNode(selected.id, { collapsed: !selected.collapsed })}
+                  >
+                    {selected.collapsed ? tr('展开分支') : tr('折叠')}
+                  </button>
+                ) : null}
+                {selected.id !== doc.rootNodeId ? (
+                  <>
+                    <button
+                      type="button"
+                      className="small-btn"
+                      onClick={() => moveSibling(selected.id, -1)}
+                    >
+                      ↑ {tr('上移')}
+                    </button>
+                    <button
+                      type="button"
+                      className="small-btn"
+                      onClick={() => moveSibling(selected.id, 1)}
+                    >
+                      ↓ {tr('下移')}
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="mindmap-inspector-field">
+              <label>{tr('颜色标记')}</label>
+              <div className="swatch-row">
+                {COLOR_TAGS.map((tag) => (
+                  <button
+                    key={tag}
+                    type="button"
+                    className={`swatch ${selected.colorTag === tag ? 'active' : ''}`}
+                    style={{ backgroundColor: TAG_COLORS[tag] }}
+                    onClick={() => updateNode(selected.id, { colorTag: tag })}
+                    aria-label={tag}
+                  />
+                ))}
+              </div>
+            </div>
+
+            <div className="mindmap-inspector-field">
+              <label>{tr('关联笔记')}</label>
+              <select
+                className="select"
+                style={{ width: '100%' }}
+                value={selected.noteRefId || ''}
+                onChange={(e) => {
+                  const targetId = e.target.value;
+                  const targetNote = vaultNotes.find((n) => n.id === targetId);
+                  updateNode(selected.id, {
+                    noteRefId: targetId,
+                    noteRefTitle: targetNote ? displayTitle(targetNote) : ''
+                  });
                 }}
               >
-                {editingId === node.id ? (
-                  <input
-                    ref={inputRef}
-                    className="mindmap-node-input"
-                    value={draft}
-                    onChange={(event) => setDraft(event.target.value)}
-                    onBlur={commitText}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
-                        event.preventDefault();
-                        commitText();
-                      }
-                      if (event.key === 'Escape') setEditingId('');
-                    }}
-                  />
-                ) : (
-                  <div className="mindmap-node-label">{node.text}</div>
-                )}
-                {node.noteRefTitle ? (
+                <option value="">{tr('未关联笔记')}</option>
+                {vaultNotes.map((n) => (
+                  <option key={n.id} value={n.id}>
+                    {displayTitle(n)}
+                  </option>
+                ))}
+              </select>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                {selected.noteRefId ? (
                   <button
                     type="button"
-                    className="mindmap-note-ref"
-                    title={tr('打开关联笔记：{0}', [node.noteRefTitle])}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      if (node.noteRefId) actions.openDocument(node.noteRefId);
-                    }}
+                    className="small-btn"
+                    onClick={() => actions.openDocument(selected.noteRefId)}
                   >
-                    <Icon name="link" size={11} muted />
-                    <span>{node.noteRefTitle}</span>
-                  </button>
-                ) : node.note ? (
-                  <div className="mindmap-note">{node.note}</div>
-                ) : null}
-                {children.length > 0 ? (
-                  <button
-                    type="button"
-                    className="mindmap-collapse"
-                    aria-label={node.collapsed ? tr('展开分支') : tr('收起分支')}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      updateNode(node.id, { collapsed: !node.collapsed });
-                    }}
-                  >
-                    {node.collapsed ? `+${children.length}` : '−'}
+                    {tr('打开关联笔记')}
                   </button>
                 ) : null}
-                <span className="mindmap-add" aria-hidden>
-                  <button
-                    type="button"
-                    title={tr('添加子节点')}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      addNode(node.id, 'child');
-                    }}
-                  >
-                    +
-                  </button>
-                </span>
+                <button
+                  type="button"
+                  className="small-btn"
+                  onClick={createNoteFromSelectedNode}
+                >
+                  {tr('由节点生成笔记')}
+                </button>
               </div>
-            );
-          })}
-        </div>
+            </div>
+          </aside>
+        ) : null}
       </div>
 
       <div className="mindmap-footer">

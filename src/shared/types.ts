@@ -3,6 +3,7 @@
  * They mirror the HarmonyOS LexiNote models (core/LexiModels.ets) so note
  * files, mind maps and canvases keep the same meaning on Windows.
  */
+import type { HistoryRetentionPolicy } from './noteHistory';
 
 export type WorkspaceOpenMode = 'ask' | 'current' | 'new';
 
@@ -33,6 +34,7 @@ export interface NoteProperty {
 }
 
 export type NoteType = 'quick' | 'study' | 'markdown';
+export type NoteSortMode = 'accessed' | 'updated' | 'created' | 'title';
 
 export interface NoteItem {
   id: string;
@@ -50,6 +52,8 @@ export interface NoteItem {
   trashedAt: number;
   createdAt: number;
   updatedAt: number;
+  /** Non-persistent runtime field hydrated from PersistedState.noteAccessedAt. */
+  lastOpenedAt?: number;
   path: string;
 }
 
@@ -154,6 +158,9 @@ export interface AppSettings {
   settingsUpdatedAt: number;
   lastVaultId: string;
   lastNoteId: string;
+  sidebarSort?: NoteSortMode;
+  librarySort?: NoteSortMode;
+  historyPolicy?: HistoryRetentionPolicy;
   windowBounds?: { width: number; height: number; x?: number; y?: number; maximized?: boolean };
   hotkeys: HotkeyMap;
 }
@@ -166,11 +173,24 @@ export interface PersistedState {
   maps: MindMapDoc[];
   canvases: CanvasBoard[];
   settings: AppSettings;
+  /** Per-note last opened timestamp (ms); stored outside note bodies to keep .md files untouched. */
+  noteAccessedAt?: Record<string, number>;
 }
 
 export interface ImportedFile {
   name: string;
   content: string;
+  sourcePath?: string;
+  error?: string;
+  parsedNote?: NoteItem;
+  parsedMap?: MindMapDoc;
+  parsedCanvas?: CanvasBoard;
+}
+
+export interface ImportedAttachment {
+  relativePath: string;
+  fileName: string;
+  isImage: boolean;
 }
 
 export interface RuntimeInfo {

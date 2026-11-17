@@ -1,9 +1,15 @@
 import React, { useEffect, useMemo, useRef } from 'react';
 import { useStore } from '../store/AppStore';
-import { displayTitle, extractOutline } from '../core/markdown';
+import {
+  displayTitle,
+  extractOutline,
+  isNoteUnconnected,
+  suggestLinkCandidatesForNote
+} from '../core/markdown';
 import { HARNESS_PLUGIN_ID, usePluginHost } from '../plugins/PluginHostController';
 import type { PluginRecord } from '../../shared/pluginTypes';
 import { Icon } from './Icon';
+import { LinkPreviewPopover } from './LinkPreviewPopover';
 
 function iconForPlugin(record: PluginRecord): string {
   const lower = record.id.toLowerCase();
@@ -38,6 +44,7 @@ export function RightSidebar(): JSX.Element {
 
   useEffect(() => {
     const showSurface =
+      state.rightSidebarOpen &&
       Boolean(pluginModeId) &&
       Boolean(selectedPlugin) &&
       selectedRuntime?.state !== 'failed' &&
@@ -46,7 +53,7 @@ export function RightSidebar(): JSX.Element {
     return () => {
       pluginHost.registerSurfaceSlot('', null);
     };
-  }, [pluginModeId, selectedPlugin, selectedRuntime?.state, pluginHost.registerSurfaceSlot]);
+  }, [state.rightSidebarOpen, pluginModeId, selectedPlugin, selectedRuntime?.state, pluginHost.registerSurfaceSlot]);
 
   const selectPlugin = (record: PluginRecord): void => {
     actions.setRightSidebarMode(`plugin:${record.id}`);
@@ -68,6 +75,14 @@ export function RightSidebar(): JSX.Element {
   const backlinks = useMemo(
     () => (note ? derived.links.filter((link) => link.targetId === note.id) : []),
     [derived.links, note?.id]
+  );
+  const unconnected = useMemo(
+    () => (note ? isNoteUnconnected(note.id, derived.links) : false),
+    [derived.links, note]
+  );
+  const candidates = useMemo(
+    () => (note && unconnected ? suggestLinkCandidatesForNote(note, derived.hydratedNotes, derived.links, 4) : []),
+    [note, unconnected, derived.hydratedNotes, derived.links]
   );
 
   const openTarget = (id: string): void => {
@@ -98,7 +113,7 @@ export function RightSidebar(): JSX.Element {
           title={tr('大纲')}
           onClick={() => actions.setRightSidebarMode('outline')}
         >
-          <Icon name="sidebar_outline" size={18} muted />
+          <Icon name="sidebar_outline" size={18} muted={state.rightSidebarMode !== 'outline'} />
         </button>
         <button
           type="button"
@@ -106,7 +121,7 @@ export function RightSidebar(): JSX.Element {
           title={tr('笔记属性')}
           onClick={() => actions.setRightSidebarMode('properties')}
         >
-          <Icon name="tag" size={18} muted />
+          <Icon name="tag" size={18} muted={state.rightSidebarMode !== 'properties'} />
         </button>
         {otherPlugins.map((record) => {
           const mode = `plugin:${record.id}`;
@@ -267,16 +282,22 @@ export function RightSidebar(): JSX.Element {
                 {outgoing.length === 0 ? (
                   <p className="right-hint">{tr('在笔记中使用 [[双向链接]]，这里会显示出链。')}</p>
                 ) : (
-                  outgoing.map((link) => (
-                    <button
-                      key={`${link.sourceId}-${link.targetTitle}-${link.anchor}`}
-                      type="button"
-                      className="right-link"
-                      onClick={() => openTarget(link.targetId)}
-                    >
-                      {link.displayText || link.targetTitle}
-                    </button>
-                  ))
+                  outgoing.map((link) => {
+                    const targetKey = link.anchor ? `${link.targetTitle}#${link.anchor}` : link.targetTitle;
+                    return (
+                      <div key={`${link.sourceId}-${link.targetTitle}-${link.anchor}`} className="right-link-row">
+                        <LinkPreviewPopover target={targetKey} showTriggerButton onOpenTarget={() => openTarget(link.targetId)}>
+                          <button
+                            type="button"
+                            className="right-link"
+                            onClick={() => openTarget(link.targetId)}
+                          >
+                            {link.displayText || link.targetTitle}
+                          </button>
+                        </LinkPreviewPopover>
+                      </div>
+                    );
+                  })
                 )}
 
                 <div className="right-section-title spaced">{tr('反向链接')} · {backlinks.length}</div>
@@ -284,16 +305,53 @@ export function RightSidebar(): JSX.Element {
                   <p className="right-hint">{tr('还没有其他笔记链接到这里。')}</p>
                 ) : (
                   backlinks.map((link) => (
-                    <button
-                      key={`${link.sourceId}-${link.targetTitle}-${link.anchor}`}
-                      type="button"
-                      className="right-link"
-                      onClick={() => openTarget(link.sourceId)}
-                    >
-                      {link.sourceTitle}
-                    </button>
+                    <div key={`${link.sourceId}-${link.targetTitle}-${link.anchor}`} className="right-link-row">
+                      <LinkPreviewPopover target={link.sourceId} showTriggerButton onOpenTarget={() => openTarget(link.sourceId)}>
+                        <button
+                          type="button"
+                          className="right-link"
+                          onClick={() => openTarget(link.sourceId)}
+                        >
+                          {link.sourceTitle}
+                        </button>
+                      </LinkPreviewPopover>
+                    </div>
                   ))
                 )}
+
+                {unconnected ? (
+                  <div className="unconnected-banner">
+                    <div className="unconnected-banner-title">{tr('当前笔记尚未建立连接')}</div>
+                    <p className="unconnected-banner-desc">
+                      {tr('暂未发现指向此笔记的出链或反链，建议补充 [[双向链接]] 融入知识网络。')}
+                    </p>
+                    {candidates.length > 0 ? (
+                      <div className="unconnected-candidates">
+                        {candidates.map((cand) => (
+                          <div key={cand.noteId} className="unconnected-cand-row">
+                            <LinkPreviewPopover target={cand.noteId} showTriggerButton>
+                              <button
+                                type="button"
+                                className="unconnected-cand-title"
+                                onClick={() => actions.openDocument(cand.noteId)}
+                              >
+                                <span>{cand.title}</span>
+                                <small>{tr(cand.reason)}</small>
+                              </button>
+                            </LinkPreviewPopover>
+                            <button
+                              type="button"
+                              className="small-btn accent"
+                              onClick={() => actions.insertWikiLink(cand.title, note.id)}
+                            >
+                              + [[...]]
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </>
             )}
           </>

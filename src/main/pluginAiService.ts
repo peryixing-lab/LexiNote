@@ -1,10 +1,14 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { dirname, join } from 'node:path';
 import {
   type PluginAiBalance,
+  type PluginAiCompatConfig,
+  type PluginAiCredentialInfo,
+  type PluginAiProfileSummary,
   type PluginAiQuotaWindow,
+  type PluginAiRetryPolicy,
   type PluginAiStatus,
   PluginErrorCode,
   PluginLimits,
@@ -22,6 +26,9 @@ interface PluginAiProfile {
   model: string;
   maxTokens: number;
   temperature: number;
+  credentialRef?: string;
+  compat?: PluginAiCompatConfig;
+  retryPolicy?: PluginAiRetryPolicy;
 }
 
 interface PluginAiBinding {
@@ -31,16 +38,71 @@ interface PluginAiBinding {
 }
 
 interface PluginAiDiskStore {
-  version: 1;
+  version: 1 | 2;
   bindings: Record<string, PluginAiBinding>;
-  secrets: Record<string, string>;
+  secrets?: Record<string, string>;
+}
+
+interface PluginCredentialDocument {
+  version: 1;
+  records: Record<string, string>;
 }
 
 const DEFAULT_BASE_URL = 'https://api.deepseek.com';
 const USER_AGENT = 'LexiNote/2.0 (+https://github.com/peryixing-lab/LexiNote)';
 const MAX_PROFILES = 32;
 const PROFILE_ID_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
+const CREDENTIAL_REF_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const ENV_ASSIGNMENT_PATTERN = /^[A-Z][A-Z0-9_]*=[^=]/;
+const THINKING_FORMATS = new Set(['auto', 'openai', 'deepseek', 'openrouter', 'zai', 'qwen', 'chat-template']);
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+
+export function maskCredential(value: string): string {
+  const chars = Array.from(value);
+  if (chars.length === 0) { return ''; }
+  const sepIdx = chars.findIndex((c) => c === '-' || c === '_');
+  const providerEnd = sepIdx >= 0 ? sepIdx + 1 : 0;
+  const hidden = chars.length - providerEnd - 5 - 4;
+  if (hidden < 8) {
+    return '\u2022'.repeat(chars.length);
+  }
+  return `${chars.slice(0, providerEnd + 5).join('')}${'\u2022'.repeat(hidden)}${chars.slice(-4).join('')}`;
+}
+
+export function isValidCredentialRef(ref: string): boolean {
+  return CREDENTIAL_REF_PATTERN.test(ref);
+}
+
+export function defaultCredentialRef(provider: string, baseUrl: string, profileId: string): string {
+  let host = '';
+  try {
+    host = new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    host = '';
+  }
+  if (host.includes('deepseek.com')) { return 'DEEPSEEK_API_KEY'; }
+  if (host.includes('anthropic.com') || provider === 'anthropic-compatible') { return 'ANTHROPIC_API_KEY'; }
+  if (host.includes('openrouter.ai')) { return 'OPENROUTER_API_KEY'; }
+  if (host.includes('siliconflow.cn')) { return 'SILICONFLOW_API_KEY'; }
+  if (host.includes('bigmodel.cn') || host.includes('z.ai')) { return 'ZHIPU_API_KEY'; }
+  if (host.includes('kimi.com') || host.includes('moonshot.cn')) { return 'MOONSHOT_API_KEY'; }
+  if (host.includes('minimaxi.com') || host.includes('minimax.io')) { return 'MINIMAX_API_KEY'; }
+  if (host.includes('openai.com')) { return 'OPENAI_API_KEY'; }
+  const cleaned = profileId.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  if (!cleaned) { return 'OPENAI_API_KEY'; }
+  const prefixed = /^[0-9]/.test(cleaned) ? `KEY_${cleaned}` : cleaned;
+  return `${prefixed}_API_KEY`;
+}
+
+function needsApiKeyForUrl(baseUrl: string): boolean {
+  let host = '';
+  try {
+    host = new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    return true;
+  }
+  return !(host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]');
+}
 
 function isPrivateIPv4(host: string): boolean {
   const parts = host.split('.');
@@ -104,15 +166,30 @@ function normalizeProvider(raw: string): 'openai-compatible' | 'anthropic-compat
   return '';
 }
 
-function checkKey(raw: string): { ok: boolean; value: string; reason: string } {
+export function checkKey(raw: string): { ok: boolean; value: string; reason: string; message: string } {
+  if (raw.length === 0) {
+    return { ok: false, value: '', reason: 'empty', message: '' };
+  }
   const value = raw.trim();
-  if (!value) { return { ok: false, value: '', reason: 'empty' }; }
-  if (value.length > 8192) { return { ok: false, value: '', reason: 'tooLong' }; }
+  if (!value) {
+    return { ok: false, value: '', reason: 'blank', message: 'API Key 不能为空白字符' };
+  }
+  if (value.length > 8192) {
+    return { ok: false, value: '', reason: 'tooLong', message: 'API Key 长度超出限制' };
+  }
+  if (/^(["'`])[\s\S]*\1$/.test(value) && value.length >= 2) {
+    return { ok: false, value: '', reason: 'wrappedQuotes', message: '请去掉 API Key 首尾的引号' };
+  }
+  if (ENV_ASSIGNMENT_PATTERN.test(value)) {
+    return { ok: false, value: '', reason: 'envLine', message: '请只粘贴 API Key 值本身，不要包含 ENV_VAR= 前缀' };
+  }
   for (let i = 0; i < value.length; i += 1) {
     const code = value.charCodeAt(i);
-    if (code < 0x21 || code > 0x7e) { return { ok: false, value: '', reason: 'illegalCharacters' }; }
+    if (code < 0x21 || code > 0x7e) {
+      return { ok: false, value: '', reason: 'illegalCharacters', message: 'API Key 含不可用于 HTTP 请求头的字符，请粘贴原始 Key' };
+    }
   }
-  return { ok: true, value, reason: '' };
+  return { ok: true, value, reason: '', message: '' };
 }
 
 function redactSecret(text: string, key: string): string {
@@ -306,11 +383,70 @@ function parseQuotaBalance(provider: string, raw: string): PluginAiBalance {
 
 export class PluginAiService {
   private readonly storePath: string;
+  private readonly credentialsPath: string;
+  private readonly envOverrides: Record<string, string>;
   private readonly balanceCache = new Map<string, PluginAiBalance>();
   private cache: PluginAiDiskStore | null = null;
+  private credCache: PluginCredentialDocument | null = null;
 
-  constructor(userDataDir: string) {
+  constructor(userDataDir: string, options?: { env?: Record<string, string> }) {
     this.storePath = join(userDataDir, 'plugin-ai.json');
+    this.credentialsPath = join(userDataDir, 'plugin-credentials.json');
+    this.envOverrides = options?.env ?? {};
+  }
+
+  private assertOwnerOnlyFile(filePath: string): void {
+    if (process.platform === 'win32' || !existsSync(filePath)) { return; }
+    const mode = statSync(filePath).mode;
+    if ((mode & 0o077) !== 0) {
+      raisePluginError(
+        PluginErrorCode.IO,
+        `凭据文件 ${filePath} 权限过于宽松，请执行 chmod 600`
+      );
+    }
+  }
+
+  private readCredentials(): PluginCredentialDocument {
+    if (this.credCache) {
+      if (existsSync(this.credentialsPath)) {
+        this.assertOwnerOnlyFile(this.credentialsPath);
+      }
+      return this.credCache;
+    }
+    if (existsSync(this.credentialsPath)) {
+      this.assertOwnerOnlyFile(this.credentialsPath);
+      try {
+        const parsed = JSON.parse(readFileSync(this.credentialsPath, 'utf8')) as Partial<PluginCredentialDocument>;
+        if (parsed && typeof parsed === 'object' && parsed.records && typeof parsed.records === 'object') {
+          this.credCache = { version: 1, records: { ...parsed.records } };
+          return this.credCache;
+        }
+      } catch (error) {
+        if (codeOfPluginError(error) === PluginErrorCode.IO) { throw error; }
+      }
+    }
+    this.credCache = { version: 1, records: {} };
+    return this.credCache;
+  }
+
+  private writeCredentials(doc: PluginCredentialDocument): void {
+    const cleanRecords: Record<string, string> = {};
+    for (const [k, v] of Object.entries(doc.records)) {
+      if (typeof v === 'string' && v.length > 0) { cleanRecords[k] = v; }
+    }
+    const nextDoc: PluginCredentialDocument = { version: 1, records: cleanRecords };
+    this.credCache = nextDoc;
+    const dir = dirname(this.credentialsPath);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    if (process.platform !== 'win32') {
+      try { chmodSync(dir, 0o700); } catch { /* ignore */ }
+    }
+    const temp = `${this.credentialsPath}.${process.pid}.${Date.now()}.tmp`;
+    writeFileSync(temp, JSON.stringify(nextDoc, null, 2), { encoding: 'utf8', mode: 0o600 });
+    if (process.platform !== 'win32') {
+      try { chmodSync(temp, 0o600); } catch { /* ignore */ }
+    }
+    renameSync(temp, this.credentialsPath);
   }
 
   private readStore(): PluginAiDiskStore {
@@ -319,27 +455,105 @@ export class PluginAiService {
       try {
         const parsed = JSON.parse(readFileSync(this.storePath, 'utf8')) as Partial<PluginAiDiskStore>;
         if (parsed && typeof parsed === 'object') {
-          this.cache = {
-            version: 1,
-            bindings: parsed.bindings && typeof parsed.bindings === 'object' ? parsed.bindings : {},
-            secrets: parsed.secrets && typeof parsed.secrets === 'object' ? parsed.secrets : {}
+          const store: PluginAiDiskStore = {
+            version: 2,
+            bindings: parsed.bindings && typeof parsed.bindings === 'object' ? parsed.bindings : {}
           };
-          return this.cache;
+          // Absorb legacy 2.0.1 inline secrets from plugin-ai.json into dedicated 0600 credentials file
+          if (parsed.secrets && typeof parsed.secrets === 'object' && Object.keys(parsed.secrets).length > 0) {
+            const credDoc = this.readCredentials();
+            let credChanged = false;
+            for (const [slot, val] of Object.entries(parsed.secrets)) {
+              if (typeof val === 'string' && val.trim().length > 0 && !credDoc.records[slot]) {
+                credDoc.records[slot] = val.trim();
+                credChanged = true;
+              }
+            }
+            if (credChanged) {
+              this.writeCredentials(credDoc);
+            }
+            this.writeStore(store);
+          } else {
+            this.cache = store;
+          }
+          return this.cache!;
         }
       } catch {
         // Ignore corrupt file; fall through to clean empty store.
       }
     }
-    this.cache = { version: 1, bindings: {}, secrets: {} };
+    this.cache = { version: 2, bindings: {} };
     return this.cache;
   }
 
   private writeStore(store: PluginAiDiskStore): void {
-    this.cache = store;
+    const nextStore: PluginAiDiskStore = { version: 2, bindings: store.bindings };
+    this.cache = nextStore;
     mkdirSync(dirname(this.storePath), { recursive: true });
     const temp = `${this.storePath}.${process.pid}.${Date.now()}.tmp`;
-    writeFileSync(temp, JSON.stringify(store, null, 2), 'utf8');
+    writeFileSync(temp, JSON.stringify(nextStore, null, 2), { encoding: 'utf8', mode: 0o600 });
     renameSync(temp, this.storePath);
+  }
+
+  private resolvedCredentialRef(profile: PluginAiProfile): string {
+    if (profile.credentialRef && isValidCredentialRef(profile.credentialRef)) {
+      return profile.credentialRef;
+    }
+    return defaultCredentialRef(profile.provider, profile.baseUrl, profile.profileId);
+  }
+
+  private resolveEnvSecret(ref: string): string {
+    if (!ref) { return ''; }
+    const raw = this.envOverrides[ref] ?? process.env[ref] ?? '';
+    return typeof raw === 'string' ? raw.trim() : '';
+  }
+
+  private resolveSecretInfo(
+    pluginId: string,
+    profile: PluginAiProfile
+  ): { secret: string; source?: 'store' | 'env'; ref: string } {
+    const ref = this.resolvedCredentialRef(profile);
+    const slot = this.secretSlot(pluginId, profile.profileId);
+    const credDoc = this.readCredentials();
+    const stored = credDoc.records[slot];
+    if (typeof stored === 'string' && stored.length > 0) {
+      return { secret: stored, source: 'store', ref };
+    }
+    const envVal = this.resolveEnvSecret(ref);
+    if (envVal.length > 0) {
+      return { secret: envVal, source: 'env', ref };
+    }
+    return { secret: '', ref };
+  }
+
+  private setSecret(pluginId: string, profileId: string, plaintext: string): void {
+    const slot = this.secretSlot(pluginId, profileId);
+    const credDoc = this.readCredentials();
+    if (!plaintext) {
+      delete credDoc.records[slot];
+    } else {
+      credDoc.records[slot] = plaintext;
+    }
+    this.writeCredentials(credDoc);
+  }
+
+  private deleteSecret(pluginId: string, profileId: string): void {
+    this.setSecret(pluginId, profileId, '');
+  }
+
+  private clearAllPluginSecrets(pluginId: string): void {
+    const prefix = `${pluginId}:`;
+    const credDoc = this.readCredentials();
+    let changed = false;
+    for (const slot of Object.keys(credDoc.records)) {
+      if (slot.startsWith(prefix)) {
+        delete credDoc.records[slot];
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.writeCredentials(credDoc);
+    }
   }
 
   private secretSlot(pluginId: string, profileId: string): string {
@@ -378,8 +592,58 @@ export class PluginAiService {
     return `${base}/v1/chat/completions`;
   }
 
+  private toCredentialInfo(ref: string, secret: string, source?: 'store' | 'env'): PluginAiCredentialInfo {
+    const info: PluginAiCredentialInfo = {
+      ref,
+      configured: secret.length > 0,
+      writable: true
+    };
+    if (source) { info.source = source; }
+    if (secret.length > 0) { info.masked = maskCredential(secret); }
+    return info;
+  }
+
+  private toProfileSummary(pluginId: string, profile: PluginAiProfile): PluginAiProfileSummary {
+    let secret = '';
+    let source: 'store' | 'env' | undefined;
+    let ref = this.resolvedCredentialRef(profile);
+    try {
+      const resolved = this.resolveSecretInfo(pluginId, profile);
+      secret = resolved.secret;
+      source = resolved.source;
+      ref = resolved.ref;
+    } catch {
+      // Surface permission failures on execution/write; keep status safe to render.
+    }
+    const configured =
+      Boolean(profile.baseUrl) &&
+      Boolean(profile.model) &&
+      (!needsApiKeyForUrl(profile.baseUrl) || secret.length > 0);
+    const masked = maskCredential(secret);
+    const summary: PluginAiProfileSummary = {
+      profileId: profile.profileId,
+      name: profile.name,
+      provider: profile.provider,
+      baseUrl: profile.baseUrl,
+      model: profile.model,
+      maxTokens: profile.maxTokens,
+      temperature: profile.temperature,
+      balanceProvider: quotaProvider(profile.baseUrl),
+      hasKey: secret.length > 0,
+      configured,
+      needsApiKey: !configured,
+      credentialRef: ref,
+      credentialSource: source ?? '',
+      credentialWritable: true,
+      maskedApiKey: masked,
+      credential: this.toCredentialInfo(ref, secret, source)
+    };
+    if (profile.compat) { summary.compat = profile.compat; }
+    if (profile.retryPolicy) { summary.retryPolicy = profile.retryPolicy; }
+    return summary;
+  }
+
   statusFor(pluginId: string): PluginAiStatus {
-    const store = this.readStore();
     const binding = this.bindingOf(pluginId);
     const profile = this.activeProfile(binding);
     if (!profile) {
@@ -393,33 +657,49 @@ export class PluginAiService {
         maxTokens: 0,
         temperature: 0,
         balanceProvider: '',
-        needsApiKey: true
+        needsApiKey: true,
+        credentialRef: '',
+        credentialSource: '',
+        credentialWritable: true,
+        maskedApiKey: '',
+        credential: { ref: '', configured: false, writable: true },
+        profiles: []
       };
     }
-    const key = store.secrets[this.secretSlot(pluginId, profile.profileId)] || '';
-    return {
-      configured: key.length > 0,
-      profileId: profile.profileId,
-      name: profile.name,
-      provider: profile.provider,
-      baseUrl: profile.baseUrl,
-      model: profile.model,
-      maxTokens: profile.maxTokens,
-      temperature: profile.temperature,
-      balanceProvider: quotaProvider(profile.baseUrl),
-      needsApiKey: key.length === 0
+    const activeSummary = this.toProfileSummary(pluginId, profile);
+    const profiles = binding.profiles.map((item) => this.toProfileSummary(pluginId, item));
+    const status: PluginAiStatus = {
+      configured: activeSummary.configured,
+      profileId: activeSummary.profileId,
+      name: activeSummary.name,
+      provider: activeSummary.provider,
+      baseUrl: activeSummary.baseUrl,
+      model: activeSummary.model,
+      maxTokens: activeSummary.maxTokens,
+      temperature: activeSummary.temperature,
+      balanceProvider: activeSummary.balanceProvider,
+      needsApiKey: activeSummary.needsApiKey,
+      credentialRef: activeSummary.credentialRef,
+      credentialSource: activeSummary.credentialSource,
+      credentialWritable: true,
+      maskedApiKey: activeSummary.maskedApiKey,
+      credential: activeSummary.credential,
+      profiles
     };
+    if (activeSummary.compat) { status.compat = activeSummary.compat; }
+    if (activeSummary.retryPolicy) { status.retryPolicy = activeSummary.retryPolicy; }
+    return status;
   }
 
   configureFor(pluginId: string, rawParams: Record<string, unknown>): PluginAiStatus {
-    if (rawParams.clear === true) {
+    if (rawParams.clear === true || rawParams.action === 'clear') {
       this.clearFor(pluginId);
       return this.statusFor(pluginId);
     }
 
     const store = this.readStore();
     const binding = structuredClone(this.bindingOf(pluginId));
-    const action = typeof rawParams.action === 'string' ? rawParams.action : '';
+    const action = typeof rawParams.action === 'string' ? rawParams.action.trim().toLowerCase() : '';
     const requestedProfileId = typeof rawParams.profileId === 'string' ? rawParams.profileId.trim() : '';
 
     if (action === 'select') {
@@ -430,14 +710,24 @@ export class PluginAiService {
       if (!found) {
         raisePluginError(PluginErrorCode.NOT_FOUND, '服务商不存在，请刷新后重试');
       }
-      const key = store.secrets[this.secretSlot(pluginId, requestedProfileId)] || '';
-      if (!key) {
+      const cred = this.resolveSecretInfo(pluginId, found);
+      if (needsApiKeyForUrl(found.baseUrl) && !cred.secret) {
         raisePluginError(PluginErrorCode.MISSING_CREDENTIAL, '请先编辑此服务商补填 API Key');
       }
       binding.activeProfileId = requestedProfileId;
       store.bindings[pluginId] = binding;
       this.writeStore(store);
       this.balanceCache.delete(this.secretSlot(pluginId, requestedProfileId));
+      return this.statusFor(pluginId);
+    }
+
+    if (action === 'clearcredential') {
+      const targetId = requestedProfileId || binding.activeProfileId;
+      if (!targetId || !binding.profiles.some((item) => item.profileId === targetId)) {
+        raisePluginError(PluginErrorCode.NOT_FOUND, '服务商不存在，请刷新后重试');
+      }
+      this.deleteSecret(pluginId, targetId);
+      this.balanceCache.delete(this.secretSlot(pluginId, targetId));
       return this.statusFor(pluginId);
     }
 
@@ -450,7 +740,7 @@ export class PluginAiService {
         raisePluginError(PluginErrorCode.NOT_FOUND, '服务商不存在，请刷新后重试');
       }
       binding.profiles = binding.profiles.filter((item) => item.profileId !== requestedProfileId);
-      delete store.secrets[this.secretSlot(pluginId, requestedProfileId)];
+      this.deleteSecret(pluginId, requestedProfileId);
       if (binding.activeProfileId === requestedProfileId) {
         binding.activeProfileId = binding.profiles.length > 0 ? binding.profiles[0].profileId : '';
       }
@@ -505,13 +795,8 @@ export class PluginAiService {
     let baseUrlChanged = false;
     if (typeof rawParams.baseUrl === 'string' && rawParams.baseUrl.length > 0) {
       const nextBaseUrl = normalizeBaseUrl(rawParams.baseUrl);
-      baseUrlChanged = nextBaseUrl !== profile.baseUrl;
+      baseUrlChanged = !creating && nextBaseUrl !== profile.baseUrl;
       profile.baseUrl = nextBaseUrl;
-    }
-
-    const apiKeyInput = typeof rawParams.apiKey === 'string' ? rawParams.apiKey.trim() : '';
-    if (creating && !apiKeyInput) {
-      raisePluginError(PluginErrorCode.MISSING_CREDENTIAL, '首次绑定需要填写 API Key');
     }
     if (!profile.baseUrl) {
       raisePluginError(PluginErrorCode.INVALID_ARGUMENT, '请填写 Base URL');
@@ -534,11 +819,94 @@ export class PluginAiService {
       profile.temperature = Math.max(0, Math.min(2, rawParams.temperature));
     }
 
-    const keyCheck = checkKey(apiKeyInput);
-    if (apiKeyInput && !keyCheck.ok) {
-      raisePluginError(PluginErrorCode.INVALID_CREDENTIAL, 'API Key 含不可用于 HTTP 请求头的字符，请粘贴原始 Key');
+    if (typeof rawParams.credentialRef === 'string') {
+      const ref = rawParams.credentialRef.trim();
+      if (ref.length > 0) {
+        if (!isValidCredentialRef(ref)) {
+          raisePluginError(PluginErrorCode.INVALID_ARGUMENT, 'credentialRef 需为合法的环境变量名（^[A-Za-z_][A-Za-z0-9_]*$）');
+        }
+        profile.credentialRef = ref;
+      } else {
+        delete profile.credentialRef;
+      }
     }
-    if (!creating && baseUrlChanged && !apiKeyInput) {
+    if (!profile.credentialRef) {
+      profile.credentialRef = defaultCredentialRef(profile.provider, profile.baseUrl, profile.profileId);
+    }
+
+    if (rawParams.compat !== undefined && rawParams.compat !== null && typeof rawParams.compat === 'object') {
+      const compatRaw = rawParams.compat as Record<string, unknown>;
+      const nextCompat: PluginAiCompatConfig = { ...(profile.compat ?? {}) };
+      if (typeof compatRaw.maxTokensField === 'string') {
+        const f = compatRaw.maxTokensField.trim();
+        if (f === 'max_tokens' || f === 'max_completion_tokens') {
+          nextCompat.maxTokensField = f;
+        } else if (!f) {
+          delete nextCompat.maxTokensField;
+        } else {
+          raisePluginError(PluginErrorCode.INVALID_ARGUMENT, 'compat.maxTokensField 只能为 max_tokens 或 max_completion_tokens');
+        }
+      }
+      if (typeof compatRaw.thinkingFormat === 'string') {
+        const tf = compatRaw.thinkingFormat.trim().toLowerCase();
+        if (!tf) {
+          delete nextCompat.thinkingFormat;
+        } else if (THINKING_FORMATS.has(tf)) {
+          nextCompat.thinkingFormat = tf as PluginAiCompatConfig['thinkingFormat'];
+        } else {
+          raisePluginError(PluginErrorCode.INVALID_ARGUMENT, `不支持的 compat.thinkingFormat：${tf}`);
+        }
+      }
+      if (typeof compatRaw.supportsDeveloperRole === 'boolean') {
+        nextCompat.supportsDeveloperRole = compatRaw.supportsDeveloperRole;
+      }
+      if (Object.keys(nextCompat).length > 0) {
+        profile.compat = nextCompat;
+      } else {
+        delete profile.compat;
+      }
+    }
+
+    if (rawParams.retryPolicy !== undefined && rawParams.retryPolicy !== null && typeof rawParams.retryPolicy === 'object') {
+      const retryRaw = rawParams.retryPolicy as Record<string, unknown>;
+      const nextRetry: PluginAiRetryPolicy = { ...(profile.retryPolicy ?? {}) };
+      if (typeof retryRaw.mode === 'string') {
+        const mode = retryRaw.mode.trim().toLowerCase();
+        if (mode === 'normal' || mode === 'off') {
+          nextRetry.mode = mode;
+        } else if (!mode) {
+          delete nextRetry.mode;
+        } else {
+          raisePluginError(PluginErrorCode.INVALID_ARGUMENT, 'retryPolicy.mode 只能为 normal 或 off');
+        }
+      }
+      if (typeof retryRaw.maxRetries === 'number' && Number.isFinite(retryRaw.maxRetries)) {
+        nextRetry.maxRetries = Math.max(0, Math.min(3, Math.floor(retryRaw.maxRetries)));
+      }
+      if (Object.keys(nextRetry).length > 0) {
+        profile.retryPolicy = nextRetry;
+      } else {
+        delete profile.retryPolicy;
+      }
+    }
+
+    const clearApiKey = rawParams.clearApiKey === true;
+    const rawKeyStr = typeof rawParams.apiKey === 'string' ? rawParams.apiKey : '';
+    const effectiveKeyStr = rawKeyStr === '__KEEP__' ? '' : rawKeyStr;
+    const keyCheck = checkKey(effectiveKeyStr);
+    if (effectiveKeyStr.length > 0 && !keyCheck.ok) {
+      raisePluginError(
+        keyCheck.reason === 'illegalCharacters' ? PluginErrorCode.INVALID_CREDENTIAL : PluginErrorCode.INVALID_ARGUMENT,
+        keyCheck.message
+      );
+    }
+
+    const envFallback = this.resolveEnvSecret(this.resolvedCredentialRef(profile));
+    if (!clearApiKey && creating && needsApiKeyForUrl(profile.baseUrl) && !keyCheck.ok && !envFallback) {
+      raisePluginError(PluginErrorCode.MISSING_CREDENTIAL, '首次绑定需要填写 API Key');
+    }
+    const existingStored = !creating ? this.resolveSecretInfo(pluginId, profile).secret : '';
+    if (!clearApiKey && !creating && baseUrlChanged && existingStored.length > 0 && !keyCheck.ok) {
       raisePluginError(PluginErrorCode.INVALID_ARGUMENT, '更换 Base URL 时请重新填写 API Key');
     }
 
@@ -551,8 +919,10 @@ export class PluginAiService {
     if (rawParams.select !== false || !binding.activeProfileId) {
       binding.activeProfileId = profileId;
     }
-    if (apiKeyInput) {
-      store.secrets[this.secretSlot(pluginId, profileId)] = keyCheck.value;
+    if (clearApiKey && !keyCheck.ok) {
+      this.deleteSecret(pluginId, profileId);
+    } else if (keyCheck.ok) {
+      this.setSecret(pluginId, profileId, keyCheck.value);
     }
     store.bindings[pluginId] = binding;
     this.writeStore(store);
@@ -564,27 +934,31 @@ export class PluginAiService {
     const store = this.readStore();
     const binding = this.bindingOf(pluginId);
     for (const profile of binding.profiles) {
-      delete store.secrets[this.secretSlot(pluginId, profile.profileId)];
+      this.deleteSecret(pluginId, profile.profileId);
       this.balanceCache.delete(this.secretSlot(pluginId, profile.profileId));
     }
+    this.clearAllPluginSecrets(pluginId);
     delete store.bindings[pluginId];
     this.writeStore(store);
   }
 
   private resolveActive(pluginId: string): { profile: PluginAiProfile; key: string } {
-    const store = this.readStore();
     const binding = this.bindingOf(pluginId);
     const profile = this.activeProfile(binding);
     if (!profile) {
       raisePluginError(PluginErrorCode.MISSING_CREDENTIAL, '请先绑定模型服务：请填写模型服务、模型名称与 API Key');
     }
-    const rawKey = store.secrets[this.secretSlot(pluginId, profile.profileId)] || '';
-    const check = checkKey(rawKey);
-    if (check.reason === 'empty') {
+    const resolved = this.resolveSecretInfo(pluginId, profile);
+    if (!resolved.secret) {
+      if (!needsApiKeyForUrl(profile.baseUrl)) {
+        normalizeBaseUrl(profile.baseUrl);
+        return { profile, key: '' };
+      }
       raisePluginError(PluginErrorCode.MISSING_CREDENTIAL, '此服务商缺少 API Key：请先补填');
     }
+    const check = checkKey(resolved.secret);
     if (!check.ok) {
-      raisePluginError(PluginErrorCode.INVALID_CREDENTIAL, '此服务商的 API Key 含不可用于 HTTP 请求头的字符');
+      raisePluginError(PluginErrorCode.INVALID_CREDENTIAL, check.message || '此服务商的 API Key 含不可用于 HTTP 请求头的字符');
     }
     normalizeBaseUrl(profile.baseUrl);
     return { profile, key: check.value };
@@ -648,6 +1022,40 @@ export class PluginAiService {
     });
   }
 
+  private async httpFetchWithRetry(
+    urlString: string,
+    method: 'GET' | 'POST',
+    headers: Record<string, string>,
+    body: string | undefined,
+    timeoutMs: number,
+    policy?: PluginAiRetryPolicy
+  ): Promise<{ status: number; body: string }> {
+    const mode = (policy?.mode ?? 'off').toLowerCase();
+    const maxRetries = mode === 'normal' ? Math.max(0, Math.min(3, Math.floor(policy?.maxRetries ?? 1))) : 0;
+    let attempt = 0;
+    while (true) {
+      try {
+        const res = await this.httpFetch(urlString, method, headers, body, timeoutMs);
+        const retryable = res.status === 429 || res.status === 502 || res.status === 503 || res.status === 504;
+        if (retryable && attempt < maxRetries) {
+          attempt += 1;
+          await new Promise((r) => setTimeout(r, 150 * attempt));
+          continue;
+        }
+        return res;
+      } catch (error) {
+        const msg = rawPluginErrorText(error);
+        const isRedirect = msg.includes('禁止 HTTP 重定向');
+        if (!isRedirect && attempt < maxRetries) {
+          attempt += 1;
+          await new Promise((r) => setTimeout(r, 150 * attempt));
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
   async chatFor(pluginId: string, rawParams: Record<string, unknown>): Promise<Record<string, unknown>> {
     const messages = Array.isArray(rawParams.messages) ? (rawParams.messages as Record<string, unknown>[]) : [];
     const tools = Array.isArray(rawParams.tools) ? (rawParams.tools as Record<string, unknown>[]) : [];
@@ -664,6 +1072,7 @@ export class PluginAiService {
       raisePluginError(PluginErrorCode.RATE_LIMITED, `单次对话最多 ${PluginLimits.MAX_AI_TOOLS} 个工具`);
     }
 
+    // Per-request resolution so key/profile changes take effect immediately.
     const active = this.resolveActive(pluginId);
     const anthropic = this.isAnthropic(active.profile);
     const headers: Record<string, string> = {
@@ -672,20 +1081,21 @@ export class PluginAiService {
       'User-Agent': USER_AGENT
     };
     if (anthropic) {
-      headers['x-api-key'] = active.key;
+      if (active.key) { headers['x-api-key'] = active.key; }
       headers['anthropic-version'] = '2023-06-01';
-    } else {
+    } else if (active.key) {
       headers.Authorization = `Bearer ${active.key}`;
     }
 
     const body = this.buildChatBody(active.profile, messages, tools, maxTokensParam, tempParam, anthropic);
     try {
-      const response = await this.httpFetch(
+      const response = await this.httpFetchWithRetry(
         this.endpointUrl(active.profile),
         'POST',
         headers,
         body,
-        PluginLimits.AI_TIMEOUT_MS
+        PluginLimits.AI_TIMEOUT_MS,
+        active.profile.retryPolicy
       );
       if (response.status < 200 || response.status >= 300) {
         let detail = response.body;
@@ -803,6 +1213,12 @@ export class PluginAiService {
       return JSON.stringify(payload);
     }
 
+    const supportsDev = profile.compat?.supportsDeveloperRole === true;
+    const systemRole = supportsDev ? 'developer' : 'system';
+    const maxTokensField = profile.compat?.maxTokensField === 'max_completion_tokens'
+      ? 'max_completion_tokens'
+      : 'max_tokens';
+
     const openAiMessages = messages.map((msg) => {
       const role = typeof msg.role === 'string' ? msg.role : 'user';
       const content = typeof msg.content === 'string' ? msg.content : '';
@@ -829,14 +1245,14 @@ export class PluginAiService {
           content: content || 'Done'
         };
       }
-      return { role: role === 'system' ? 'system' : 'user', content };
+      return { role: role === 'system' ? systemRole : 'user', content };
     });
 
     const payload: Record<string, unknown> = {
       model: profile.model,
       messages: openAiMessages,
       stream: false,
-      max_tokens: Math.max(512, Math.min(32768, maxTokens)),
+      [maxTokensField]: Math.max(512, Math.min(32768, maxTokens)),
       temperature
     };
     const mappedTools = tools
@@ -936,15 +1352,17 @@ export class PluginAiService {
       Accept: 'application/json',
       'User-Agent': USER_AGENT
     };
-    if (quota && quotaProvider(profile.baseUrl) === 'GLM Coding Plan') {
-      headers.Authorization = key;
-    } else if (quota) {
-      headers.Authorization = `Bearer ${key}`;
-    } else if (this.isAnthropic(profile)) {
-      headers['x-api-key'] = key;
-      headers['anthropic-version'] = '2023-06-01';
-    } else {
-      headers.Authorization = `Bearer ${key}`;
+    if (key) {
+      if (quota && quotaProvider(profile.baseUrl) === 'GLM Coding Plan') {
+        headers.Authorization = key;
+      } else if (quota) {
+        headers.Authorization = `Bearer ${key}`;
+      } else if (this.isAnthropic(profile)) {
+        headers['x-api-key'] = key;
+        headers['anthropic-version'] = '2023-06-01';
+      } else {
+        headers.Authorization = `Bearer ${key}`;
+      }
     }
     try {
       const res = await this.httpFetch(endpoint, 'GET', headers, undefined, 15000);

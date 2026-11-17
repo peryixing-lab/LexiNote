@@ -1,3 +1,11 @@
+# Harness 1.6.0
+
+- 新增三种可选上下文范围：**当前笔记**（优先读取活动编辑器含未保存内容，退回已保存全文）、**选中内容**（提取 UTF-16 选区偏移、精确行号 `#L起-L终` 与前后文）、**指定笔记**（弹窗搜索并勾选最多 12 篇笔记，自动按预算裁剪）。
+- 回答引用真实笔记：自动校验模型回答中的 `[标题](相对路径.md#L起-L终)` 与 `[[双链]]`（过滤虚构路径与未消歧重名引用），渲染为可点击的引用药丸（通过 `workspace.openFile` 在知萤中打开）。
+- 绝不直接覆盖原文：所有写入及破坏性工具（`create_note`、`update_note`、`append_to_note`、`rename_note`、`delete_note`、`replace_selection`、`replace_active_editor`）只生成 Diff 修改建议卡片（`harness.changes.v1`），必须经用户点击“确认写入/确认删除”才生效。
+- 新增冲突检测与一键撤销：确认写入前与撤销前均校验笔记修改时间与编辑器 revision，若发生手动后续编辑则阻止覆盖并提示冲突；每次已确认写入均支持“撤销本次写入”恢复原状。
+- 全平台宿主权限控制保持严格隔离：各平台补全 `editor.active()` 选区快照、`noteId` 与 `events.on` 能力门控；插件权限继续完全由宿主颁发与实时校验。
+
 # Harness 1.5.0
 
 - 按 DeepSeek Harness 的凭据模型调整 API Key 处理：Key 只写入宿主的按插件密钥槽，`status`/`configure` 只返回脱敏状态，插件存储和 boot 数据不再保存 Key。

@@ -18,6 +18,9 @@ const LEGACY_KEY = 'harness.providers.v1';
 const STORAGE_KEY = 'harness.providers.v2';
 const MAX_PROFILES = 32;
 const MAX_STORAGE_CHARS = 36000;
+const CREDENTIAL_REF_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const ENV_ASSIGNMENT_RE = /^[A-Z][A-Z0-9_]*=[^=]/;
+const THINKING_FORMATS = ['auto', 'openai', 'deepseek', 'openrouter', 'zai', 'qwen', 'chat-template'];
 
 function fail(code, message) {
   const error = new Error(`${code}: ${message}`);
@@ -28,6 +31,65 @@ function fail(code, message) {
 function copy(value) { return JSON.parse(JSON.stringify(value)); }
 function address(value) { return text(value).trim().replace(/\/+$/, ''); }
 
+function isLoopbackHttpUrl(rawUrl) {
+  const match = /^http:\/\/(\[[0-9a-fA-F:]+\]|[^/:?#]+)(?::\d+)?(?:\/|$)/.exec(address(rawUrl));
+  if (!match) { return false; }
+  const host = match[1].toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]';
+}
+
+function apiKeyFailure(value) {
+  if (typeof value !== 'string' || value === '') { return null; }
+  const trimmed = value.trim();
+  if (!trimmed) { return 'API Key 不能为空白字符'; }
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'") && trimmed.length >= 2) ||
+    (trimmed.startsWith('`') && trimmed.endsWith('`') && trimmed.length >= 2)) {
+    return '请去掉 API Key 首尾的引号';
+  }
+  if (ENV_ASSIGNMENT_RE.test(trimmed)) {
+    return '请只粘贴 API Key 值本身，不要包含 ENV_VAR= 前缀';
+  }
+  if (!/^[\x21-\x7E]+$/.test(trimmed)) {
+    return 'API Key 含不可用于 HTTP 请求头的字符，请粘贴原始 Key';
+  }
+  if (trimmed.length > 8192) { return 'API Key 过长'; }
+  return null;
+}
+
+function cleanCompat(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { return undefined; }
+  const out = {};
+  if (raw.maxTokensField === 'max_tokens' || raw.maxTokensField === 'max_completion_tokens') {
+    out.maxTokensField = raw.maxTokensField;
+  } else if (typeof raw.maxTokensField === 'string' && raw.maxTokensField.trim()) {
+    fail('E_INVALID_ARGUMENT', 'compat.maxTokensField 只能为 max_tokens 或 max_completion_tokens');
+  }
+  if (typeof raw.thinkingFormat === 'string' && raw.thinkingFormat.trim()) {
+    const tf = raw.thinkingFormat.trim().toLowerCase();
+    if (!THINKING_FORMATS.includes(tf)) { fail('E_INVALID_ARGUMENT', `不支持的 compat.thinkingFormat：${tf}`); }
+    out.thinkingFormat = tf;
+  }
+  if (typeof raw.supportsDeveloperRole === 'boolean') {
+    out.supportsDeveloperRole = raw.supportsDeveloperRole;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+function cleanRetryPolicy(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { return undefined; }
+  const out = {};
+  if (typeof raw.mode === 'string' && raw.mode.trim()) {
+    const mode = raw.mode.trim().toLowerCase();
+    if (mode !== 'normal' && mode !== 'off') { fail('E_INVALID_ARGUMENT', 'retryPolicy.mode 只能为 normal 或 off'); }
+    out.mode = mode;
+  }
+  if (typeof raw.maxRetries === 'number' && Number.isFinite(raw.maxRetries)) {
+    out.maxRetries = Math.max(0, Math.min(3, Math.floor(raw.maxRetries)));
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 function newProfileId() {
   return `service_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e9).toString(36)}`;
 }
@@ -36,14 +98,38 @@ function emptyBook() {
   return { version: 2, activeProfileId: '', profiles: [] };
 }
 
+function applyHostMeta(target, source) {
+  if (!source || typeof source !== 'object') { return target; }
+  if (typeof source.balanceProvider === 'string') { target.balanceProvider = source.balanceProvider; }
+  if (typeof source.credentialRef === 'string') { target.credentialRef = source.credentialRef; }
+  if (typeof source.credentialSource === 'string') { target.credentialSource = source.credentialSource; }
+  if (typeof source.credentialWritable === 'boolean') { target.credentialWritable = source.credentialWritable; }
+  if (typeof source.maskedApiKey === 'string') { target.maskedApiKey = source.maskedApiKey; }
+  if (source.credential && typeof source.credential === 'object') { target.credential = copy(source.credential); }
+  if (source.compat && typeof source.compat === 'object') {
+    const compat = cleanCompat(source.compat);
+    if (compat) { target.compat = compat; } else { delete target.compat; }
+  } else if (Object.prototype.hasOwnProperty.call(source, 'compat') && !source.compat) {
+    delete target.compat;
+  }
+  if (source.retryPolicy && typeof source.retryPolicy === 'object') {
+    const retryPolicy = cleanRetryPolicy(source.retryPolicy);
+    if (retryPolicy) { target.retryPolicy = retryPolicy; } else { delete target.retryPolicy; }
+  } else if (Object.prototype.hasOwnProperty.call(source, 'retryPolicy') && !source.retryPolicy) {
+    delete target.retryPolicy;
+  }
+  return target;
+}
+
 function publicProfile(profile) {
   if (!profile) {
     return {
       configured: false, profileId: '', name: '', provider: '', baseUrl: '', model: '',
-      maxTokens: 0, temperature: 0, balanceProvider: '', needsApiKey: true
+      maxTokens: 0, temperature: 0, balanceProvider: '', needsApiKey: true,
+      credentialRef: '', credentialSource: '', credentialWritable: true, maskedApiKey: ''
     };
   }
-  return {
+  const out = {
     profileId: profile.profileId,
     name: profile.name || '',
     provider: profile.provider,
@@ -53,8 +139,16 @@ function publicProfile(profile) {
     temperature: profile.temperature,
     balanceProvider: profile.balanceProvider || '',
     configured: profile.configured === true,
-    needsApiKey: profile.configured !== true
+    needsApiKey: profile.configured !== true,
+    credentialRef: profile.credentialRef || '',
+    credentialSource: profile.credentialSource || '',
+    credentialWritable: profile.credentialWritable !== false,
+    maskedApiKey: profile.maskedApiKey || ''
   };
+  if (profile.credential && typeof profile.credential === 'object') { out.credential = copy(profile.credential); }
+  if (profile.compat && typeof profile.compat === 'object') { out.compat = copy(profile.compat); }
+  if (profile.retryPolicy && typeof profile.retryPolicy === 'object') { out.retryPolicy = copy(profile.retryPolicy); }
+  return out;
 }
 
 function validateMetadata(profile, patch, creating) {
@@ -80,6 +174,21 @@ function validateMetadata(profile, patch, creating) {
   if (typeof patch.temperature === 'number' && Number.isFinite(patch.temperature)) {
     profile.temperature = Math.max(0, Math.min(2, patch.temperature));
   }
+  if (typeof patch.credentialRef === 'string') {
+    const ref = patch.credentialRef.trim();
+    if (ref && !CREDENTIAL_REF_RE.test(ref)) {
+      fail('E_INVALID_ARGUMENT', 'credentialRef 需为合法的环境变量名（^[A-Za-z_][A-Za-z0-9_]*$）');
+    }
+    profile.credentialRef = ref;
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'compat')) {
+    const compat = cleanCompat(patch.compat);
+    if (compat) { profile.compat = compat; } else { delete profile.compat; }
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'retryPolicy')) {
+    const retryPolicy = cleanRetryPolicy(patch.retryPolicy);
+    if (retryPolicy) { profile.retryPolicy = retryPolicy; } else { delete profile.retryPolicy; }
+  }
 }
 
 function normalizeBook(raw) {
@@ -94,7 +203,7 @@ function normalizeBook(raw) {
     if (typeof item.provider !== 'string' || typeof item.baseUrl !== 'string' ||
       typeof item.model !== 'string') { return null; }
     ids.add(item.profileId);
-    book.profiles.push({
+    const entry = {
       profileId: item.profileId,
       name: typeof item.name === 'string' ? item.name : '',
       provider: item.provider,
@@ -103,7 +212,17 @@ function normalizeBook(raw) {
       maxTokens: typeof item.maxTokens === 'number' ? item.maxTokens : 8192,
       temperature: typeof item.temperature === 'number' ? item.temperature : 0.3,
       configured: item.configured === true
-    });
+    };
+    if (typeof item.credentialRef === 'string' && CREDENTIAL_REF_RE.test(item.credentialRef)) {
+      entry.credentialRef = item.credentialRef;
+    }
+    try {
+      const compat = cleanCompat(item.compat);
+      if (compat) { entry.compat = compat; }
+      const retryPolicy = cleanRetryPolicy(item.retryPolicy);
+      if (retryPolicy) { entry.retryPolicy = retryPolicy; }
+    } catch (ignored) { /* skip invalid stored optional sub-fields */ }
+    book.profiles.push(entry);
   }
   book.activeProfileId = typeof raw.activeProfileId === 'string' ? raw.activeProfileId : '';
   if (book.activeProfileId && !ids.has(book.activeProfileId)) {
@@ -239,26 +358,50 @@ function createHostProfileContext(ctx) {
   async function mergeHostStatus() {
     let status = null;
     try { status = await ctx.ai.status(); } catch (error) { return; }
-    if (!status || typeof status.profileId !== 'string' || !status.profileId) { return; }
-    let profile = findProfile(book, status.profileId);
-    if (!profile) {
-      profile = {
-        profileId: status.profileId,
-        name: typeof status.name === 'string' ? status.name : '',
-        provider: status.provider || 'openai-compatible',
-        baseUrl: status.baseUrl || '',
-        model: status.model || '',
-        maxTokens: typeof status.maxTokens === 'number' ? status.maxTokens : 8192,
-        temperature: typeof status.temperature === 'number' ? status.temperature : 0.3,
-        balanceProvider: typeof status.balanceProvider === 'string' ? status.balanceProvider : '',
-        configured: status.configured === true
-      };
-      book.profiles.push(profile);
-    } else {
-      profile.configured = status.configured === true;
-      if (typeof status.balanceProvider === 'string') { profile.balanceProvider = status.balanceProvider; }
+    if (!status || typeof status.profileId !== 'string') { return; }
+    if (Array.isArray(status.profiles)) {
+      for (const summary of status.profiles) {
+        if (!summary || typeof summary.profileId !== 'string') { continue; }
+        let target = findProfile(book, summary.profileId);
+        if (!target) {
+          target = {
+            profileId: summary.profileId,
+            name: typeof summary.name === 'string' ? summary.name : '',
+            provider: summary.provider || 'openai-compatible',
+            baseUrl: summary.baseUrl || '',
+            model: summary.model || '',
+            maxTokens: typeof summary.maxTokens === 'number' ? summary.maxTokens : 8192,
+            temperature: typeof summary.temperature === 'number' ? summary.temperature : 0.3,
+            configured: summary.configured === true
+          };
+          book.profiles.push(target);
+        } else {
+          target.configured = summary.configured === true;
+        }
+        applyHostMeta(target, summary);
+      }
     }
-    book.activeProfileId = status.profileId;
+    if (status.profileId) {
+      let profile = findProfile(book, status.profileId);
+      if (!profile) {
+        profile = {
+          profileId: status.profileId,
+          name: typeof status.name === 'string' ? status.name : '',
+          provider: status.provider || 'openai-compatible',
+          baseUrl: status.baseUrl || '',
+          model: status.model || '',
+          maxTokens: typeof status.maxTokens === 'number' ? status.maxTokens : 8192,
+          temperature: typeof status.temperature === 'number' ? status.temperature : 0.3,
+          balanceProvider: typeof status.balanceProvider === 'string' ? status.balanceProvider : '',
+          configured: status.configured === true
+        };
+        book.profiles.push(profile);
+      } else {
+        profile.configured = status.configured === true;
+      }
+      applyHostMeta(profile, status);
+      book.activeProfileId = status.profileId;
+    }
     await persist(book);
   }
 
@@ -328,9 +471,20 @@ function createHostProfileContext(ctx) {
       };
       profile.profileId = profileId;
       validateMetadata(profile, patch || {}, creating);
-      const nextKey = patch && typeof patch.apiKey === 'string' ? patch.apiKey.trim() : '';
-      if (creating && !nextKey) { fail('E_MISSING_CREDENTIAL', '首次绑定需要填写 API Key'); }
-      if (!creating && !nextKey && address((patch && patch.baseUrl) || '') !== previousBaseUrl) {
+      const rawKey = patch && typeof patch.apiKey === 'string' ? patch.apiKey : '';
+      const nextKey = rawKey.trim();
+      const clearingKey = patch && patch.clearApiKey === true;
+      const keyFailure = apiKeyFailure(rawKey);
+      if (nextKey && keyFailure) {
+        fail(keyFailure.includes('HTTP') ? 'E_INVALID_CREDENTIAL' : 'E_INVALID_ARGUMENT', keyFailure);
+      } else if (rawKey && !nextKey) {
+        fail('E_INVALID_ARGUMENT', 'API Key 不能为空白字符');
+      }
+      if (!clearingKey && creating && !nextKey && !profile.credentialRef && !isLoopbackHttpUrl(profile.baseUrl)) {
+        fail('E_MISSING_CREDENTIAL', '首次绑定需要填写 API Key');
+      }
+      if (!clearingKey && !creating && !nextKey && profile.credentialSource !== 'env' &&
+        patch && typeof patch.baseUrl === 'string' && address(patch.baseUrl) !== previousBaseUrl) {
         fail('E_INVALID_ARGUMENT', '更换 Base URL 时请重新填写 API Key');
       }
       const payload = {
@@ -343,12 +497,24 @@ function createHostProfileContext(ctx) {
         maxTokens: profile.maxTokens,
         temperature: profile.temperature
       };
-      if (nextKey) { payload.apiKey = nextKey; }
+      if (typeof profile.credentialRef === 'string' && profile.credentialRef) {
+        payload.credentialRef = profile.credentialRef;
+      } else if (typeof patch.credentialRef === 'string') {
+        payload.credentialRef = '';
+      }
+      if (Object.prototype.hasOwnProperty.call(patch || {}, 'compat')) {
+        payload.compat = profile.compat || {};
+      }
+      if (Object.prototype.hasOwnProperty.call(patch || {}, 'retryPolicy')) {
+        payload.retryPolicy = profile.retryPolicy || {};
+      }
+      if (clearingKey) { payload.clearApiKey = true; }
+      else if (nextKey) { payload.apiKey = nextKey; }
       if (!creating && current.activeProfileId && current.activeProfileId !== profileId) {
         payload.select = false;
       }
-      // Local write first: a storage failure must leave the host binding untouched.
-      profile.configured = !!nextKey || profile.configured;
+      // Local write first (without secrets): a storage failure leaves the host binding untouched.
+      profile.configured = (!clearingKey && !!nextKey) || (clearingKey ? false : profile.configured);
       const next = copy(current);
       if (existing) {
         const index = next.profiles.findIndex((item) => item.profileId === profileId);
@@ -365,8 +531,16 @@ function createHostProfileContext(ctx) {
       const savedMatches = saved && typeof saved.profileId === 'string' && saved.profileId === profileId;
       const stillActive = saved && typeof saved.profileId === 'string' && saved.profileId
         ? saved.profileId : profileId;
-      profile.configured = !!nextKey || profile.configured ||
-        (savedMatches && saved.configured === true);
+      const savedSummary = Array.isArray(saved && saved.profiles)
+        ? saved.profiles.find((item) => item && item.profileId === profileId)
+        : null;
+      const hostView = savedSummary || (savedMatches ? saved : null);
+      if (hostView) {
+        profile.configured = hostView.configured === true;
+        applyHostMeta(profile, hostView);
+      } else {
+        profile.configured = !!nextKey || (!clearingKey && profile.configured);
+      }
       if (existing) {
         const index = next.profiles.findIndex((item) => item.profileId === profileId);
         next.profiles[index] = profile;
@@ -629,7 +803,7 @@ function createProfileContext(ctx) {
     } else {
       legacy = createLegacyProfileContext(ctx);
       mode = 'legacy';
-      try { ctx.log('warn', '当前知萤宿主不支持按服务商隔离的密钥存储；API Key 仍保存在插件本地数据中，请升级知萤后重新保存服务商。'); } catch (error) { /* logging is optional */ }
+      try { ctx.log('warn', '当前知萤宿主不支持按服务商隔离的密钥存储；API Key 将留在插件本地数据中。'); } catch (error) { /* logging is optional */ }
     }
     return mode;
   }
@@ -657,4 +831,4 @@ function createProfileContext(ctx) {
   return Object.assign({}, ctx, { ai });
 }
 
-module.exports = { createProfileContext, STORAGE_KEY, LEGACY_KEY };
+module.exports = { createProfileContext, apiKeyFailure, isLoopbackHttpUrl, STORAGE_KEY, LEGACY_KEY };

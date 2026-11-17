@@ -2,6 +2,7 @@
 
 const { clip, stamp, parseJson, text } = require('./util');
 const { catalog } = require('./skills');
+const { normalizeContextState } = require('./context');
 
 /**
  * Session state and its persistence.
@@ -42,24 +43,31 @@ function createSession() {
     updatedAt: now,
     messages: [],
     todos: [],
-    draft: ''
+    draft: '',
+    contextScope: 'active',
+    selectedNoteIds: []
   };
   return session;
 }
 
 function buildSystemPrompt(ctx) {
   return [
-    '你是知萤（LexiNote）里的 Harness 智能体，运行在一个受限的原生插件沙箱中。',
-    '你可以通过工具读取、检索、创建和修改当前知识库里的 Markdown 笔记；模型请求由知萤宿主代办，你不能直接访问网络。',
+    '你是知萤（LexiNote）里的全能智能助手 Harness，运行在原生插件沙箱中。',
+    '用户无需预先选择文件即可直接与你对话。你通过调用工具直接操作整个知萤软件，而不是让用户以发送文件附件的形式交互。',
+    '',
+    '## 你可直接调用的软件能力',
+    '1. **笔记与编辑器**：`get_workspace_status`、`list_notes`、`search_notes`、`read_note`、`create_note`（直接创建并打开 Markdown 笔记）、`update_note`（直接修改笔记）、`append_to_note`、`rename_note`、`delete_note`、`open_note`、`replace_selection`、`replace_active_editor`。',
+    '2. **思维导图（MindMap）**：`list_mindmaps`、`read_mindmap`、`create_mindmap`（可直接通过 `markdown` 标题/列表大纲、嵌套 `nodes` 或 `fromNotePath` 生成思维导图并在工作区打开）、`update_mindmap`、`delete_mindmap`、`open_mindmap`。',
+    '3. **自由白板（Canvas）**：`list_canvases`、`read_canvas`、`create_canvas`（直接创建含卡片 `cards` 和连线 `edges` 的自由白板并打开）、`update_canvas`、`delete_canvas`、`open_canvas`。',
+    '4. **软件设置与内置命令**：`get_app_settings`、`update_app_settings`（直接修改浅色/深色/跟随系统主题、强调色、正文字号、界面缩放、中英文语言、编辑器默认视图/模式、行宽限制、内联标题、拼写检查、左侧功能栏、标签栏及侧边栏宽度等）、`list_app_commands`、`run_app_command`。',
     '',
     '## 工作规则',
-    '1. 不要编造笔记、路径或引用。引用笔记前先用 list_notes / search_notes / read_note 核实。',
-    '2. 默认只给建议，不修改原文。只有用户明确说“写回去 / 应用 / 修改 / 删除”时才写笔记。',
-    '3. 修改前用一句话说明要改什么；删除或大段替换前先请求用户确认。',
-    '4. 工具失败时先读错误码：E_CONFLICT 需重新读取，E_PATH_EXISTS 改用 update_note，E_EDITOR_READONLY 说明没有活动编辑器。',
-    '5. 路径必须是知识库相对路径并以 .md 结尾；跨目录改名不支持。',
-    '6. 用中文回答，简洁，先结论后依据；给出可执行的下一步。',
-    '7. 需要专项流程时调用 skill 工具加载技能，不要凭空假设步骤。',
+    '1. 不要求用户先打开或勾选笔记。当需要了解当前打开的笔记或知识库内容时，主动调用 `get_workspace_status`、`list_notes`、`search_notes` 或 `read_note`。',
+    '2. 当用户要求创建文件、编写笔记、生成思维导图、创建白板或修改软件设置时，直接调用对应的工具立即执行生效（所有笔记写入工具还会自动记录可撤销卡片供用户随时回退）。',
+    '3. 不要编造不存在的笔记或路径。引用知识库内真实存在的笔记时，使用 Markdown 链接 `[笔记标题](相对路径.md)`（定位行号可附 `#L起-L终`）或 `[[双链]]`。',
+    '4. 工具失败时先读错误码：E_CONFLICT 需重新读取，E_PATH_EXISTS 改用 update_note，E_EDITOR_READONLY 说明处于只读模式或没有活动编辑器，E_PERMISSION_DENIED / E_VAULT_FORBIDDEN 表示宿主未授予对应能力（提示用户在插件设置开启权限）。',
+    '5. 笔记路径必须是知识库相对路径并以 .md 结尾。',
+    '6. 用中文回答，简洁清晰，直接告知已执行的操作与结果。',
     '',
     `当前时间：${stamp()}`,
     `当前知识库：${ctx.vaultId || '未知'}`,
@@ -153,8 +161,46 @@ function storedSession(session, budget = ACTIVE_CHAR_BUDGET, includeSystem = tru
       record.toolName = text(message.toolName);
       record.isError = message.isError === true;
     }
+    if (message.contextMeta && typeof message.contextMeta === 'object') {
+      record.contextMeta = {
+        scope: text(message.contextMeta.scope).slice(0, 24),
+        label: clip(message.contextMeta.label, 48),
+        summary: clip(message.contextMeta.summary, 160),
+        ok: message.contextMeta.ok === true,
+        refs: Array.isArray(message.contextMeta.refs)
+          ? message.contextMeta.refs.slice(0, 12).map((ref) => ({
+            id: text(ref && ref.id).slice(0, 80),
+            path: clip(ref && ref.path, 200),
+            name: clip(ref && ref.name, 80),
+            startLine: Number(ref && ref.startLine) || 0,
+            endLine: Number(ref && ref.endLine) || 0,
+            from: Number(ref && ref.from) || 0,
+            to: Number(ref && ref.to) || 0,
+            fragment: clip(ref && ref.fragment, 48)
+          }))
+          : []
+      };
+    }
+    if (Array.isArray(message.citations) && message.citations.length > 0) {
+      record.citations = message.citations.slice(0, 14).map((cite) => ({
+        id: text(cite && cite.id).slice(0, 80),
+        path: clip(cite && cite.path, 200),
+        name: clip(cite && cite.name, 80),
+        label: clip(cite && cite.label, 80),
+        fragment: clip(cite && cite.fragment, 48),
+        source: text(cite && cite.source).slice(0, 24),
+        inContext: cite && cite.inContext !== false
+      }));
+    }
+    if (Array.isArray(message.proposalIds) && message.proposalIds.length > 0) {
+      record.proposalIds = message.proposalIds.slice(0, 16).map((id) => text(id).slice(0, 80)).filter(Boolean);
+    }
     kept.push(record);
   }
+  const ctxState = normalizeContextState({
+    scope: session.contextScope,
+    selectedNoteIds: session.selectedNoteIds
+  });
   const payload = {
     id: session.id,
     title: session.title,
@@ -167,6 +213,8 @@ function storedSession(session, budget = ACTIVE_CHAR_BUDGET, includeSystem = tru
     draft: text(session.draft).slice(0, includeSystem ? 8000 : 4000),
     service: text(session.service).slice(0, 64),
     model: text(session.model).slice(0, 128),
+    contextScope: ctxState.scope,
+    selectedNoteIds: ctxState.selectedNoteIds,
     historyTrimmed: trimmed
   };
   if (messages.some(message => text(message.content).length > STORED_CONTENT_LIMIT || text(message.reasoning).length > 1500) ||
@@ -185,6 +233,12 @@ function storedSession(session, budget = ACTIVE_CHAR_BUDGET, includeSystem = tru
     for (const message of payload.messages) {
       message.content = clip(message.content, limit);
       if (message.reasoning) { message.reasoning = clip(message.reasoning, Math.floor(limit / 2)); }
+      if (limit <= 375) {
+        delete message.citations;
+        if (message.contextMeta && Array.isArray(message.contextMeta.refs) && message.contextMeta.refs.length > 3) {
+          message.contextMeta.refs = message.contextMeta.refs.slice(0, 3);
+        }
+      }
       for (const call of message.toolCalls || []) {
         call.id = text(call.id).slice(0, 128); call.name = text(call.name).slice(0, 128);
         if (text(call.arguments).length > limit) { call.arguments = '{"_history_truncated":true}'; }
@@ -219,6 +273,12 @@ function restoreSession(raw) {
   session.draft = text(raw.draft);
   session.service = text(raw.service);
   session.model = text(raw.model);
+  const ctxState = normalizeContextState({
+    scope: raw.contextScope,
+    selectedNoteIds: raw.selectedNoteIds
+  });
+  session.contextScope = ctxState.scope;
+  session.selectedNoteIds = ctxState.selectedNoteIds;
   session.historyTrimmed = raw.historyTrimmed === true;
   return session;
 }
@@ -348,7 +408,6 @@ function titleFromInput(session, input) {
     session.title = firstLine.slice(0, 24);
   }
 }
-
 module.exports = {
   STORAGE_KEY,
   createMessage,

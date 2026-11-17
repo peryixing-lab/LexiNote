@@ -6,6 +6,18 @@ const { createSession, ensureSystem, buildSystemPrompt, saveSession, listConvers
 const { clip, text, errorText } = require('./util');
 const { renderMarkdown } = require('./markdown');
 const { serviceName } = require('./providers');
+const { apiKeyFailure, isLoopbackHttpUrl } = require('./profile-store');
+const { resolveContextScope, normalizeContextState, SCOPE_ACTIVE, SCOPE_SELECTION, SCOPE_NOTES } = require('./context');
+const { resolveCitationHref } = require('./citations');
+const { loadChanges, getProposal, confirmProposal, rejectProposal, undoProposal } = require('./changes');
+const {
+  CONTEXT_DIFF_STYLE,
+  renderScopeBar,
+  renderMessageContextTag,
+  renderCitationsBar,
+  renderProposalCard,
+  renderNotePickerModal
+} = require('./ui-context-diff');
 
 /**
  * The Harness chat view.
@@ -132,6 +144,17 @@ const STYLE = `
 .harness-field input:focus,.harness-field select:focus { border-color:#8c7eab; }
 .harness-settings-actions { display:flex; gap:6px; justify-content:flex-end; margin-top:6px; }
 .harness-settings-error { color:#b03b54; font-size:11px; margin:2px 0 6px; white-space:pre-wrap; }
+.harness-key-row { display:flex; align-items:center; gap:6px; }
+.harness-key-row input { flex:1; min-width:0; }
+.harness-key-row .harness-btn { flex:0 0 auto; padding:5px 8px; }
+.harness-cred-hint { display:flex; align-items:center; justify-content:space-between; gap:6px; font-size:10px;
+  color:var(--text-muted,#827b87); margin-top:2px; }
+.harness-link-btn { border:0; background:transparent; color:var(--text-accent,#807397); font:inherit;
+  font-size:10px; cursor:pointer; padding:0; text-decoration:underline; }
+.harness-advanced { border:1px solid var(--background-modifier-border,#e1dce6); border-radius:7px;
+  padding:6px 8px; margin:4px 0 8px; background:var(--background-secondary,#eeeaf1); }
+.harness-advanced summary { font-size:11px; color:var(--text-muted,#827b87); cursor:pointer; user-select:none; }
+.harness-advanced[open] summary { margin-bottom:8px; color:var(--text-normal,#2f2b35); }
 .harness-models { border-radius:14px; padding:16px; }
 .harness-models-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:16px; }
 .harness-models-head h3 { margin:0; font-size:15px; font-weight:600; }
@@ -243,6 +266,224 @@ function createViewController(ctx, holder, options) {
   let draftTimer = null;
   let draftDirty = false;
   let draftSaving = Promise.resolve();
+  let contextResolved = null;
+  let contextRefreshTimer = null;
+  let notePicker = null;
+  let diffBusyId = '';
+  const diffExpanded = new Map();
+  let cachedVaultFiles = [];
+
+  function changesStore() {
+    if (!holder.changesStore) {
+      holder.changesStore = { version: 1, proposals: [] };
+    }
+    return holder.changesStore;
+  }
+
+  function normalizeSessionContext() {
+    const s = session();
+    return normalizeContextState({
+      scope: s.contextScope,
+      selectedNoteIds: s.selectedNoteIds
+    });
+  }
+
+  function renderScopeSlot() {
+    if (!dom || !dom.scopeSlot) { return; }
+    if (settings.enableScopeBar !== true) {
+      dom.scopeSlot.replaceChildren();
+      return;
+    }
+    const ctxState = normalizeSessionContext();
+    dom.scopeSlot.replaceChildren(renderScopeBar({
+      scope: ctxState.scope,
+      resolved: contextResolved,
+      selectedIds: ctxState.selectedNoteIds,
+      busy,
+      onSwitchScope: (nextScope) => { switchScope(nextScope); },
+      onRefresh: () => { refreshContext().catch(() => {}); },
+      onOpenPicker: () => { openNotePicker().catch(() => {}); }
+    }));
+  }
+
+  async function refreshContext() {
+    const s = session();
+    const ctxState = normalizeSessionContext();
+    s.contextScope = ctxState.scope;
+    s.selectedNoteIds = ctxState.selectedNoteIds;
+    try {
+      if (ctx.vault && typeof ctx.vault.listMarkdown === 'function') {
+        cachedVaultFiles = await ctx.vault.listMarkdown();
+      }
+    } catch (_ignored) {
+      // Host controls vault.read capability; context resolution below handles permission errors cleanly.
+    }
+    contextResolved = await resolveContextScope(ctx, ctxState);
+    renderScopeSlot();
+    return contextResolved;
+  }
+
+  function scheduleContextRefresh() {
+    if (contextRefreshTimer) { clearTimeout(contextRefreshTimer); }
+    contextRefreshTimer = setTimeout(() => {
+      contextRefreshTimer = null;
+      refreshContext().catch(() => {});
+    }, 120);
+  }
+
+  async function switchScope(nextScope) {
+    const s = session();
+    const nextState = normalizeContextState({
+      scope: nextScope,
+      selectedNoteIds: s.selectedNoteIds
+    });
+    s.contextScope = nextState.scope;
+    s.selectedNoteIds = nextState.selectedNoteIds;
+    saveSession(ctx, s).catch(() => {});
+    await refreshContext();
+    if (nextState.scope === SCOPE_NOTES && nextState.selectedNoteIds.length === 0) {
+      await openNotePicker();
+    }
+  }
+
+  async function openCitedNote(target) {
+    toolbarError = '';
+    try {
+      let href = '';
+      let targetId = '';
+      let targetFragment = '';
+      if (typeof target === 'string') {
+        href = target;
+      } else if (target && typeof target === 'object') {
+        targetId = text(target.id);
+        href = text(target.path);
+        targetFragment = text(target.fragment);
+      }
+
+      if (href && /^https?:|^mailto:|^tel:/i.test(href)) {
+        await ctx.ui.notice(href, 5000);
+        return;
+      }
+      if (href && href.startsWith('map:') && ctx.mindmap && typeof ctx.mindmap.open === 'function') {
+        await ctx.mindmap.open(href.slice(4));
+        return;
+      }
+      if (href && href.startsWith('canvas:') && ctx.canvas && typeof ctx.canvas.open === 'function') {
+        await ctx.canvas.open(href.slice(7));
+        return;
+      }
+
+      let file = null;
+      const rawTarget = href.startsWith('wiki:') ? href.slice(5) : href;
+      const cleanPath = decodeURIComponent(rawTarget.split('#')[0] || '').trim();
+      const frag = targetFragment || (rawTarget.includes('#') ? rawTarget.slice(rawTarget.indexOf('#') + 1).trim() : '');
+
+      if (cleanPath && ctx.vault && typeof ctx.vault.get === 'function') {
+        file = await ctx.vault.get(cleanPath);
+      }
+      if (!file && (cleanPath || targetId)) {
+        if (cachedVaultFiles.length === 0 && ctx.vault && typeof ctx.vault.listMarkdown === 'function') {
+          cachedVaultFiles = await ctx.vault.listMarkdown();
+        }
+        const resolved = resolveCitationHref(rawTarget, contextResolved && contextResolved.notes || [], cachedVaultFiles);
+        if (resolved && resolved.note) {
+          file = resolved.note.id ? resolved.note : await ctx.vault.get(resolved.note.path);
+        } else if (targetId) {
+          file = cachedVaultFiles.find((f) => f.id === targetId) || null;
+        }
+      }
+      if (file && file.id) {
+        await ctx.workspace.openFile(file);
+        if (frag) {
+          controller.notify(`已打开 ${file.path} (${frag})`);
+        }
+        return;
+      }
+      await ctx.ui.notice(cleanPath || href || '找不到对应笔记', 4000);
+    } catch (failure) {
+      toolbarError = errorText(failure);
+      controller.notify(toolbarError);
+      refresh();
+    }
+  }
+
+  async function openNotePicker() {
+    if (busy || saving || switching) { return; }
+    let files = [];
+    try {
+      files = await ctx.vault.listMarkdown();
+      cachedVaultFiles = files;
+    } catch (failure) {
+      toolbarError = errorText(failure);
+      controller.notify(toolbarError);
+      refresh();
+      return;
+    }
+    notePicker = {
+      files,
+      query: '',
+      selectedIds: normalizeSessionContext().selectedNoteIds.slice()
+    };
+    showHistory = false;
+    showModels = false;
+    showSettings = false;
+    settingsDirty = true;
+    refresh();
+  }
+
+  async function confirmChange(id) {
+    if (diffBusyId || busy) { return; }
+    diffBusyId = id;
+    toolbarError = '';
+    refresh();
+    try {
+      await confirmProposal(ctx, changesStore(), id);
+      controller.notify('已按差异确认写入（可随时撤销）');
+      await refreshContext();
+    } catch (failure) {
+      const msg = errorText(failure);
+      toolbarError = msg;
+      controller.notify(msg);
+    } finally {
+      diffBusyId = '';
+      refresh();
+    }
+  }
+
+  async function rejectChange(id) {
+    if (diffBusyId || busy) { return; }
+    diffBusyId = id;
+    refresh();
+    try {
+      await rejectProposal(ctx, changesStore(), id);
+      controller.notify('已拒绝该修改建议，原文保持不变');
+    } catch (failure) {
+      toolbarError = errorText(failure);
+      controller.notify(toolbarError);
+    } finally {
+      diffBusyId = '';
+      refresh();
+    }
+  }
+
+  async function undoChange(id) {
+    if (diffBusyId || busy) { return; }
+    diffBusyId = id;
+    toolbarError = '';
+    refresh();
+    try {
+      await undoProposal(ctx, changesStore(), id);
+      controller.notify('已撤销本次写入，内容已恢复');
+      await refreshContext();
+    } catch (failure) {
+      const msg = errorText(failure);
+      toolbarError = msg;
+      controller.notify(msg);
+    } finally {
+      diffBusyId = '';
+      refresh();
+    }
+  }
 
   function legacyRoute(profile) {
     return profile ? `${profile.provider}|${profile.baseUrl}` : '';
@@ -357,11 +598,21 @@ function createViewController(ctx, holder, options) {
     return box;
   }
 
-  function renderMessage(message) {
+  function renderMessage(message, renderedProposals) {
     if (!message || message.role === 'system') { return null; }
     if (message.role === 'user') {
       const row = element('div', 'harness-msg harness-msg-user');
-      row.appendChild(element('div', 'harness-bubble', message.content));
+      const wrap = element('div', '');
+      wrap.style.display = 'flex';
+      wrap.style.flexDirection = 'column';
+      wrap.style.alignItems = 'flex-end';
+      wrap.style.maxWidth = '88%';
+      const ctxTag = renderMessageContextTag(message.contextMeta, openCitedNote);
+      if (ctxTag) { wrap.appendChild(ctxTag); }
+      const bubble = element('div', 'harness-bubble', message.content);
+      bubble.style.maxWidth = '100%';
+      wrap.appendChild(bubble);
+      row.appendChild(wrap);
       return row;
     }
     if (message.role === 'assistant') {
@@ -374,19 +625,47 @@ function createViewController(ctx, holder, options) {
         bubble.appendChild(details);
       }
       if (message.content && message.content.length > 0) {
-        bubble.appendChild(renderMarkdown(message.content, async (href) => {
-          try {
-            if (!/^[a-z][a-z\d+.-]*:/i.test(href) && /\.md(?:#.*)?$/i.test(href)) {
-              const file = await ctx.vault.get(decodeURIComponent(href.split('#')[0]));
-              if (file) { await ctx.workspace.openFile(file); return; }
-            }
-            await ctx.ui.notice(href, 5000);
-          } catch (failure) { toolbarError = errorText(failure); refresh(); }
-        }));
+        bubble.appendChild(renderMarkdown(message.content, { onLink: (href) => openCitedNote(href) }));
+      } else if (Array.isArray(message.toolResults) && message.toolResults.length > 0) {
+        for (let i = 0; i < message.toolResults.length; i += 1) {
+          const tr = message.toolResults[i];
+          const toolRow = element('div', `harness-tool${tr.ok === false ? ' error' : ''}`);
+          const head = element('div', 'harness-tool-head');
+          head.appendChild(element('span', 'harness-tool-name', tr.name || 'tool'));
+          head.appendChild(element('span', 'harness-tool-sub', tr.summary || '已完成'));
+          toolRow.appendChild(head);
+          bubble.appendChild(toolRow);
+        }
       } else {
         bubble.appendChild(element('div', 'harness-tool-sub', '（调用工具）'));
       }
+      const citationsNode = renderCitationsBar(message.citations, openCitedNote);
+      if (citationsNode) { bubble.appendChild(citationsNode); }
       row.appendChild(bubble);
+
+      if (Array.isArray(message.proposalIds) && message.proposalIds.length > 0) {
+        const store = changesStore();
+        for (let i = 0; i < message.proposalIds.length; i += 1) {
+          const pid = message.proposalIds[i];
+          if (renderedProposals && renderedProposals.has(pid)) { continue; }
+          const proposal = getProposal(store, pid);
+          if (!proposal) { continue; }
+          if (renderedProposals) { renderedProposals.add(pid); }
+          const card = renderProposalCard(proposal, {
+            busyId: diffBusyId,
+            expandedMap: diffExpanded,
+            onToggleExpand: (id, nextExpanded) => {
+              diffExpanded.set(id, nextExpanded);
+              refresh();
+            },
+            onConfirm: (id) => { confirmChange(id).catch(() => {}); },
+            onReject: (id) => { rejectChange(id).catch(() => {}); },
+            onUndo: (id) => { undoChange(id).catch(() => {}); },
+            onOpenNote: (target) => { openCitedNote(target).catch(() => {}); }
+          });
+          if (card) { row.appendChild(card); }
+        }
+      }
       return row;
     }
     if (message.role === 'tool') {
@@ -417,12 +696,13 @@ function createViewController(ctx, holder, options) {
     const todos = renderTodos();
     if (todos) { dom.messages.appendChild(todos); }
     const messages = session().messages;
+    const renderedProposals = new Set();
     let hasUser = false;
     if (Array.isArray(messages)) {
       for (let index = 0; index < messages.length; index += 1) {
         const message = messages[index];
         if (message.role === 'user') { hasUser = true; }
-        const node = renderMessage(message);
+        const node = renderMessage(message, renderedProposals);
         if (node) { dom.messages.appendChild(node); }
       }
     }
@@ -454,13 +734,14 @@ function createViewController(ctx, holder, options) {
 
   function renderEmpty() {
     const box = element('div', 'harness-empty');
-    box.appendChild(element('div', '', '我是运行在知萤里的 Harness。可以帮你阅读、检索、整理和改写 Markdown 笔记。'));
+    box.appendChild(element('div', '', '我是运行在知萤里的全能智能助手 Harness。无需预先选择文件，我可以直接调用软件能力帮你创建/修改笔记、生成思维导图与自由白板，或直接调整软件设置。'));
     box.appendChild(element('div', '', '在下面输入问题，或从这些开始：'));
     const chips = element('div', 'harness-chips');
     const starters = [
-      '整理当前笔记：先给摘要，再列出行动项',
-      '做一份今日回顾，按修改时间找出今天改过的笔记',
-      '找出与当前笔记相关的其他笔记，并给出双链建议'
+      '帮我创建一篇《今日工作计划.md》笔记并打开',
+      '围绕“知识管理方法”生成一张思维导图',
+      '把软件切换为深色外观，并将正文字号调到 18',
+      '查看当前工作区状态并整理最近的笔记'
     ];
     for (const starter of starters) {
       const chip = element('button', 'harness-chip', starter);
@@ -506,7 +787,7 @@ function createViewController(ctx, holder, options) {
     const quotaPanel = element('div', 'harness-quota');
     const toolbarMessage = element('div', 'harness-toolbar-error');
     const input = element('textarea', 'harness-input');
-    input.placeholder = '问 Harness，例如：整理当前笔记并给出行动项';
+    input.placeholder = '直接输入任何问题或指令，例如：创建笔记、生成思维导图、修改软件设置…';
     input.rows = 2;
     input.value = session().draft || '';
     input.addEventListener('input', () => trackDraft());
@@ -522,12 +803,14 @@ function createViewController(ctx, holder, options) {
     row.appendChild(hint);
     const sendButton = button('发送', 'primary', () => busy ? stop() : send(input.value));
     row.appendChild(sendButton);
+    const scopeSlot = element('div', 'harness-scope-slot');
     composer.appendChild(toolbar);
     composer.appendChild(quotaPanel);
     composer.appendChild(toolbarMessage);
+    composer.appendChild(scopeSlot);
     composer.appendChild(input);
     composer.appendChild(row);
-    return { composer, input, toolbar, quotaPanel, toolbarMessage, sendButton };
+    return { composer, input, scopeSlot, toolbar, quotaPanel, toolbarMessage, sendButton };
   }
 
   function renderToolbar() {
@@ -724,7 +1007,9 @@ function createViewController(ctx, holder, options) {
       choice.setAttribute('aria-label', `使用服务商 ${profileName(profile)}`);
       choice.setAttribute('aria-pressed', String(!!selected));
       choice.appendChild(element('b', '', profileName(profile)));
-      choice.appendChild(element('span', '', `${selected ? '当前使用 · ' : ''}${profile.model}${profile.needsApiKey ? ' · 需补填 Key' : ''}`));
+      const credSuffix = profile.needsApiKey ? ' · 需补填 Key'
+        : (profile.credentialSource === 'env' ? ' · env' : '');
+      choice.appendChild(element('span', '', `${selected ? '当前使用 · ' : ''}${profile.model}${credSuffix}`));
       choice.addEventListener('click', () => selectProfile(profile.profileId));
       row.appendChild(choice);
       row.appendChild(button('编辑', '', () => openSettings(profile.profileId), busy || switching || saving));
@@ -748,6 +1033,11 @@ function createViewController(ctx, holder, options) {
       service.appendChild(element('p', 'harness-service-protocol', status.provider === 'anthropic-compatible' ? 'Anthropic 兼容接口' : 'OpenAI 兼容接口'));
       service.appendChild(element('p', '', status.baseUrl));
       service.appendChild(element('p', 'harness-service-model', `当前使用 · ${status.model}`));
+      if (status.credentialSource === 'env' && status.credentialRef) {
+        service.appendChild(element('p', 'harness-service-protocol', `凭据 · 环境变量 ${status.credentialRef}`));
+      } else if (status.maskedApiKey) {
+        service.appendChild(element('p', 'harness-service-protocol', `凭据 · ${status.maskedApiKey}`));
+      }
     }
     panel.appendChild(service);
     const actions = element('div', 'harness-models-actions');
@@ -784,6 +1074,40 @@ function createViewController(ctx, holder, options) {
   }
 
   function renderOverlay() {
+    if (notePicker) {
+      const overlay = element('div', 'harness-overlay');
+      const panel = element('div', 'harness-settings');
+      panel.setAttribute('role', 'dialog');
+      panel.setAttribute('aria-label', '选择指定笔记集合');
+      panel.appendChild(element('h3', '', '指定上下文笔记集合'));
+      const modal = renderNotePickerModal({
+        files: notePicker.files,
+        selectedIds: notePicker.selectedIds,
+        query: notePicker.query,
+        onQueryChange: (q) => { if (notePicker) { notePicker.query = q; } },
+        onToggleId: (_id, _checked, nextIds) => { if (notePicker) { notePicker.selectedIds = nextIds; } },
+        onClear: () => { if (notePicker) { notePicker.selectedIds = []; } },
+        onCancel: () => {
+          notePicker = null;
+          settingsDirty = true;
+          refresh();
+        },
+        onApply: (nextIds) => {
+          notePicker = null;
+          const s = session();
+          const normalized = normalizeContextState({ scope: SCOPE_NOTES, selectedNoteIds: nextIds });
+          s.contextScope = SCOPE_NOTES;
+          s.selectedNoteIds = normalized.selectedNoteIds;
+          settingsDirty = true;
+          saveSession(ctx, s).catch(() => {});
+          refreshContext().catch(() => {});
+          refresh();
+        }
+      });
+      panel.appendChild(modal.box);
+      overlay.appendChild(panel);
+      return overlay;
+    }
     if (showHistory) { return renderHistory(); }
     if (showModels) { return renderModels(); }
     if (!showSettings) { return null; }
@@ -795,21 +1119,44 @@ function createViewController(ctx, holder, options) {
     const editing = addingProfile ? null : (profiles.find((profile) => profile.profileId === editingProfileId) || status);
     panel.appendChild(element('p', '',
       editing && editing.needsApiKey
-        ? '此服务商还没有可用的 API Key。请补填一次；新宿主上 Key 只写不读回。'
-        : '新宿主上 API Key 只写入宿主、保存后不可读回；旧宿主会保存在插件本地数据中。插件仅保存服务商配置。编辑时留空沿用；更换 Base URL 请重新填写。'));
+        ? '当前服务商尚未配置可用凭据，请填写 API Key 或环境变量名（本机地址可免 Key）。'
+        : '配置与凭据分离：服务商参数保存在配置中，API Key 保存在宿主隔离存储（或环境变量）中，保存后仅显示脱敏摘要。编辑时留空沿用；更换 Base URL 请重新填写。'));
+    const editingCompat = (editing && editing.compat) || {};
+    const editingRetry = (editing && editing.retryPolicy) || {};
+    const defaultRetryChoice = editingRetry.mode === 'normal'
+      ? `normal:${typeof editingRetry.maxRetries === 'number' ? editingRetry.maxRetries : 2}`
+      : '';
     const draft = settingsDraft || {
       provider: editing && editing.provider ? editing.provider : 'openai-compatible',
       baseUrl: editing && editing.baseUrl ? editing.baseUrl : '',
       model: editing && editing.model ? editing.model : '',
       apiKey: '',
       quickModels: editing ? currentModels(editing).join(', ') : '',
-      serviceName: editing && (editing.name || serviceNames[routeKey(editing)] || serviceNames[legacyRoute(editing)]) || ''
+      serviceName: editing && (editing.name || serviceNames[routeKey(editing)] || serviceNames[legacyRoute(editing)]) || '',
+      credentialRef: editing && editing.credentialRef ? editing.credentialRef : '',
+      maxTokensField: editingCompat.maxTokensField || '',
+      thinkingFormat: editingCompat.thinkingFormat || '',
+      supportsDeveloperRole: typeof editingCompat.supportsDeveloperRole === 'boolean'
+        ? String(editingCompat.supportsDeveloperRole) : '',
+      retryChoice: defaultRetryChoice,
+      clearApiKey: false,
+      revealKey: false,
+      advancedOpen: false
     };
     settingsDraft = draft;
     function track(node, name, event) {
-      const labels = { serviceName: '服务商名称', provider: '接口类型', baseUrl: 'Base URL', model: '模型名称', apiKey: 'API Key', quickModels: '常用模型' };
+      const labels = {
+        serviceName: '服务商名称', provider: '接口类型', baseUrl: 'Base URL',
+        model: '模型名称', apiKey: 'API Key', quickModels: '常用模型',
+        credentialRef: '凭据环境变量名', maxTokensField: 'Max Tokens 字段',
+        supportsDeveloperRole: 'Developer 角色支持', thinkingFormat: 'Thinking 参数格式',
+        retryChoice: '请求重试策略'
+      };
       node.setAttribute('aria-label', labels[name] || name);
-      node.addEventListener(event || 'input', () => { draft[name] = node.value; });
+      node.addEventListener(event || 'input', () => {
+        draft[name] = node.value;
+        if (name === 'apiKey' && node.value.trim()) { draft.clearApiKey = false; }
+      });
       node.disabled = saving;
     }
 
@@ -871,14 +1218,60 @@ function createViewController(ctx, holder, options) {
 
     const keyField = element('div', 'harness-field');
     keyField.appendChild(element('label', '', 'API Key'));
+    const keyRow = element('div', 'harness-key-row');
     const apiKey = element('input');
-    apiKey.type = 'password';
+    apiKey.type = draft.revealKey ? 'text' : 'password';
     apiKey.value = draft.apiKey || '';
-    apiKey.placeholder = editing && editing.needsApiKey ? '请补填此服务商的 Key' : editing && editing.configured ? '此服务已保存，留空则不修改' : 'sk-…';
+    apiKey.placeholder = draft.clearApiKey
+      ? '保存时将清除已存 Key'
+      : (editing && editing.maskedApiKey ? `${editing.maskedApiKey}（留空保持不变）`
+        : (editing && editing.needsApiKey ? '请补填此服务商的 Key'
+          : (editing && editing.configured ? '此服务已保存，留空则不修改' : 'sk-…')));
     apiKey.maxLength = 8192;
     apiKey.autocomplete = 'new-password';
     track(apiKey, 'apiKey');
-    keyField.appendChild(apiKey);
+    keyRow.appendChild(apiKey);
+    const toggleReveal = button(draft.revealKey ? '隐藏' : '显示', '', () => {
+      draft.revealKey = !draft.revealKey;
+      settingsDirty = true;
+      refresh();
+    }, saving);
+    toggleReveal.setAttribute('aria-label', draft.revealKey ? '隐藏输入的 API Key' : '显示输入的 API Key');
+    keyRow.appendChild(toggleReveal);
+    keyField.appendChild(keyRow);
+    if (!addingProfile && editing && (draft.clearApiKey || editing.credentialSource || editing.maskedApiKey)) {
+      const hintRow = element('div', 'harness-cred-hint');
+      if (draft.clearApiKey) {
+        hintRow.appendChild(element('span', '', '保存后将移除宿主内保存的 API Key'));
+        const undoClear = element('button', 'harness-link-btn', '撤销清除');
+        undoClear.type = 'button';
+        undoClear.disabled = saving;
+        undoClear.addEventListener('click', () => {
+          draft.clearApiKey = false;
+          settingsDirty = true;
+          refresh();
+        });
+        hintRow.appendChild(undoClear);
+      } else {
+        const sourceText = editing.credentialSource === 'env'
+          ? `环境变量 ${editing.credentialRef || ''}${editing.maskedApiKey ? `（${editing.maskedApiKey}）` : ''}`
+          : (editing.maskedApiKey ? `宿主已保存（${editing.maskedApiKey}）` : '已保存');
+        hintRow.appendChild(element('span', '', sourceText));
+        if (editing.credentialSource === 'store' || (!editing.credentialSource && editing.configured && profilesAvailable)) {
+          const clearBtn = element('button', 'harness-link-btn', '清除 Key');
+          clearBtn.type = 'button';
+          clearBtn.disabled = saving;
+          clearBtn.addEventListener('click', () => {
+            draft.clearApiKey = true;
+            draft.apiKey = '';
+            settingsDirty = true;
+            refresh();
+          });
+          hintRow.appendChild(clearBtn);
+        }
+      }
+      keyField.appendChild(hintRow);
+    }
     panel.appendChild(keyField);
 
     const quickField = element('div', 'harness-field');
@@ -890,6 +1283,101 @@ function createViewController(ctx, holder, options) {
     track(quickModels, 'quickModels');
     quickField.appendChild(quickModels);
     panel.appendChild(quickField);
+
+    const advanced = element('details', 'harness-advanced');
+    if (draft.advancedOpen) { advanced.open = true; }
+    advanced.addEventListener('toggle', () => { draft.advancedOpen = !!advanced.open; });
+    advanced.appendChild(element('summary', '', '高级选项（凭据环境变量 · 接口兼容 · 重试）'));
+
+    const refField = element('div', 'harness-field');
+    refField.appendChild(element('label', '', '凭据环境变量名（credentialRef，可选）'));
+    const credentialRef = element('input');
+    credentialRef.type = 'text';
+    credentialRef.maxLength = 64;
+    credentialRef.value = draft.credentialRef || '';
+    credentialRef.placeholder = '例如 DEEPSEEK_API_KEY（留空自动生成）';
+    track(credentialRef, 'credentialRef');
+    refField.appendChild(credentialRef);
+    advanced.appendChild(refField);
+
+    const maxTokensFieldWrap = element('div', 'harness-field');
+    maxTokensFieldWrap.appendChild(element('label', '', 'Max Tokens 字段兼容'));
+    const maxTokensField = element('select');
+    for (const opt of [
+      { value: '', label: '默认（OpenAI 用 max_tokens）' },
+      { value: 'max_tokens', label: '强制 max_tokens' },
+      { value: 'max_completion_tokens', label: '使用 max_completion_tokens（o1/o3/o4）' }
+    ]) {
+      const node = element('option', '', opt.label);
+      node.value = opt.value;
+      if ((draft.maxTokensField || '') === opt.value) { node.selected = true; }
+      maxTokensField.appendChild(node);
+    }
+    maxTokensField.value = draft.maxTokensField || '';
+    track(maxTokensField, 'maxTokensField', 'change');
+    maxTokensFieldWrap.appendChild(maxTokensField);
+    advanced.appendChild(maxTokensFieldWrap);
+
+    const devRoleWrap = element('div', 'harness-field');
+    devRoleWrap.appendChild(element('label', '', 'Developer 角色支持（OpenAI 推理模型）'));
+    const supportsDeveloperRole = element('select');
+    for (const opt of [
+      { value: '', label: '默认（跟随接口约定）' },
+      { value: 'true', label: '支持 developer 角色' },
+      { value: 'false', label: '强制退回 system 角色' }
+    ]) {
+      const node = element('option', '', opt.label);
+      node.value = opt.value;
+      if ((draft.supportsDeveloperRole || '') === opt.value) { node.selected = true; }
+      supportsDeveloperRole.appendChild(node);
+    }
+    supportsDeveloperRole.value = draft.supportsDeveloperRole || '';
+    track(supportsDeveloperRole, 'supportsDeveloperRole', 'change');
+    devRoleWrap.appendChild(supportsDeveloperRole);
+    advanced.appendChild(devRoleWrap);
+
+    const thinkingWrap = element('div', 'harness-field');
+    thinkingWrap.appendChild(element('label', '', 'Thinking 参数格式'));
+    const thinkingFormat = element('select');
+    for (const opt of [
+      { value: '', label: '默认（auto）' },
+      { value: 'auto', label: 'auto' },
+      { value: 'openai', label: 'openai' },
+      { value: 'deepseek', label: 'deepseek' },
+      { value: 'openrouter', label: 'openrouter' },
+      { value: 'zai', label: 'zai' },
+      { value: 'qwen', label: 'qwen' },
+      { value: 'chat-template', label: 'chat-template' }
+    ]) {
+      const node = element('option', '', opt.label);
+      node.value = opt.value;
+      if ((draft.thinkingFormat || '') === opt.value) { node.selected = true; }
+      thinkingFormat.appendChild(node);
+    }
+    thinkingFormat.value = draft.thinkingFormat || '';
+    track(thinkingFormat, 'thinkingFormat', 'change');
+    thinkingWrap.appendChild(thinkingFormat);
+    advanced.appendChild(thinkingWrap);
+
+    const retryWrap = element('div', 'harness-field');
+    retryWrap.appendChild(element('label', '', '网络错误自动重试'));
+    const retryChoice = element('select');
+    for (const opt of [
+      { value: '', label: '关闭（默认）' },
+      { value: 'normal:2', label: '正常重试（最多 2 次）' },
+      { value: 'normal:3', label: '正常重试（最多 3 次）' }
+    ]) {
+      const node = element('option', '', opt.label);
+      node.value = opt.value;
+      if ((draft.retryChoice || '') === opt.value) { node.selected = true; }
+      retryChoice.appendChild(node);
+    }
+    retryChoice.value = draft.retryChoice || '';
+    track(retryChoice, 'retryChoice', 'change');
+    retryWrap.appendChild(retryChoice);
+    advanced.appendChild(retryWrap);
+
+    panel.appendChild(advanced);
 
     if (settingsError.length > 0) {
       panel.appendChild(element('div', 'harness-settings-error', settingsError));
@@ -913,7 +1401,15 @@ function createViewController(ctx, holder, options) {
       model: model.value,
       apiKey: apiKey.value,
       quickModels: quickModels.value,
-      serviceName: providerName.value
+      serviceName: providerName.value,
+      credentialRef: credentialRef.value,
+      maxTokensField: maxTokensField.value,
+      supportsDeveloperRole: supportsDeveloperRole.value,
+      thinkingFormat: thinkingFormat.value,
+      retryChoice: retryChoice.value,
+      clearApiKey: !!draft.clearApiKey,
+      revealKey: !!draft.revealKey,
+      advancedOpen: !!draft.advancedOpen
     }), saving));
     panel.appendChild(actions);
     overlay.appendChild(panel);
@@ -924,7 +1420,7 @@ function createViewController(ctx, holder, options) {
     container.replaceChildren();
     container.classList.add('harness-root');
     const style = document.createElement('style');
-    style.textContent = STYLE;
+    style.textContent = `${STYLE}\n${CONTEXT_DIFF_STYLE}`;
     container.appendChild(style);
     const header = renderHeader();
     const messages = element('div', 'harness-messages');
@@ -936,6 +1432,7 @@ function createViewController(ctx, holder, options) {
       header,
       messages,
       input: composerParts.input,
+      scopeSlot: composerParts.scopeSlot,
       composerNode: composerParts.composer,
       toolbar: composerParts.toolbar,
       quotaPanel: composerParts.quotaPanel,
@@ -946,6 +1443,7 @@ function createViewController(ctx, holder, options) {
     const overlay = renderOverlay();
     if (overlay) { container.appendChild(overlay); }
     settingsDirty = false;
+    renderScopeSlot();
     renderToolbar();
     renderMessages();
   }
@@ -968,6 +1466,7 @@ function createViewController(ctx, holder, options) {
       if (overlay) { container.appendChild(overlay); }
       settingsDirty = false;
     }
+    renderScopeSlot();
     renderToolbar();
     renderMessages();
   }
@@ -1015,8 +1514,23 @@ function createViewController(ctx, holder, options) {
     session().model = status && status.model || '';
     if (dom && dom.input) { dom.input.value = ''; }
     refresh();
+
+    let resolved = null;
+    if (settings.enableScopeBar === true) {
+      try {
+        resolved = await refreshContext();
+      } catch (_failure) {
+        resolved = null;
+      }
+    }
+
     try {
-      await runTurn(ctx, session(), prompt, { onEvent: onTurnEvent });
+      await runTurn(ctx, session(), prompt, {
+        onEvent: onTurnEvent,
+        onUpdate: () => refresh(),
+        contextResult: resolved && resolved.ok ? resolved : null,
+        changesStore: changesStore()
+      });
     } catch (failure) {
       error = errorText(failure);
     } finally {
@@ -1040,12 +1554,17 @@ function createViewController(ctx, holder, options) {
     refresh();
     try {
       await persistCurrent();
+      const prevCtx = normalizeSessionContext();
       const next = createSession();
+      next.contextScope = prevCtx.scope;
+      next.selectedNoteIds = prevCtx.selectedNoteIds;
       ensureSystem(next, buildSystemPrompt(ctx));
       await saveSession(ctx, next, { strict: true });
       setConversation(next);
+      notePicker = null;
       showHistory = false; showModels = false; showSettings = false; settingsDirty = true;
       created = true;
+      refreshContext().catch(() => {});
     } catch (failure) { historyError = errorText(failure); error = `新建对话失败：${historyError}`; }
     finally { historyWorking = false; settingsDirty = true; refresh(); }
     return created;
@@ -1085,7 +1604,9 @@ function createViewController(ctx, holder, options) {
     holder.session = next;
     ensureSystem(next, buildSystemPrompt(ctx));
     if (dom && dom.input) { dom.input.value = next.draft || ''; }
+    notePicker = null;
     error = ''; pending = ''; activeTool = null; historyRemovalId = '';
+    refreshContext().catch(() => {});
   }
 
   async function openHistory() {
@@ -1227,9 +1748,43 @@ function createViewController(ctx, holder, options) {
       refresh();
       return;
     }
-    if (text(patch.apiKey).trim().length > 0) {
-      payload.apiKey = text(patch.apiKey).trim();
-    } else if (addingProfile || !editing || !editing.configured || editing.needsApiKey) {
+    const rawKey = text(patch.apiKey);
+    const trimmedKey = rawKey.trim();
+    const keyFailure = rawKey.length > 0 ? apiKeyFailure(rawKey) : null;
+    if (keyFailure) {
+      settingsError = keyFailure;
+      settingsDirty = true;
+      refresh();
+      return;
+    }
+    const trimmedRef = text(patch.credentialRef).trim();
+    if (trimmedRef && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmedRef)) {
+      settingsError = '环境变量名需以字母或下划线开头，仅包含字母、数字和下划线';
+      settingsDirty = true;
+      refresh();
+      return;
+    }
+    if (trimmedRef) { payload.credentialRef = trimmedRef; }
+    else if (editing && editing.credentialRef && profilesAvailable) { payload.credentialRef = ''; }
+    const nextCompat = {};
+    if (text(patch.maxTokensField).trim()) { nextCompat.maxTokensField = text(patch.maxTokensField).trim(); }
+    if (text(patch.thinkingFormat).trim()) { nextCompat.thinkingFormat = text(patch.thinkingFormat).trim(); }
+    if (patch.supportsDeveloperRole === 'true' || patch.supportsDeveloperRole === 'false') {
+      nextCompat.supportsDeveloperRole = patch.supportsDeveloperRole === 'true';
+    }
+    if (Object.keys(nextCompat).length > 0) { payload.compat = nextCompat; }
+    else if (editing && editing.compat && profilesAvailable) { payload.compat = {}; }
+    if (text(patch.retryChoice).startsWith('normal:')) {
+      payload.retryPolicy = { mode: 'normal', maxRetries: Number(text(patch.retryChoice).split(':')[1] || 2) };
+    } else if (editing && editing.retryPolicy && editing.retryPolicy.mode === 'normal' && profilesAvailable) {
+      payload.retryPolicy = { mode: 'off', maxRetries: 0 };
+    }
+    if (patch.clearApiKey && !trimmedKey) {
+      payload.clearApiKey = true;
+    } else if (trimmedKey.length > 0) {
+      payload.apiKey = trimmedKey;
+    } else if (!trimmedRef && !isLoopbackHttpUrl(payload.baseUrl) &&
+      (addingProfile || !editing || !editing.configured || editing.needsApiKey)) {
       settingsError = '首次绑定需要填写 API Key';
       settingsDirty = true;
       refresh();
@@ -1288,6 +1843,13 @@ function createViewController(ctx, holder, options) {
     dom = null;
     build();
     refreshStatus().catch(() => {});
+    if (!holder.changesStore) {
+      loadChanges(ctx).then((loaded) => {
+        holder.changesStore = loaded;
+        refresh();
+      }).catch(() => {});
+    }
+    refreshContext().catch(() => {});
     ctx.storage.get('harness.models.v1').then((stored) => {
       if (stored && typeof stored === 'object' && !Array.isArray(stored) && Object.keys(modelLists).length === 0) {
         const next = {};
@@ -1311,6 +1873,13 @@ function createViewController(ctx, holder, options) {
     mount,
     refresh,
     refreshStatus,
+    refreshContext,
+    scheduleContextRefresh,
+    switchScope,
+    openNotePicker,
+    confirmChange,
+    rejectChange,
+    undoChange,
     send,
     stop,
     resetSession,
@@ -1318,6 +1887,7 @@ function createViewController(ctx, holder, options) {
     openModels,
     openHistory,
     async dispose() {
+      if (contextRefreshTimer) { clearTimeout(contextRefreshTimer); contextRefreshTimer = null; }
       if (busy) { stopTurn(session()); }
       await flushDraft().catch(() => {});
       container = null; dom = null;

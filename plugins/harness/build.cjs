@@ -23,7 +23,7 @@ const path = require('node:path');
 const zlib = require('node:zlib');
 
 const HERE = __dirname;
-const ROOT = path.resolve(HERE, '../..');
+const ROOT = HERE;
 const SRC_DIR = path.join(HERE, 'src');
 const DIST_DIR = path.join(HERE, 'dist');
 const BUNDLE_PATH = path.join(DIST_DIR, 'main.js');

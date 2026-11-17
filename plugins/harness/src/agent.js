@@ -9,7 +9,9 @@ const {
   titleFromInput
 } = require('./session');
 const { TOOL_DEFINITIONS, executeTool } = require('./tools');
-const { parseJson, text, errorText } = require('./util');
+const { formatContextForModel, toContextMeta } = require('./context');
+const { extractCitations, mergeCitationsWithContext } = require('./citations');
+const { parseJson, text, errorText, normalizePath } = require('./util');
 
 /**
  * The agent loop.
@@ -54,6 +56,21 @@ function emit(hooks, event) {
   }
 }
 
+function injectTurnContext(modelMessages, formattedContext) {
+  if (!formattedContext || !Array.isArray(modelMessages) || modelMessages.length === 0) {
+    return modelMessages;
+  }
+  for (let i = modelMessages.length - 1; i >= 0; i -= 1) {
+    if (modelMessages[i] && modelMessages[i].role === 'user') {
+      const original = text(modelMessages[i].content);
+      const combined = `${formattedContext}\n\n---\n用户请求：\n${original}`;
+      modelMessages[i].content = combined.length > 32000 ? combined.slice(0, 32000) : combined;
+      break;
+    }
+  }
+  return modelMessages;
+}
+
 async function runTurn(ctx, session, input, hooks) {
   const prompt = text(input).trim();
   if (prompt.length === 0) {
@@ -61,10 +78,51 @@ async function runTurn(ctx, session, input, hooks) {
   }
   titleFromInput(session, prompt);
   ensureSystem(session, buildSystemPrompt(ctx));
-  session.messages.push(createMessage('user', prompt));
+
+  const ctxRes = hooks && hooks.contextResult ? hooks.contextResult : null;
+  const contextMeta = ctxRes ? toContextMeta(ctxRes) : null;
+  const formattedContext = ctxRes && ctxRes.ok ? formatContextForModel(ctxRes) : '';
+  const contextRefs = ctxRes && ctxRes.ok && Array.isArray(ctxRes.notes) ? ctxRes.notes : [];
+
+  const knownNotes = new Map();
+  function registerKnown(ref) {
+    if (!ref || typeof ref !== 'object' || typeof ref.path !== 'string') { return; }
+    const cleanPath = normalizePath(ref.path);
+    if (!cleanPath) { return; }
+    knownNotes.set(cleanPath.toLowerCase(), {
+      id: text(ref.id),
+      path: cleanPath,
+      name: text(ref.name),
+      fragment: text(ref.fragment)
+    });
+  }
+  for (const item of contextRefs) {
+    registerKnown(item);
+  }
+
+  const turnProposalIds = [];
+  const seenProposalIds = new Set();
+  function onProposal(proposal) {
+    if (proposal && proposal.id && !seenProposalIds.has(proposal.id)) {
+      seenProposalIds.add(proposal.id);
+      turnProposalIds.push(proposal.id);
+    }
+  }
+
+  const toolHooks = {
+    changesStore: hooks && hooks.changesStore,
+    contextResult: ctxRes,
+    recordNote: registerKnown,
+    onProposal
+  };
+
+  session.messages.push(createMessage('user', prompt, contextMeta ? { contextMeta } : undefined));
   session.aborted = false;
   await saveSession(ctx, session);
   emit(hooks, { kind: 'user' });
+
+  let lastAssistantMsg = null;
+  let attachedProposals = false;
 
   try {
     for (let step = 0; step < MAX_STEPS; step += 1) {
@@ -73,8 +131,9 @@ async function runTurn(ctx, session, input, hooks) {
         break;
       }
       emit(hooks, { kind: 'status', text: step === 0 ? '正在思考…' : `继续处理（第 ${step + 1} 轮）…` });
+      const modelMessages = injectTurnContext(historyForModel(session), formattedContext);
       const reply = await ctx.ai.chat({
-        messages: historyForModel(session),
+        messages: modelMessages,
         tools: TOOL_DEFINITIONS,
         maxTokens: 4096,
         temperature: 0.3
@@ -88,6 +147,30 @@ async function runTurn(ctx, session, input, hooks) {
         reasoning: reply.reasoning || '',
         toolCalls: calls
       });
+      lastAssistantMsg = assistant;
+
+      if (calls.length === 0) {
+        let vaultFiles = [];
+        if (ctx.vault && typeof ctx.vault.listMarkdown === 'function') {
+          try {
+            vaultFiles = await ctx.vault.listMarkdown();
+          } catch (_error) {
+            vaultFiles = [];
+          }
+        }
+        const knownList = Array.from(knownNotes.values());
+        const extracted = extractCitations(assistant.content, knownList, vaultFiles);
+        const fallbackNotes = contextRefs.filter((n) => n && n.path);
+        const citations = mergeCitationsWithContext(extracted, fallbackNotes.length > 0 ? fallbackNotes : knownList);
+        if (citations.length > 0) {
+          assistant.citations = citations;
+        }
+        if (turnProposalIds.length > 0 && !attachedProposals) {
+          assistant.proposalIds = turnProposalIds.slice();
+          attachedProposals = true;
+        }
+      }
+
       session.messages.push(assistant);
       emit(hooks, { kind: 'assistant', message: assistant });
       await saveSession(ctx, session);
@@ -105,7 +188,7 @@ async function runTurn(ctx, session, input, hooks) {
         } catch (error) {
           args = {};
         }
-        const outcome = await executeTool(ctx, session, call.name, args);
+        const outcome = await executeTool(ctx, session, call.name, args, toolHooks);
         const toolMessage = createMessage('tool', outcome.text, {
           toolCallId: call.id,
           toolName: call.name,
@@ -125,13 +208,21 @@ async function runTurn(ctx, session, input, hooks) {
         break;
       }
       if (step === MAX_STEPS - 1) {
+        const limitExtra = turnProposalIds.length > 0 && !attachedProposals
+          ? { proposalIds: turnProposalIds.slice() }
+          : undefined;
+        if (limitExtra) { attachedProposals = true; }
         session.messages.push(createMessage('assistant',
-          '已达到单轮工具调用上限。请缩小任务范围后继续，或让我先给出当前结论。'));
+          '已达到单轮工具调用上限。请缩小任务范围后继续，或让我先给出当前结论。', limitExtra));
         emit(hooks, { kind: 'assistant-limit' });
         await saveSession(ctx, session);
       }
     }
   } finally {
+    if (!attachedProposals && turnProposalIds.length > 0 && lastAssistantMsg) {
+      lastAssistantMsg.proposalIds = turnProposalIds.slice();
+      attachedProposals = true;
+    }
     session.aborted = false;
     await saveSession(ctx, session);
     emit(hooks, { kind: 'done' });

@@ -1,6 +1,6 @@
 # 知萤 LexiNote
 
-知萤是一款本地优先的 Markdown 笔记与知识整理应用，提供 HarmonyOS、Windows 和 macOS 版本。
+知萤是一款本地优先的 Markdown 笔记与知识整理应用，包含 HarmonyOS、Windows、macOS 和 Android 工程。
 
 ## 分支选择
 
@@ -9,6 +9,7 @@
 - **[HarmonyOS](https://github.com/peryixing-lab/LexiNote/tree/HarmonyOS)**：鸿蒙版，使用 ArkTS / ArkUI，适配手机、平板和二合一设备。项目根目录包含 `AppScope/`、`entry/` 和 Hvigor 配置。
 - **[Windows](https://github.com/peryixing-lab/LexiNote/tree/Windows)**：Windows 版，使用 Electron / React / TypeScript，支持 x64、ARM64 和 x86。项目根目录包含 `package.json`、`src/` 和 `electron-builder.yml`。
 - **[macOS](https://github.com/peryixing-lab/LexiNote/tree/macOS)**：macOS 原生版，使用 SwiftUI / AppKit，面向 Apple Silicon。项目根目录包含 `LexiNote.xcodeproj`、`Sources/` 和构建脚本。
+- **[Android](https://github.com/peryixing-lab/LexiNote/tree/Android)**：Android 手机端，使用 Kotlin / Jetpack Compose，工程位于仓库根目录。
 - **main（当前分支）**：项目说明、Harness 插件源码、项目文档和许可文件。
 
 例如，克隆鸿蒙版：
@@ -31,11 +32,11 @@ cd LexiNote
 
 各平台功能和系统集成存在差异，请阅读对应平台说明。
 
-## Harness 智能体插件 1.5.0
+## Harness 智能体插件
 
 [下载 Harness 插件 ZIP](https://github.com/peryixing-lab/LexiNote/releases/download/v2.0.1/harness-lexinote-harness.zip)，在应用的「设置 → 插件」中从本地安装，并按需逐项授权。
 
-插件源码位于 [plugins/harness](plugins/harness)。多模型配置、会话和历史管理由插件提供；API Key 由支持此能力的宿主按插件隔离保存，插件无法读回。宿主本地沙箱中的密钥未额外加密。插件宿主仍处于实验阶段，请只安装可信或已审查的插件。
+当前插件源码为 **1.6.0**，位于 [plugins/harness](plugins/harness)；上方下载链接仍指向已发布的 1.5.0 安装包。多模型配置、会话和历史管理由插件提供；API Key 由支持此能力的宿主按插件隔离保存，插件无法读回。宿主本地沙箱中的密钥未额外加密。插件宿主仍处于实验阶段，请只安装可信或已审查的插件。
 
 插件构建与测试见 [Harness 说明](plugins/harness/README.md)。插件 SDK、契约和宿主运行时源码位于 [HarmonyOS 分支的 packages/](https://github.com/peryixing-lab/LexiNote/tree/HarmonyOS/packages)。
 

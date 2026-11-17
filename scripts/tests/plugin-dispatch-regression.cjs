@@ -154,5 +154,61 @@ function session(capabilities) {
   eq(PluginCommandRegistry.visible().length, 1, 'command registered');
   console.log('PASS plugin commands are qualified and cannot shadow built-in ids');
 
+  // 11. MindMap, Canvas, AppSettings, and Host Commands RPCs.
+  await PluginPermissionService.grant('example.test', PluginCapability.VAULT_WRITE, [PluginCapability.VAULT_WRITE]);
+  await PluginPermissionService.grant('example.test', PluginCapability.WORKSPACE_VIEWS, [PluginCapability.WORKSPACE_VIEWS]);
+  const fullCaps = [
+    PluginCapability.VAULT_READ,
+    PluginCapability.VAULT_WRITE,
+    PluginCapability.WORKSPACE_VIEWS,
+    PluginCapability.UI_COMMANDS
+  ];
+  const fullSession = session(fullCaps);
+  fullSession.vaultId = vaultA.id;
+  const openedItems = [];
+  let refreshedCount = 0;
+  let appliedTheme = '';
+  fullSession.ui.openFile = (id) => { openedItems.push(id); };
+  fullSession.ui.refreshWorkspace = () => { refreshedCount++; };
+  fullSession.ui.applyTheme = (t) => { appliedTheme = t; };
+
+  const createdMap = JSON.parse(await PluginRpcDispatcher.dispatch(fullSession,
+    request('r17', PluginRpcMethod.MINDMAP_CREATE, {
+      vaultId: vaultA.id,
+      title: '插件创建的思维导图',
+      layoutKind: 'both',
+      markdown: '# 核心\n## 分支 A\n## 分支 B',
+      open: true
+    })));
+  eq(createdMap.title, '插件创建的思维导图', 'mindmap created');
+  ok(createdMap.nodes.length >= 3, 'mindmap markdown parsed into nodes');
+  ok(openedItems.includes(`map:${createdMap.id}`), 'mindmap opened in workspace');
+
+  const createdCanvas = JSON.parse(await PluginRpcDispatcher.dispatch(fullSession,
+    request('r18', PluginRpcMethod.CANVAS_CREATE, {
+      vaultId: vaultA.id,
+      title: '插件创建的白板',
+      cards: [{ id: 'c1', title: '卡片1', body: '内容1' }, { id: 'c2', title: '卡片2', body: '内容2' }],
+      edges: [{ fromCardId: 'c1', toCardId: 'c2', label: '连接' }],
+      open: true
+    })));
+  eq(createdCanvas.title, '插件创建的白板', 'canvas created');
+  eq(createdCanvas.cards.length, 2, 'canvas cards persisted');
+  eq(createdCanvas.edges.length, 1, 'canvas edges persisted');
+  ok(openedItems.includes(`canvas:${createdCanvas.id}`), 'canvas opened in workspace');
+
+  const updatedSettings = JSON.parse(await PluginRpcDispatcher.dispatch(fullSession,
+    request('r19', PluginRpcMethod.SETTINGS_SET, {
+      theme: 'dark',
+      fontSize: 20,
+      editorLimitWidth: false
+    })));
+  eq(updatedSettings.theme, 'dark', 'theme setting updated');
+  eq(appliedTheme, 'dark', 'theme callback triggered on UI');
+  eq(updatedSettings.appearance.fontSize, 20, 'fontSize setting updated');
+  eq(updatedSettings.editor.limitWidth, false, 'editorLimitWidth setting updated');
+  ok(refreshedCount >= 3, 'workspace refresh triggered after mutations');
+  console.log('PASS MindMap, Canvas, and Settings RPCs execute and sync with host UI');
+
   console.log(`\nplugin-dispatch-regression: ${assertions} assertions passed`);
 })().catch((error) => { console.error(error); process.exit(1); });

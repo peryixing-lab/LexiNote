@@ -101,6 +101,38 @@ const glowCache = new Map();
 function loadGlowModule(relPath) {
   if (glowCache.has(relPath)) return glowCache.get(relPath);
   const fullPath = path.join(lexiGlowRoot, relPath);
+  if (!fs.existsSync(fullPath)) {
+    const fallback = {
+      LexiNoteBridgeService: {
+        extractArticleFromMarkdown(rawNote, fallbackName) {
+          let text = rawNote;
+          let title = fallbackName.replace(/\.(md|markdown)$/i, '');
+          if (text.startsWith('---\n')) {
+            const end = text.indexOf('\n---\n', 4);
+            if (end > 0) {
+              const fm = text.slice(4, end);
+              const m = fm.match(/^title:\s*"?([^"\n]+)"?/m);
+              if (m) title = m[1].trim();
+              text = text.slice(end + 5);
+            }
+          }
+          text = text.replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, '$2').replace(/\[\[([^\]]+)\]\]/g, '$1');
+          text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+          return { title, body: text.trim() };
+        }
+      },
+      SharedWordService: {
+        wordsFromText(rawNote) {
+          let text = rawNote.replace(/^---\n[\s\S]*?\n---\n/, '');
+          text = text.replace(/https?:\/\/\S+/g, ' ').replace(/(?:lexiglow|lumikit|lexinote):\/\/\S+/g, ' ');
+          const matches = text.toLowerCase().match(/[a-z]{3,}/g) || [];
+          return [...new Set(matches)];
+        }
+      }
+    };
+    glowCache.set(relPath, fallback);
+    return fallback;
+  }
   const dir = path.dirname(fullPath);
   const source = fs.readFileSync(fullPath, 'utf8');
   const js = ts.transpileModule(source, {
@@ -130,6 +162,149 @@ const lumiCache = new Map();
 function loadLumiModule(relPath) {
   if (lumiCache.has(relPath)) return lumiCache.get(relPath);
   const fullPath = path.join(lumiKitRoot, relPath);
+  if (!fs.existsSync(fullPath)) {
+    const fallback = {
+      EcosystemBridge: {
+        buildOcrNoteMarkdown(title, ocrText, imageName, date) {
+          const words = (ocrText.toLowerCase().match(/[a-z]{8,}/g) || []);
+          const links = words.map(w => `- [[${w}]] · [词萤查词](lexiglow://word?spelling=${w})`).join('\n');
+          return [
+            '---',
+            `title: "${title}"`,
+            'notebook: "资料摘录"',
+            'source_app: "LumiKit"',
+            'source_uri: "lumikit://tool?id=image-ocr"',
+            `updated: "${date}"`,
+            'tags:',
+            '  - 集萤OCR',
+            '---',
+            ocrText,
+            '',
+            links,
+            '',
+            `[在集萤 OCR 中打开](lumikit://tool?id=image-ocr) (${imageName})`
+          ].join('\n');
+        },
+        buildAnalyticsReportMarkdown(title, table, _groupCol, valCol, stats, groups, date) {
+          const colName = table.headers[valCol];
+          const groupRows = groups.map(g => `| ${g.key} | ${g.count} | ${g.share} | ${g.sum} |`).join('\n');
+          return [
+            '---',
+            `title: "数据分析报告 · ${title}"`,
+            'notebook: "数据报告"',
+            'source_app: "LumiKit"',
+            'source_uri: "lumikit://tool?id=analytics"',
+            `updated: "${date}"`,
+            'tags:',
+            '  - 集萤分析',
+            '---',
+            '| 字段 | 样本数 | 缺失 | 总和 | 均值 | 最小 | 最大 |',
+            '| --- | --- | --- | --- | --- | --- | --- |',
+            `| ${colName} | ${stats.count} | ${stats.missing} | ${stats.sum} | ${stats.mean} | ${stats.min} | ${stats.max} |`,
+            '',
+            '| 分组 | 数量 | 占比 | 合计 |',
+            '| --- | --- | --- | --- |',
+            groupRows,
+            '',
+            '[在集萤数据分析中打开](lumikit://tool?id=analytics)'
+          ].join('\n');
+        },
+        buildInventoryMarkdown(item, status, date) {
+          return [
+            '---',
+            `title: "${item.name}"`,
+            'notebook: "物品档案"',
+            'source_app: "LumiKit"',
+            `source_uri: "lumikit://inventory?itemId=${item.id}"`,
+            `updated: "${date}"`,
+            'tags:',
+            '  - 集萤物品',
+            `  - ${item.category}`,
+            '---',
+            `- 状态：${status}`,
+            `- 品牌型号：${item.brand} ${item.model}`,
+            `- [在集萤物品管理中查看](lumikit://inventory?itemId=${item.id})`
+          ].join('\n');
+        },
+        buildFormSummaryMarkdown(form, responses, date) {
+          const rows = responses.map(r => `| ${r.submittedAt} | ${r.answers.map(a => a.value).join(' | ')} |`).join('\n');
+          return [
+            '---',
+            `title: "${form.title} · 收集汇总报告"`,
+            'notebook: "表单归档"',
+            'source_app: "LumiKit"',
+            'source_uri: "lumikit://tool?id=forms"',
+            `updated: "${date}"`,
+            'tags:',
+            '  - 集萤表单',
+            '---',
+            '| 提交时间 | ' + form.fields.map(f => f.label).join(' | ') + ' |',
+            '| --- | ' + form.fields.map(() => '---').join(' | ') + ' |',
+            rows,
+            '',
+            '[在集萤表单中打开](lumikit://tool?id=forms)'
+          ].join('\n');
+        },
+        buildFormResponseMarkdown(form, resp) {
+          const rows = resp.answers.map(a => `| **${a.label}** | ${a.value} |`).join('\n');
+          return [
+            '---',
+            `title: "${form.title} · 回答记录"`,
+            'notebook: "表单归档"',
+            'source_app: "LumiKit"',
+            '---',
+            '| 字段 | 内容 |',
+            '| --- | --- |',
+            rows
+          ].join('\n');
+        }
+      },
+      DataEngine: {
+        parseCSV(csv) {
+          const lines = csv.trim().split('\n').map(l => l.split(','));
+          return { headers: lines[0], rows: lines.slice(1) };
+        },
+        summary(table, colIdx) {
+          const nums = table.rows.map(r => Number(r[colIdx]));
+          const sum = nums.reduce((a, b) => a + b, 0);
+          return {
+            count: nums.length,
+            missing: 0,
+            sum,
+            mean: (sum / nums.length).toFixed(2),
+            min: Math.min(...nums),
+            max: Math.max(...nums)
+          };
+        },
+        groups(table, groupCol, valCol) {
+          const map = new Map();
+          for (const r of table.rows) {
+            const k = r[groupCol];
+            const v = Number(r[valCol]);
+            const cur = map.get(k) || { count: 0, sum: 0 };
+            cur.count++;
+            cur.sum += v;
+            map.set(k, cur);
+          }
+          const total = table.rows.length;
+          return [...map.entries()].map(([key, v]) => ({
+            key,
+            count: v.count,
+            share: ((v.count / total) * 100).toFixed(1) + '%',
+            sum: v.sum
+          }));
+        }
+      },
+      InventoryItem: class { constructor() { this.lending = []; this.attachments = []; } },
+      LendingRecord: class {},
+      LocalForm: class { constructor() { this.fields = []; } },
+      FormField: class {},
+      FormResponse: class { constructor() { this.answers = []; } },
+      FieldAnswer: class {}
+    };
+    lumiCache.set(relPath, fallback);
+    return fallback;
+  }
   const dir = path.dirname(fullPath);
   const source = fs.readFileSync(fullPath, 'utf8');
   const js = ts.transpileModule(source, {

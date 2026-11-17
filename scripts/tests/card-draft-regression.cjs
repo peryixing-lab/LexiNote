@@ -36,7 +36,8 @@ const cardRoute = section(indexSource,
 const editorMethods =
   section(editorSource, '  private async loadFromRoute(', '  private templateNote(') +
   section(editorSource, '  private scheduleSave(', '  private refreshDerived(') +
-  section(editorSource, '  private finishLoadingRoute(', '  @Builder\n  private assistantSheet(') +
+  section(editorSource, '  private finishLoadingRoute(', '  @Builder\n  private historySheetContent(') +
+  section(editorSource, '  private restoreRouteSelection(', '  @Builder\n  private assistantSheet(') +
   section(editorSource, '  private mapSavedCursor(', '  private refreshCompletion(') +
   section(editorSource, '  private leaveEditor(', '  @Builder\n  private pageTitleBar(');
 const frame = section(editorSource,
@@ -60,6 +61,10 @@ function harness() {
     async getActiveProjectId() { return 'project'; },
     async getNotes(vault) { return [...notes.values()].filter(note => note.vaultId === vault).map(clone); },
     async getNoteById(id) { reads++; return clone(notes.get(id)); },
+    writeDraftWalSync() {},
+    getPendingCrashDraftSync() { return undefined; },
+    clearPendingCrashRecoverySync() {},
+    friendlySaveError(_error, fallback) { return fallback || '保存失败'; },
     async saveNote(_context, snapshot) {
       calls.push(['create-attempt', clone(snapshot)]);
       if (beforeCreate) await beforeCreate();
@@ -87,6 +92,7 @@ function harness() {
   };
   const sandbox = {
     NoteItem, NoteProperty, NoteEditorRouteParam, LexiFrontmatter,
+    LexiDraftWalEntry: class {},
     util: { generateRandomUUID: () => crypto.randomUUID() },
     FrameCallback: class {},
     LexiStorageService: service,

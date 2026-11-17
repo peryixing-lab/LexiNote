@@ -9,11 +9,12 @@ function subject(methods, service = {}) {
   const js = ts.transpileModule('class Subject {' + methods + '}\nmodule.exports=Subject;', { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2021 } }).outputText;
   const mod = { exports: {} };
   const markdown = { buildNoteLinks: () => [], findUnlinkedMentions: () => [] };
-  vm.runInThisContext('(function(module,LexiStorageService,MarkdownEngine,Edge){' + js + '\n})')(mod, service, markdown, { Top: 0 });
+  const search = { sortNotes: list => [...list].sort((x, y) => (y.updatedAt || 0) - (x.updatedAt || 0)) };
+  vm.runInThisContext('(function(module,LexiStorageService,MarkdownEngine,LexiSearch,Edge){' + js + '\n})')(mod, service, markdown, search, { Top: 0 });
   return new mod.exports();
 }
 const homeSource = fs.readFileSync(path.join(root, 'components/LexiHomeTab.ets'), 'utf8');
-const home = subject(section(homeSource, '  private recompute()', '  private greeting()'));
+const home = subject(section(homeSource, '  private rebuildRecentList()', '  private greeting()'));
 const a = { id: 'a', trashedAt: 0, updatedAt: 1, pinned: false };
 const b = { id: 'b', trashedAt: 0, updatedAt: 2, pinned: false };
 home.notes = [a, b]; home.links = [{ sourceId: 'a', targetId: 'b' }, { sourceId: 'a', targetId: '' }, { sourceId: 'outside', targetId: 'b' }];

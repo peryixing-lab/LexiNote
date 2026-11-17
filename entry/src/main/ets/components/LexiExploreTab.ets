@@ -1,9 +1,21 @@
 import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
+import { LexiTokens } from '../core/LexiTokens';
+import { LexiMotion } from '../core/LexiMotion';
 import { LexiI18n } from '../core/LexiI18n';
-import { GraphEdge, GraphNode, MindMapDoc, NoteItem, NoteLink, UnlinkedMention } from '../core/LexiModels';
+import {
+  GraphEdge,
+  GraphNode,
+  LexiLinkTargetPreview,
+  MindMapDoc,
+  NoteItem,
+  NoteLink,
+  UnlinkedMention
+} from '../core/LexiModels';
 import { LexiRelations, RelatedContent } from '../core/LexiRelations';
+import { MarkdownEngine } from '../core/MarkdownEngine';
 import { LexiGraphView } from './LexiGraphView';
 import { LexiIcon } from './LexiIcon';
+import { LexiLinkPreviewPopupCard, LexiPreviewPopupState } from './LexiLinkPreviewCard';
 import { LexiHeroHeading } from './LexiNoteCard';
 
 @Component
@@ -14,6 +26,8 @@ struct RelationRow {
   @Prop subtitle: string = '';
   @Prop detail: string = '';
   @Prop icon: string = 'note';
+  @State private rowPressed: boolean = false;
+  @State private rowHovered: boolean = false;
   action: () => void = (): void => {};
 
   build() {
@@ -21,22 +35,32 @@ struct RelationRow {
       Row({ space: 12 }) {
         Row() { LexiIcon({ name: this.icon, iconSize: 21 }) }
           .width(42).height(42).justifyContent(FlexAlign.Center)
-          .backgroundColor(this.palette.brand_soft).borderRadius(13)
+          .backgroundColor(this.palette.brand_soft).borderRadius(LexiTokens.RADIUS_MD)
         Column({ space: 5 }) {
-          Text(this.title).fontSize(15).fontWeight(FontWeight.Medium)
+          Text(this.title).fontSize(LexiTokens.TYPE_PHONE_UI).lineHeight(LexiTokens.LH_PHONE_UI).fontWeight(FontWeight.Medium)
             .fontColor(this.palette.text_primary).maxLines(2).textAlign(TextAlign.Start)
-          Text(this.subtitle).fontSize(12).fontColor(this.palette.text_secondary)
-            .maxLines(2).lineHeight(18).textAlign(TextAlign.Start)
+          Text(this.subtitle).fontSize(LexiTokens.TYPE_CAPTION).fontColor(this.palette.text_secondary)
+            .maxLines(2).lineHeight(LexiTokens.LH_PHONE_CAPTION).textAlign(TextAlign.Start)
           if (this.detail) {
-            Text(this.detail).fontSize(12).fontColor(this.palette.brand).maxLines(1)
+            Text(this.detail).fontSize(LexiTokens.TYPE_CAPTION).fontColor(this.palette.brand).maxLines(1)
           }
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
         LexiIcon({ name: 'chevron', iconSize: 16, muted: true })
       }.width('100%').padding(14)
     }
     .id(`relation-row-${this.contentId}`).width('100%').constraintSize({ minHeight: 76 })
-    .backgroundColor(this.palette.surface).borderRadius(18)
+    .backgroundColor(this.rowPressed ? LexiTokens.pressedSurface(this.palette) : (this.rowHovered ? LexiTokens.hoverSurface(this.palette) : this.palette.surface))
+    .border({ width: 0.5, color: this.palette.workspace_line })
+    .borderRadius(LexiTokens.RADIUS_LG)
+    .shadow(LexiTokens.elev1(this.palette))
+    .scale({ x: LexiMotion.pressScale(this.rowPressed), y: LexiMotion.pressScale(this.rowPressed) })
+    .animation(LexiMotion.param(LexiMotion.DUR_MICRO, LexiMotion.easeOut()))
     .accessibilityText(`${this.title}，${this.subtitle}，${this.detail}`)
+    .onHover((hovered: boolean): void => { this.rowHovered = hovered; })
+    .onTouch((event: TouchEvent): void => {
+      if (event.type === TouchType.Down) { this.rowPressed = true; }
+      else if (event.type === TouchType.Up || event.type === TouchType.Cancel) { this.rowPressed = false; }
+    })
     .onClick(this.action)
   }
 }
@@ -69,9 +93,14 @@ export struct LexiExploreTab {
   @State private view: string = 'list';
   @State private showAllNotes: boolean = false;
   @State private showAllMentions: boolean = false;
+  @State private showUnconnectedOnly: boolean = false;
+  @State private showAllUnconnected: boolean = false;
   @State private cachedContents: GraphNode[] = [];
   @State private cachedChoices: GraphNode[] = [];
   @State private cachedConnected: GraphNode[] = [];
+  @State private unconnectedList: NoteItem[] = [];
+  @State private previewTargetKey: string = '';
+  @State private previewData: LexiLinkTargetPreview = new LexiLinkTargetPreview();
   private relationCountMap: Map<string, number> = new Map<string, number>();
   onSetScope: (scope: string) => void = (_scope: string): void => {};
   onToggleMaps: (enabled: boolean) => void = (_enabled: boolean): void => {};
@@ -97,6 +126,59 @@ export struct LexiExploreTab {
     this.cachedContents = contents;
     this.cachedChoices = choices;
     this.cachedConnected = connected;
+    this.unconnectedList = LexiRelations.unconnectedNotes(this.notes, this.links);
+  }
+
+  private displayGraphNodes(): GraphNode[] {
+    if (!this.showUnconnectedOnly) {
+      return this.graphNodes;
+    }
+    return this.graphNodes.filter((node: GraphNode): boolean =>
+      node.kind === 'note' && LexiRelations.isNoteUnconnected(node.id, this.links));
+  }
+
+  private displayGraphEdges(): GraphEdge[] {
+    return this.showUnconnectedOnly ? [] : this.graphEdges;
+  }
+
+  private openPreview(previewKey: string, rawTarget: string, toggle: boolean): void {
+    const resolved = MarkdownEngine.linkTargetPreview(rawTarget, this.notes, this.links);
+    this.previewData = resolved;
+    if (toggle && this.previewTargetKey === previewKey) {
+      this.previewTargetKey = '';
+      return;
+    }
+    this.previewTargetKey = previewKey;
+  }
+
+  private mentionForUnconnected(noteId: string): UnlinkedMention | undefined {
+    return this.mentions.find((m: UnlinkedMention): boolean => m.sourceId === noteId || m.targetId === noteId);
+  }
+
+  private unconnectedSnippet(note: NoteItem): string {
+    const snippet = MarkdownEngine.extractSnippet(note, '');
+    return snippet.length > 0 ? snippet : this.tr('还没有正文');
+  }
+
+  private isNoteNode(node: GraphNode | undefined): boolean {
+    return node !== undefined && node.kind === 'note';
+  }
+
+  @Builder
+  private previewPopup() {
+    LexiLinkPreviewPopupCard({
+      preview: this.previewData,
+      onOpen: (): void => {
+        const noteId = this.previewData.noteId;
+        this.previewTargetKey = '';
+        if (noteId.length > 0) {
+          this.onOpenNote(noteId);
+        }
+      },
+      onClose: (): void => {
+        this.previewTargetKey = '';
+      }
+    })
   }
 
   private selected(): GraphNode | undefined {
@@ -196,10 +278,39 @@ export struct LexiExploreTab {
         Text(this.tr('相关内容 · {0}', [this.related(this.selectedGraphId).length.toString()])).fontSize(16).fontWeight(FontWeight.Bold)
           .fontColor(this.palette.text_primary).width('100%')
         ForEach(this.related(this.selectedGraphId), (related: RelatedContent) => {
-          RelationRow({ contentId: related.id, title: related.title, subtitle: related.reason,
-            detail: related.snippet, icon: related.kind === 'mindmap' ? 'mindmap' : 'note',
-            action: (): void => { this.onOpenNode(related.id); } })
-        }, (related: RelatedContent): string => `${this.selectedGraphId}-${related.id}-${related.title}-${related.reason}-${related.snippet}`)
+          Row({ space: 8 }) {
+            Column() {
+              RelationRow({ contentId: related.id, title: related.title, subtitle: related.reason,
+                detail: related.snippet, icon: related.kind === 'mindmap' ? 'mindmap' : 'note',
+                action: (): void => { this.onOpenNode(related.id); } })
+            }.layoutWeight(1)
+            if (related.kind !== 'mindmap') {
+              Button(this.tr('预览'), { type: ButtonType.Normal })
+                .height(36)
+                .padding({ left: 10, right: 10 })
+                .fontSize(12)
+                .borderRadius(10)
+                .fontColor(this.palette.brand)
+                .backgroundColor(this.palette.brand_soft)
+                .onHover((hovered: boolean): void => {
+                  if (hovered) { this.openPreview(`rel-${related.id}`, related.id, false); }
+                })
+                .onClick((): void => {
+                  this.openPreview(`rel-${related.id}`, related.id, true);
+                })
+                .bindPopup(this.previewTargetKey === `rel-${related.id}`, {
+                  builder: this.previewPopup,
+                  placement: Placement.Left,
+                  popupColor: this.palette.surface,
+                  enableArrow: true,
+                  autoCancel: true,
+                  onStateChange: (event: LexiPreviewPopupState): void => {
+                    if (!event.isVisible && this.previewTargetKey === `rel-${related.id}`) { this.previewTargetKey = ''; }
+                  }
+                })
+            }
+          }.width('100%').alignItems(VerticalAlign.Center)
+        }, (related: RelatedContent): string => `${this.selectedGraphId}-${related.id}-${related.title}-${related.reason}-${related.snippet}-${this.previewTargetKey === `rel-${related.id}` ? 'p' : ''}`)
         if (this.related(this.selectedGraphId).length === 0) {
           Text(this.isWide ? this.tr('还没有关联。在正文中输入 [[另一篇笔记标题]]，就能把相关想法放在一起。') :
             this.tr('还没有关联。打开笔记，在「工具」中插入笔记链接，就能把相关想法放在一起。'))
@@ -214,6 +325,18 @@ export struct LexiExploreTab {
     Column({ space: 12 }) {
       Row({ space: 8 }) {
         Text(this.tr('关系图')).fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.palette.text_primary)
+        if (this.unconnectedList.length > 0) {
+          Button(this.tr('未连接 {0}', [this.unconnectedList.length.toString()]), { type: ButtonType.Normal })
+            .height(28)
+            .padding({ left: 10, right: 10 })
+            .fontSize(11)
+            .borderRadius(999)
+            .backgroundColor(this.showUnconnectedOnly ? this.palette.brand : this.palette.brand_soft)
+            .fontColor(this.showUnconnectedOnly ? this.palette.inverse_text : this.palette.brand)
+            .onClick((): void => {
+              this.showUnconnectedOnly = !this.showUnconnectedOnly;
+            })
+        }
         Blank()
         if (this.selectedGraphId) {
           Button(this.graphScope === 'local' ? this.tr('查看全部') : this.tr('只看这篇'), { buttonStyle: ButtonStyleMode.TEXTUAL })
@@ -223,22 +346,122 @@ export struct LexiExploreTab {
         Button(this.tr('显示'), { buttonStyle: ButtonStyleMode.TEXTUAL }).id('relations-graph-options')
           .height(44).fontSize(12).fontColor(this.palette.brand).bindMenu(this.graphOptions)
       }.width('100%')
-      LexiGraphView({ nodes: this.graphNodes, edges: this.graphEdges, selectedId: this.selectedGraphId,
+      LexiGraphView({ nodes: this.displayGraphNodes(), edges: this.displayGraphEdges(), selectedId: this.selectedGraphId,
         graphHeight: this.isWide ? 380 : 220, onSelect: (id: string): void => { this.select(id); } })
       if (this.selected()) {
         Row({ space: 10 }) {
           Text(this.selected()?.label ?? '').fontSize(14).fontWeight(FontWeight.Medium).maxLines(1)
             .fontColor(this.palette.text_primary).layoutWeight(1)
+          if (this.isNoteNode(this.selected())) {
+            Button(this.tr('预览'), { type: ButtonType.Normal })
+              .height(40).fontSize(13)
+              .padding({ left: 12, right: 12 }).borderRadius(12)
+              .fontColor(this.palette.text_primary).backgroundColor(this.palette.soft_surface)
+              .onHover((hovered: boolean): void => {
+                if (hovered) { this.openPreview(`graph-sel-${this.selectedGraphId}`, this.selectedGraphId, false); }
+              })
+              .onClick((): void => {
+                this.openPreview(`graph-sel-${this.selectedGraphId}`, this.selectedGraphId, true);
+              })
+              .bindPopup(this.previewTargetKey === `graph-sel-${this.selectedGraphId}`, {
+                builder: this.previewPopup,
+                placement: Placement.Top,
+                popupColor: this.palette.surface,
+                enableArrow: true,
+                autoCancel: true,
+                onStateChange: (event: LexiPreviewPopupState): void => {
+                  if (!event.isVisible && this.previewTargetKey === `graph-sel-${this.selectedGraphId}`) { this.previewTargetKey = ''; }
+                }
+              })
+          }
           Button(this.tr('打开'), { type: ButtonType.Normal }).id('relations-graph-open').height(40).fontSize(13)
             .padding({ left: 16, right: 16 }).borderRadius(12)
             .fontColor(this.palette.brand).backgroundColor(this.palette.brand_soft)
             .onClick(() => { this.onOpenNode(this.selectedGraphId); })
         }.width('100%')
       } else {
-        Text(this.tr('点击节点查看关联'))
+        Text(this.showUnconnectedOnly
+          ? this.tr('当前仅显示尚未建立双向链接的孤立笔记节点')
+          : this.tr('点击节点查看关联'))
           .fontSize(12).lineHeight(18).fontColor(this.palette.text_secondary).width('100%')
       }
     }.width('100%').padding(16).backgroundColor(this.palette.surface).borderRadius(24)
+  }
+
+  @Builder
+  private unconnectedSection() {
+    Column({ space: 10 }) {
+      Row({ space: 8 }) {
+        Text(this.tr('未连接笔记提示 · {0}', [this.unconnectedList.length.toString()]))
+          .fontSize(17).fontWeight(FontWeight.Bold).fontColor(this.palette.text_primary)
+        Blank()
+        if (this.unconnectedList.length > 4) {
+          Button(this.showAllUnconnected ? this.tr('收起') : this.tr('查看全部'), { buttonStyle: ButtonStyleMode.TEXTUAL })
+            .height(34).fontSize(12).fontColor(this.palette.brand)
+            .onClick((): void => { this.showAllUnconnected = !this.showAllUnconnected; })
+        }
+      }.width('100%')
+      Text(this.tr('以下笔记尚无出链或反向链接，可预览内容或打开后插入 [[链接]]'))
+        .fontSize(12).lineHeight(18).fontColor(this.palette.text_secondary).width('100%')
+      ForEach(
+        this.showAllUnconnected ? this.unconnectedList : this.unconnectedList.slice(0, 4),
+        (note: NoteItem) => {
+          Column({ space: 8 }) {
+            Row({ space: 10 }) {
+              Column({ space: 4 }) {
+                Text(MarkdownEngine.displayTitle(note))
+                  .fontSize(15).fontWeight(FontWeight.Medium)
+                  .fontColor(this.palette.text_primary).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                Text(this.unconnectedSnippet(note))
+                  .fontSize(12).lineHeight(18).fontColor(this.palette.text_secondary)
+                  .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+              }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+
+              Row({ space: 6 }) {
+                Button(this.tr('预览'), { type: ButtonType.Normal })
+                  .height(32).padding({ left: 10, right: 10 }).fontSize(12).borderRadius(10)
+                  .fontColor(this.palette.text_primary).backgroundColor(this.palette.soft_surface)
+                  .onHover((hovered: boolean): void => {
+                    if (hovered) { this.openPreview(`unconn-${note.id}`, note.id, false); }
+                  })
+                  .onClick((): void => {
+                    this.openPreview(`unconn-${note.id}`, note.id, true);
+                  })
+                  .bindPopup(this.previewTargetKey === `unconn-${note.id}`, {
+                    builder: this.previewPopup,
+                    placement: Placement.Top,
+                    popupColor: this.palette.surface,
+                    enableArrow: true,
+                    autoCancel: true,
+                    onStateChange: (event: LexiPreviewPopupState): void => {
+                      if (!event.isVisible && this.previewTargetKey === `unconn-${note.id}`) { this.previewTargetKey = ''; }
+                    }
+                  })
+                if (this.mentionForUnconnected(note.id) !== undefined) {
+                  Button(this.tr('一键关联'), { type: ButtonType.Normal })
+                    .height(32).padding({ left: 10, right: 10 }).fontSize(12).borderRadius(10)
+                    .fontColor(this.palette.inverse_text).backgroundColor(this.palette.brand)
+                    .onClick((): void => {
+                      const mention = this.mentionForUnconnected(note.id);
+                      if (mention !== undefined) { this.onLinkMention(mention); }
+                    })
+                } else {
+                  Button(this.tr('打开并连接'), { type: ButtonType.Normal })
+                    .height(32).padding({ left: 10, right: 10 }).fontSize(12).borderRadius(10)
+                    .fontColor(this.palette.brand).backgroundColor(this.palette.brand_soft)
+                    .onClick((): void => { this.onOpenNote(note.id); })
+                }
+              }
+            }.width('100%').alignItems(VerticalAlign.Center)
+          }
+          .width('100%')
+          .padding(14)
+          .backgroundColor(this.palette.surface)
+          .borderRadius(16)
+        },
+        (note: NoteItem): string => `unconn-${note.id}-${note.updatedAt}-${this.previewTargetKey === `unconn-${note.id}` ? 'p' : ''}`
+      )
+    }.width('100%')
   }
 
   @Builder
@@ -274,26 +497,33 @@ export struct LexiExploreTab {
       if (this.notes.length > 0) {
         Row({ space: 4 }) {
           Button(this.tr('关联列表'), { type: ButtonType.Normal }).id('relations-list-view')
-            .layoutWeight(1).height(44).borderRadius(13).fontSize(14)
+            .layoutWeight(1).height(40).borderRadius(LexiTokens.RADIUS_MD).fontSize(14)
             .fontWeight(this.view === 'list' ? FontWeight.Medium : FontWeight.Normal)
             .backgroundColor(this.view === 'list' ? this.palette.surface : Color.Transparent)
             .fontColor(this.view === 'list' ? this.palette.brand : this.palette.text_secondary)
+            .animation(LexiMotion.param(LexiMotion.DUR_FAST, LexiMotion.easeOut()))
             .accessibilitySelected(this.view === 'list').onClick(() => { this.view = 'list'; })
           Button(this.tr('关系图'), { type: ButtonType.Normal }).id('relations-graph-view')
-            .layoutWeight(1).height(44).borderRadius(13).fontSize(14)
+            .layoutWeight(1).height(40).borderRadius(LexiTokens.RADIUS_MD).fontSize(14)
             .fontWeight(this.view === 'graph' ? FontWeight.Medium : FontWeight.Normal)
             .backgroundColor(this.view === 'graph' ? this.palette.surface : Color.Transparent)
             .fontColor(this.view === 'graph' ? this.palette.brand : this.palette.text_secondary)
+            .animation(LexiMotion.param(LexiMotion.DUR_FAST, LexiMotion.easeOut()))
             .accessibilitySelected(this.view === 'graph').onClick(() => { this.view = 'graph'; })
-        }.width('100%').padding(4).backgroundColor(this.palette.soft_surface).borderRadius(17)
+        }.width('100%').padding(LexiTokens.SPACE_2).backgroundColor(this.palette.soft_surface).borderRadius(LexiTokens.RADIUS_LG)
       }
       if (this.view === 'graph' && this.notes.length > 0) { this.graphPanel(); }
       if (this.selected()) {
         this.selectedDetails()
-      } else if (this.view === 'list' || this.notes.length === 0) {
-        if (this.cachedConnected.length === 0) { this.startHint(); }
-        if (this.notes.length > 0) { this.noteList(); }
-        if (this.mentions.length > 0) { this.suggestions(); }
+      } else {
+        if (this.view === 'list' || this.notes.length === 0) {
+          if (this.cachedConnected.length === 0) { this.startHint(); }
+          if (this.notes.length > 0) { this.noteList(); }
+          if (this.unconnectedList.length > 0) { this.unconnectedSection(); }
+          if (this.mentions.length > 0) { this.suggestions(); }
+        } else if (this.unconnectedList.length > 0) {
+          this.unconnectedSection();
+        }
       }
     }
     .width('100%').constraintSize({ maxWidth: 920 }).alignItems(HorizontalAlign.Start)

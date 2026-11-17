@@ -4,8 +4,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createRuntime } = require('./lib/js-runtime-harness.cjs');
 const root = path.resolve(__dirname, '../..');
-const manifest = JSON.parse(fs.readFileSync(path.join(root, 'plugins/harness/manifest.json'), 'utf8'));
-const source = fs.readFileSync(path.join(root, 'plugins/harness/dist/main.js'), 'utf8');
+const harnessDir = process.env.LEXINOTE_HARNESS_DIR || path.resolve(root, '../lexinote-Harness');
+const manifest = JSON.parse(fs.readFileSync(path.join(harnessDir, 'manifest.json'), 'utf8'));
+const source = fs.readFileSync(path.join(harnessDir, 'dist/main.js'), 'utf8');
 const key = 'harness.session.v1';
 const tick = () => new Promise(resolve => setTimeout(resolve, 10));
 async function until(predicate) {

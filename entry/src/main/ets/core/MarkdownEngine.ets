@@ -1,4 +1,5 @@
 import {
+  LexiLinkTargetPreview,
   MarkdownBlock,
   MindMapDoc,
   MindMapNode,
@@ -9,6 +10,7 @@ import {
 } from './LexiModels';
 import { LexiFrontmatter, LexiFrontmatterResult } from './LexiFrontmatter';
 import { LexiMathSyntax } from './LexiMathSyntax';
+import { LexiSearch } from './LexiSearch';
 
 export class RawWikiLink {
   targetText: string = '';
@@ -26,6 +28,7 @@ export class LexiMarkdownInlineSpan {
   text: string = '';
   kind: string = 'text';
   target: string = '';
+  searchMatch: boolean = false;
 }
 
 export class MarkdownEngine {
@@ -359,32 +362,115 @@ export class MarkdownEngine {
       if (!query.trim() && length >= 128) { break; }
     }
     const plain = segments.map((span: LexiMarkdownInlineSpan): string => span.text).join('');
-    const queryText = query.trim().toLowerCase();
-    const match = queryText ? plain.toLowerCase().indexOf(queryText) : -1;
+    const plainLower = plain.toLowerCase();
+    const terms = LexiSearch.highlightTerms(query);
+    let match = -1;
+    let matchLength = 0;
+    for (const term of terms) {
+      const idx = plainLower.indexOf(term);
+      if (idx >= 0 && (match < 0 || idx < match)) {
+        match = idx;
+        matchLength = term.length;
+      }
+    }
     const start = match >= 0 ? Math.max(0, match - 18) : 0;
-    const end = Math.min(plain.length, match >= 0 ? match + queryText.length + 42 : 86);
-    const preview: LexiMarkdownInlineSpan[] = [];
-    if (start > 0) { const prefix = new LexiMarkdownInlineSpan(); prefix.text = '…'; preview.push(prefix); }
+    const end = Math.min(plain.length, match >= 0 ? match + matchLength + 42 : 86);
+    const sliced: LexiMarkdownInlineSpan[] = [];
+    if (start > 0) { const prefix = new LexiMarkdownInlineSpan(); prefix.text = '…'; sliced.push(prefix); }
     let offset = 0;
     for (const span of segments) {
       const spanEnd = offset + span.text.length;
       if (spanEnd > start && offset < end) {
         span.text = span.text.substring(Math.max(0, start - offset), Math.min(span.text.length, end - offset));
-        preview.push(span);
+        sliced.push(span);
       }
       offset = spanEnd;
       if (offset >= end) { break; }
     }
-    if (end < plain.length) { const suffix = new LexiMarkdownInlineSpan(); suffix.text = '…'; preview.push(suffix); }
+    if (end < plain.length) { const suffix = new LexiMarkdownInlineSpan(); suffix.text = '…'; sliced.push(suffix); }
+    const preview: LexiMarkdownInlineSpan[] = [];
+    if (terms.length > 0 && sliced.length > 0) {
+      for (const span of sliced) {
+        const parts = LexiSearch.highlightSegments(span.text, query);
+        for (const part of parts) {
+          const piece = new LexiMarkdownInlineSpan();
+          piece.text = part.text;
+          piece.kind = span.kind;
+          piece.target = span.target;
+          piece.searchMatch = part.hit;
+          preview.push(piece);
+        }
+      }
+    } else {
+      for (const span of sliced) { preview.push(span); }
+    }
     if (!preview.length) {
       const empty = new LexiMarkdownInlineSpan(); empty.text = '点击继续记录内容…'; preview.push(empty);
     }
-    preview.forEach((span: LexiMarkdownInlineSpan, index: number): void => { span.id = `preview-${index}-${span.kind}-${span.text}`; });
+    preview.forEach((span: LexiMarkdownInlineSpan, index: number): void => {
+      span.id = `preview-${index}-${span.kind}-${span.searchMatch ? '1' : '0'}-${span.text}`;
+    });
     return preview;
   }
 
   static extractSnippet(note: NoteItem, query: string = ''): string {
     return MarkdownEngine.previewSpans(note, query).map((span: LexiMarkdownInlineSpan): string => span.text).join('');
+  }
+
+  static linkTargetPreview(
+    rawTarget: string,
+    notes: NoteItem[],
+    links: NoteLink[] = [],
+    vaultId: string = ''
+  ): LexiLinkTargetPreview {
+    const preview = new LexiLinkTargetPreview();
+    const cleaned = rawTarget.trim();
+    const hashIdx = cleaned.indexOf('#');
+    const targetName = (hashIdx >= 0 ? cleaned.substring(0, hashIdx) : cleaned).replace(/\.md$/i, '').trim();
+    const anchor = hashIdx >= 0 ? cleaned.substring(hashIdx + 1).trim() : '';
+    preview.targetName = targetName;
+    preview.anchor = anchor;
+    if (!targetName) { return preview; }
+    const lower = targetName.toLowerCase();
+    const active = notes.filter((n: NoteItem): boolean => n.trashedAt === 0);
+    const scoped = vaultId ? active.filter((n: NoteItem): boolean => n.vaultId === vaultId) : active;
+    const matchIn = (pool: NoteItem[]): NoteItem | undefined =>
+      pool.find((n: NoteItem): boolean =>
+        n.id === targetName ||
+        n.title.trim().toLowerCase() === lower ||
+        MarkdownEngine.displayTitle(n).toLowerCase() === lower);
+    const found = matchIn(scoped) ?? matchIn(active);
+    if (!found) {
+      preview.title = targetName;
+      preview.snippet = '目标笔记尚未创建，点击可新建并打开。';
+      return preview;
+    }
+    preview.exists = true;
+    preview.noteId = found.id;
+    preview.title = MarkdownEngine.displayTitle(found);
+    preview.notebook = found.notebook || '笔记';
+    preview.tags = found.tags.slice(0, 4);
+    preview.updatedAt = found.updatedAt;
+    preview.lastOpenedAt = found.lastOpenedAt || 0;
+    const allLinks = links.length > 0 ? links : MarkdownEngine.buildNoteLinks(active);
+    preview.outgoingCount = allLinks.filter((l: NoteLink): boolean => l.sourceId === found.id).length;
+    preview.backlinkCount = allLinks.filter((l: NoteLink): boolean => l.targetId === found.id).length;
+    if (anchor) {
+      const section = MarkdownEngine.extractEmbeddedSection(found.content, anchor);
+      preview.snippet = section ? section.slice(0, 220) : MarkdownEngine.extractSnippet(found);
+    } else {
+      const fullPlain = MarkdownEngine.parseBlocks(found.content)
+        .filter((b: MarkdownBlock): boolean => b.kind !== 'hr')
+        .map((b: MarkdownBlock): string => b.text.replace(/\s+/g, ' ').trim())
+        .filter((t: string): boolean => t.length > 0)
+        .join(' · ');
+      if (fullPlain.length > 0) {
+        preview.snippet = fullPlain.length > 180 ? fullPlain.slice(0, 180) + '…' : fullPlain;
+      } else {
+        preview.snippet = '这篇笔记还没有正文内容。';
+      }
+    }
+    return preview;
   }
 
   static extractOutline(markdown: string): OutlineHeading[] {

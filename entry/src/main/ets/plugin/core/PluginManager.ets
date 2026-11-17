@@ -35,6 +35,10 @@ export class PluginUiBridge {
   confirm: (title: string, body: string) => Promise<boolean> =
     async (_title: string, _body: string): Promise<boolean> => false;
   openFile: (noteId: string) => void = (_noteId: string): void => {};
+  refreshWorkspace: () => void = (): void => {};
+  applyTheme: (theme: string) => void = (_theme: string): void => {};
+  executeHostCommand: (commandId: string) => Promise<boolean> =
+    async (_commandId: string): Promise<boolean> => false;
   hasConfirm: boolean = false;
 }
 
@@ -227,6 +231,15 @@ export class PluginManager {
     };
     host.openFile = (noteId: string): void => {
       try { PluginManager.uiBridge.openFile(noteId); } catch (error) { /* UI optional */ }
+    };
+    host.refreshWorkspace = (): void => {
+      try { PluginManager.uiBridge.refreshWorkspace(); } catch (error) { /* UI optional */ }
+    };
+    host.applyTheme = (theme: string): void => {
+      try { PluginManager.uiBridge.applyTheme(theme); } catch (error) { /* UI optional */ }
+    };
+    host.executeHostCommand = async (commandId: string): Promise<boolean> => {
+      try { return await PluginManager.uiBridge.executeHostCommand(commandId); } catch (error) { return false; }
     };
     host.invokeCommand = (qualifiedId: string): void => {
       PluginRuntimeController.runCommand(qualifiedId).catch((error: Error): void => {

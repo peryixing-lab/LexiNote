@@ -16,7 +16,7 @@ function createSandbox() {
   const state = {
     noteRows: new Map(), contentRows: new Map(), linkRows: [], sqlCalls: [], insertCalls: [],
     nativeLocks: new Map(), files: new Map(), values: new Map(), handles: new Map(),
-    directories: new Set(), symlinks: new Map(), persistentGrants: new Set(), prefs: new Map(),
+    directories: new Set(), symlinks: new Map(), persistentGrants: new Set(), prefs: new Map(), secretPrefs: new Map(),
     appStorage: new Map(), pickerCalls: [], pickerSelection: async () => [], fixedUuids: [],
     httpRequests: [], httpResponses: [],
     failInsert: undefined, db: undefined
@@ -144,16 +144,39 @@ function createSandbox() {
     },
     '@kit.ArkData': {
       relationalStore: { ConflictResolution: { ON_CONFLICT_REPLACE: 1 }, SecurityLevel: { S2: 2 }, getRdbStore: async () => db },
-      preferences: { removePreferencesFromCacheSync() {}, getPreferences: async () => sandbox.settings }
+      preferences: {
+        removePreferencesFromCacheSync() {},
+        getPreferences: async (_ctx, name) => name === 'lexinote_plugin_secrets' ? sandbox.secretSettings : sandbox.settings
+      }
     },
-    '@kit.ArkTS': { util: { generateRandomUUID: () => state.fixedUuids.length ? state.fixedUuids.shift() : crypto.randomUUID(), TextEncoder: class { encodeInto(text) { return Buffer.from(text, 'utf8'); } } } },
+    '@kit.ArkTS': {
+      util: {
+        generateRandomUUID: () => state.fixedUuids.length ? state.fixedUuids.shift() : crypto.randomUUID(),
+        TextEncoder: class {
+          encodeInto(text) { return new Uint8Array(Buffer.from(String(text || ''), 'utf8')); }
+        },
+        TextDecoder: class {
+          constructor(encoding = 'utf-8') { this.encoding = encoding; }
+          static create(encoding = 'utf-8') { return new (class { decodeToString(bytes) { return Buffer.from(bytes).toString('utf8'); } })(); }
+          decodeToString(bytes) { return Buffer.from(bytes).toString('utf8'); }
+        },
+        Base64Helper: class {
+          encodeToStringSync(bytes) { return Buffer.from(bytes).toString('base64'); }
+          decodeSync(src) {
+            const raw = typeof src === 'string' ? src : Buffer.from(src).toString('utf8');
+            return new Uint8Array(Buffer.from(raw, 'base64'));
+          }
+        }
+      }
+    },
     '@kit.AbilityKit': { common: {}, bundleManager: {}, wantConstant: {} },
     '@kit.BasicServicesKit': { pasteboard: { getSystemPasteboard: () => ({ setData: async () => {} }), createData: () => ({}) } },
     '@kit.FormKit': { formBindingData: { createFormBindingData: (data) => data }, formProvider: { getPublishedRunningFormInfos: async () => [] } },
     '@kit.PerformanceAnalysisKit': { hilog: { warn() {}, info() {}, error() {}, debug() {} } },
-    '@kit.ArkUI': { promptAction: {} },
+    '@kit.ArkUI': { promptAction: {}, display: { getDefaultDisplaySync: () => ({ densityPixels: 2 }) }, window: {} },
+    '@kit.LocalizationKit': { i18n: { System: { getAppPreferredLanguage: () => 'zh-Hans', getSystemLanguage: () => 'zh-Hans' } } },
+    '@kit.InputKit': { KeyCode: {}, inputConsumer: {} },
     '@kit.ArkWeb': { webview: { WebviewController: class {} } },
-    '@kit.CryptoArchitectureKit': { cryptoFramework: { createMd: () => ({ updateSync() {}, digestSync: () => ({ data: new Uint8Array([0]) }) }) } },
     '@kit.NetworkKit': {
       http: {
         RequestMethod: { POST: 'POST', GET: 'GET' },
@@ -206,7 +229,18 @@ function createSandbox() {
     state,
     fakeFs,
     db,
-    settings: { get: async (k, fallback) => state.prefs.has(k) ? state.prefs.get(k) : fallback, put: async (k, v) => state.prefs.set(k, v), flush: async () => {} },
+    settings: {
+      get: async (k, fallback) => state.prefs.has(k) ? state.prefs.get(k) : fallback,
+      put: async (k, v) => state.prefs.set(k, v),
+      delete: async (k) => state.prefs.delete(k),
+      flush: async () => {}
+    },
+    secretSettings: {
+      get: async (k, fallback) => state.secretPrefs.has(k) ? state.secretPrefs.get(k) : fallback,
+      put: async (k, v) => state.secretPrefs.set(k, v),
+      delete: async (k) => state.secretPrefs.delete(k),
+      flush: async () => {}
+    },
     load: loadFile,
     override(id, value) { overrides.set(id.replace(/\.ets$/, ''), value); },
     /** Queues one HTTP result for PluginAiService: `{ status, body }` or `{ throws }`. */
@@ -217,7 +251,7 @@ function createSandbox() {
       state.sqlCalls = []; state.insertCalls = []; state.nativeLocks = new Map();
       state.files = new Map(); state.values = new Map(); state.handles = new Map();
       state.directories = new Set(); state.symlinks = new Map(); state.persistentGrants = new Set();
-      state.prefs = new Map(); state.appStorage = new Map();
+      state.prefs = new Map(); state.secretPrefs = new Map(); state.appStorage = new Map();
       state.pickerCalls = []; state.pickerSelection = async () => []; state.fixedUuids = [];
       state.httpRequests = []; state.httpResponses = [];
       state.failInsert = undefined; state.snapshot = undefined; db.version = 0;
@@ -236,7 +270,7 @@ function createSandbox() {
   sandbox.prepareStorage = () => {
     const S = sandbox.storage();
     S.store = db; S.appContext = sandbox.contexts; S.notesIndexReady = true;
-    S.settings = sandbox.settings; S.initPromise = Promise.resolve();
+    S.settings = sandbox.settings; S.pluginSecrets = sandbox.secretSettings; S.initPromise = Promise.resolve();
     S.actionTransaction = false; S.writeQueue = Promise.resolve();
     S.mutationQueue = Promise.resolve(); S.templateQueue = Promise.resolve();
     S.storagePromptNoteId = '';

@@ -1,8 +1,12 @@
 import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
+import { LexiTokens } from '../core/LexiTokens';
+import { LexiMotion } from '../core/LexiMotion';
 import { LexiI18n } from '../core/LexiI18n';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { LexiContextSurface } from './LexiContextSurface';
 import { LexiSearch } from '../core/LexiSearch';
+import { LexiRelations } from '../core/LexiRelations';
+import { LexiStorageService } from '../core/LexiStorageService';
 import { LexiContextTarget } from '../core/LexiContextModels';
 import {
   CanvasBoard,
@@ -32,6 +36,11 @@ export struct LexiVaultTab {
   }
   aboutToAppear(): void {
     this.rebuildLinkCounts();
+    LexiStorageService.getSetting('vaultSortMode', 'updated').then((saved: string): void => {
+      if (saved === 'updated' || saved === 'accessed' || saved === 'created' || saved === 'title') {
+        this.sortMode = saved;
+      }
+    }).catch((): void => {});
     if (this.searchRevision > 0) { this.contextSearchChanged(); }
   }
   @Prop isWide: boolean = false;
@@ -96,6 +105,32 @@ export struct LexiVaultTab {
     return this.outgoingMap.get(noteId) ?? 0;
   }
 
+  private isNoteUnconnected(note: NoteItem): boolean {
+    return note.trashedAt === 0 && this.outgoingCount(note.id) === 0 && this.backlinkCount(note.id) === 0;
+  }
+
+  private unconnectedCount(): number {
+    return LexiRelations.unconnectedNotes(this.activeNotes(), this.links).length;
+  }
+
+  private chooseSortMode(mode: string): void {
+    this.sortMode = mode;
+    LexiStorageService.setSetting('vaultSortMode', mode).catch((): void => {});
+  }
+
+  private sortButtonLabel(): string {
+    if (this.sortMode === 'accessed') {
+      return this.tr('排序：最近访问');
+    }
+    if (this.sortMode === 'title') {
+      return this.tr('排序：标题');
+    }
+    if (this.sortMode === 'created') {
+      return this.tr('排序：创建时间');
+    }
+    return this.tr('排序：最近编辑');
+  }
+
   private notebooks(): string[] {
     const result: string[] = [];
     this.activeNotes().forEach((n: NoteItem) => {
@@ -132,6 +167,9 @@ export struct LexiVaultTab {
     if (this.noteFilter === 'favorite') {
       list = list.filter((n: NoteItem): boolean => n.favorite);
     }
+    if (this.noteFilter === 'unconnected') {
+      list = list.filter((n: NoteItem): boolean => LexiRelations.isNoteUnconnected(n.id, this.links));
+    }
     if (this.notebookFilter) {
       list = list.filter((n: NoteItem): boolean => n.notebook === this.notebookFilter);
     }
@@ -141,22 +179,7 @@ export struct LexiVaultTab {
     if (term) {
       list = list.filter((n: NoteItem): boolean => LexiSearch.matches(n, this.query));
     }
-    const sorted = list.slice();
-    if (this.sortMode === 'title') {
-      sorted.sort((a: NoteItem, b: NoteItem): number =>
-        MarkdownEngine.displayTitle(a).localeCompare(MarkdownEngine.displayTitle(b))
-      );
-    } else if (this.sortMode === 'created') {
-      sorted.sort((a: NoteItem, b: NoteItem): number => b.createdAt - a.createdAt);
-    } else {
-      sorted.sort((a: NoteItem, b: NoteItem): number => {
-        if (a.pinned !== b.pinned) {
-          return a.pinned ? -1 : 1;
-        }
-        return b.updatedAt - a.updatedAt;
-      });
-    }
-    return sorted;
+    return LexiSearch.sortNotes(list, this.sortMode);
   }
 
   private notesInColumn(column: number, total: number): NoteItem[] {
@@ -214,21 +237,27 @@ export struct LexiVaultTab {
   private sortMenu(): MenuElement[] {
     return [
       {
+        value: this.tr('最近访问'),
+        action: (): void => {
+          this.chooseSortMode('accessed');
+        }
+      },
+      {
         value: this.tr('最近编辑'),
         action: (): void => {
-          this.sortMode = 'updated';
+          this.chooseSortMode('updated');
         }
       },
       {
         value: this.tr('创建时间'),
         action: (): void => {
-          this.sortMode = 'created';
+          this.chooseSortMode('created');
         }
       },
       {
         value: this.tr('标题'),
         action: (): void => {
-          this.sortMode = 'title';
+          this.chooseSortMode('title');
         }
       }
     ];
@@ -239,6 +268,8 @@ export struct LexiVaultTab {
     LexiNoteCard({
       note: note,
       query: this.query,
+      showAccessTime: this.sortMode === 'accessed',
+      isUnconnected: this.isNoteUnconnected(note),
       outgoingCount: this.outgoingCount(note.id),
       backlinkCount: this.backlinkCount(note.id),
       onOpen: (id: string): void => {
@@ -278,7 +309,7 @@ export struct LexiVaultTab {
 
       if (!this.isWide) {
         Button(this.tr('工作区与项目'), { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-          .id('phone-workspace-manager').width('100%').height(40).fontSize(13).borderRadius(9)
+          .id('phone-workspace-manager').width('100%').height(40).fontSize(LexiTokens.TYPE_UI).borderRadius(LexiTokens.RADIUS_MD)
           .fontColor(this.palette.brand_ink).backgroundColor(this.palette.brand_soft)
           .onClick((): void => { this.onManageWorkspaces(); })
       }
@@ -289,6 +320,8 @@ export struct LexiVaultTab {
         .fontColor(this.palette.text_primary)
         .placeholderColor(this.palette.text_secondary)
         .backgroundColor(this.palette.surface)
+        .border({ width: 0.5, color: this.palette.workspace_line })
+        .borderRadius(LexiTokens.RADIUS_MD)
         .onChange((val: string) => {
           this.query = val;
         })
@@ -302,14 +335,20 @@ export struct LexiVaultTab {
             ['tags', this.tr('标签 ({0})', [this.tagCounts().length.toString()])]
           ],
           (sec: string[]) => {
-            Button(sec[1], { type: ButtonType.Normal })
+            Button({ type: ButtonType.Normal }) {
+              Text(sec[1])
+                .fontSize(LexiTokens.TYPE_CAPTION)
+                .fontFeature('"tnum" 1')
+                .fontWeight(this.vaultSection === sec[0] ? FontWeight.Bold : FontWeight.Medium)
+                .fontColor(this.vaultSection === sec[0] ? this.palette.inverse_text : this.palette.text_secondary)
+                .maxLines(1)
+            }
               .layoutWeight(1)
               .height(36)
-              .fontSize(12)
-              .fontWeight(this.vaultSection === sec[0] ? FontWeight.Bold : FontWeight.Medium)
-              .borderRadius(12)
+              .padding({ left: 6, right: 6 })
+              .borderRadius(LexiTokens.RADIUS_MD)
               .backgroundColor(this.vaultSection === sec[0] ? this.palette.brand : this.palette.surface)
-              .fontColor(this.vaultSection === sec[0] ? this.palette.inverse_text : this.palette.text_secondary)
+              .animation(LexiMotion.param(LexiMotion.DUR_FAST, LexiMotion.easeOut()))
               .onClick(() => {
                 this.onSelectSection(sec[0]);
               })
@@ -343,6 +382,13 @@ export struct LexiVaultTab {
                 this.noteFilter = 'favorite';
               }
             })
+            LexiFilterChip({
+              selected: this.noteFilter === 'unconnected',
+              label: this.tr('未连接 ({0})', [this.unconnectedCount().toString()]),
+              action: (): void => {
+                this.noteFilter = 'unconnected';
+              }
+            })
           }
         }
         .scrollable(ScrollDirection.Horizontal)
@@ -360,7 +406,7 @@ export struct LexiVaultTab {
             .bindMenu(this.notebookMenu())
 
           Button(
-            this.sortMode === 'title' ? this.tr('排序：标题') : this.sortMode === 'created' ? this.tr('排序：创建时间') : this.tr('排序：最近编辑'),
+            this.sortButtonLabel(),
             { type: ButtonType.Normal }
           )
             .height(34)
@@ -442,7 +488,7 @@ export struct LexiVaultTab {
                 (n: NoteItem) => {
                   this.renderNoteCard(n)
                 },
-                (n: NoteItem): string => `col0-${n.id}-${n.updatedAt}`
+                (n: NoteItem): string => `col0-${n.id}-${n.updatedAt}-${n.lastOpenedAt}-${this.sortMode}-${this.query}-${this.outgoingCount(n.id)}-${this.backlinkCount(n.id)}`
               )
             }
             .layoutWeight(1)
@@ -453,7 +499,7 @@ export struct LexiVaultTab {
                 (n: NoteItem) => {
                   this.renderNoteCard(n)
                 },
-                (n: NoteItem): string => `col1-${n.id}-${n.updatedAt}`
+                (n: NoteItem): string => `col1-${n.id}-${n.updatedAt}-${n.lastOpenedAt}-${this.sortMode}-${this.query}-${this.outgoingCount(n.id)}-${this.backlinkCount(n.id)}`
               )
             }
             .layoutWeight(1)
@@ -467,7 +513,7 @@ export struct LexiVaultTab {
               (n: NoteItem) => {
                 this.renderNoteCard(n)
               },
-              (n: NoteItem): string => `${n.id}-${n.updatedAt}`
+              (n: NoteItem): string => `${n.id}-${n.updatedAt}-${n.lastOpenedAt}-${this.sortMode}-${this.query}-${this.outgoingCount(n.id)}-${this.backlinkCount(n.id)}`
             )
           }
           .width('100%')
@@ -492,13 +538,15 @@ export struct LexiVaultTab {
               LexiIcon({ name: 'mindmap', iconSize: 26 })
               Column({ space: 4 }) {
                 Text(map.title)
-                  .fontSize(16)
+                  .fontSize(LexiTokens.TYPE_PHONE_UI)
+                  .lineHeight(LexiTokens.LH_PHONE_UI)
                   .fontWeight(FontWeight.Bold)
                   .fontColor(this.palette.text_primary)
                 Text(
                   this.tr('{0} 个节点 · {1} · {2}', [map.nodes.length.toString(), map.layoutKind === 'balanced' ? this.tr('双向平衡') : map.layoutKind === 'org' ? this.tr('组织结构') : this.tr('右侧逻辑'), this.dateLabel(map.updatedAt)])
                 )
-                  .fontSize(12)
+                  .fontSize(LexiTokens.TYPE_CAPTION)
+                  .fontFeature('"tnum" 1')
                   .fontColor(this.palette.text_secondary)
               }
               .layoutWeight(1)
@@ -507,7 +555,9 @@ export struct LexiVaultTab {
             .width('100%')
             .padding({ left: 16, right: deviceInfo.deviceType === 'tablet' ? 56 : 16, top: 16, bottom: 16 })
             .backgroundColor(this.palette.surface)
-            .borderRadius(20)
+            .border({ width: 0.5, color: this.palette.workspace_line })
+            .borderRadius(LexiTokens.RADIUS_LG)
+            .shadow(LexiTokens.elev1(this.palette))
             .onClick(() => {
               this.onOpenMap(map.id);
             })
@@ -535,11 +585,13 @@ export struct LexiVaultTab {
               LexiIcon({ name: 'canvas', iconSize: 26 })
               Column({ space: 4 }) {
                 Text(board.title)
-                  .fontSize(16)
+                  .fontSize(LexiTokens.TYPE_PHONE_UI)
+                  .lineHeight(LexiTokens.LH_PHONE_UI)
                   .fontWeight(FontWeight.Bold)
                   .fontColor(this.palette.text_primary)
                 Text(this.tr('{0} 张卡片 · {1} 条连线 · {2}', [board.cards.length.toString(), board.edges.length.toString(), this.dateLabel(board.updatedAt)]))
-                  .fontSize(12)
+                  .fontSize(LexiTokens.TYPE_CAPTION)
+                  .fontFeature('"tnum" 1')
                   .fontColor(this.palette.text_secondary)
               }
               .layoutWeight(1)
@@ -548,7 +600,9 @@ export struct LexiVaultTab {
             .width('100%')
             .padding({ left: 16, right: deviceInfo.deviceType === 'tablet' ? 56 : 16, top: 16, bottom: 16 })
             .backgroundColor(this.palette.surface)
-            .borderRadius(20)
+            .border({ width: 0.5, color: this.palette.workspace_line })
+            .borderRadius(LexiTokens.RADIUS_LG)
+            .shadow(LexiTokens.elev1(this.palette))
             .onClick(() => {
               this.onOpenCanvas(board.id);
             })

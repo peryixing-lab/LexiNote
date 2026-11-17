@@ -1,6 +1,9 @@
 import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
+import { LexiTokens } from '../core/LexiTokens';
+import { LexiMotion } from '../core/LexiMotion';
 import { MarkdownBlock, NoteItem, NoteLink, OutlineHeading } from '../core/LexiModels';
 import { LexiIcon } from './LexiIcon';
+import { LexiLinkPreviewButton } from './LexiLinkPreviewCard';
 import { MarkdownEngine, LexiMarkdownInlineSpan } from '../core/MarkdownEngine';
 import { LexiEcosystemLink } from '../core/LexiEcosystemLink';
 import { LexiNativeLaunch } from '../core/LexiNativeLaunch';
@@ -73,8 +76,18 @@ export struct LexiRelationsPanel {
   @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @Prop outgoingLinks: NoteLink[] = [];
   @Prop backlinks: NoteLink[] = [];
+  @Prop availableNotes: NoteItem[] = [];
+  @Prop allLinks: NoteLink[] = [];
   onOpenTarget: (targetIdOrTitle: string) => void = (_target: string): void => {};
   onConvertToMindMap: () => void = () => {};
+
+  private linkTarget(link: NoteLink): string {
+    return `${link.targetId || link.targetTitle}${link.anchor ? '#' + link.anchor : ''}`;
+  }
+
+  private resolvedLinks(): NoteLink[] {
+    return this.allLinks.length > 0 ? this.allLinks : this.outgoingLinks.concat(this.backlinks);
+  }
 
   build() {
     Column({ space: 12 }) {
@@ -102,19 +115,31 @@ export struct LexiRelationsPanel {
           ForEach(
             this.outgoingLinks,
             (link: NoteLink) => {
-              Button(`↗ ${link.targetTitle}`, { type: ButtonType.Normal })
-                .height(34)
-                .margin({ right: 8, bottom: 8 })
-                .padding({ left: 12, right: 12 })
-                .fontSize(12)
-                .borderRadius(10)
-                .backgroundColor(this.palette.brand_soft)
-                .fontColor(this.palette.brand)
-                .onClick(() => {
-                  this.onOpenTarget((link.targetId || link.targetTitle) + (link.anchor ? `#${link.anchor}` : ''));
+              Row({ space: 4 }) {
+                Button(`↗ ${link.targetTitle}`, { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
+                  .height(30)
+                  .padding({ left: 10, right: 6 })
+                  .fontSize(12)
+                  .fontColor(this.palette.brand)
+                  .onClick(() => {
+                    this.onOpenTarget(this.linkTarget(link));
+                  })
+                LexiLinkPreviewButton({
+                  label: '预览',
+                  rawTarget: this.linkTarget(link),
+                  availableNotes: this.availableNotes,
+                  allLinks: this.resolvedLinks(),
+                  buttonHeight: 24,
+                  compact: true,
+                  onOpenTarget: this.onOpenTarget
                 })
+              }
+              .padding({ right: 4 })
+              .margin({ right: 8, bottom: 8 })
+              .backgroundColor(this.palette.brand_soft)
+              .borderRadius(10)
             },
-            (link: NoteLink): string => `${link.sourceId}->${link.targetTitle}`
+            (link: NoteLink): string => `${link.sourceId}->${link.targetTitle}-${link.anchor}`
           )
         }
         .width('100%')
@@ -149,6 +174,15 @@ export struct LexiRelationsPanel {
               }
               .layoutWeight(1)
               .alignItems(HorizontalAlign.Start)
+              LexiLinkPreviewButton({
+                label: '预览',
+                rawTarget: backlink.sourceId,
+                availableNotes: this.availableNotes,
+                allLinks: this.resolvedLinks(),
+                buttonHeight: 28,
+                compact: true,
+                onOpenTarget: this.onOpenTarget
+              })
               Button('跳转', { buttonStyle: ButtonStyleMode.TEXTUAL })
                 .fontSize(12)
                 .fontColor(this.palette.brand)
@@ -335,6 +369,7 @@ export struct LexiMarkdownPreview {
   @Prop anchorPrefix: string = 'markdown-block';
   @Prop blocks: MarkdownBlock[] = [];
   @Prop outgoingLinks: NoteLink[] = [];
+  @Prop allLinks: NoteLink[] = [];
   @Prop availableNotes: NoteItem[] = [];
   @Prop notePath: string = '';
   @Prop editable: boolean = false;
@@ -394,16 +429,41 @@ export struct LexiMarkdownPreview {
     } catch (_) { this.getUIContext().getPromptAction().showToast({ message: '复制失败，请重试' }); }
   }
 
+  private linkTarget(link: NoteLink): string {
+    return `${link.targetId || link.targetTitle}${link.anchor ? '#' + link.anchor : ''}`;
+  }
+
+  private resolvedLinks(): NoteLink[] {
+    return this.allLinks.length > 0 ? this.allLinks : this.outgoingLinks;
+  }
+
   build() {
     Column({ space: 12 }) {
-      if (!this.frameless && this.outgoingLinks.length > 0) {
+      if ((!this.frameless || (!this.editable && this.availableNotes.length > 0)) && this.outgoingLinks.length > 0) {
         Flex({ wrap: FlexWrap.Wrap }) {
           ForEach(this.outgoingLinks, (link: NoteLink) => {
-            Button(`🔗 ${link.displayText || link.targetTitle}`, { type: ButtonType.Normal })
-              .height(30).margin({ right: 6, bottom: 6 }).padding({ left: 10, right: 10 })
-              .fontSize(11).borderRadius(9).backgroundColor(this.palette.brand_soft)
-              .fontColor(this.palette.brand)
-              .onClick((): void => { this.onOpenTarget(`${link.targetId || link.targetTitle}${link.anchor ? '#' + link.anchor : ''}`); })
+            Row({ space: 2 }) {
+              Button(`🔗 ${link.displayText || link.targetTitle}`, { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
+                .height(28).padding({ left: 8, right: 6 })
+                .fontSize(11).fontColor(this.palette.brand)
+                .onClick((): void => { this.onOpenTarget(this.linkTarget(link)); })
+              if (this.availableNotes.length > 0) {
+                LexiLinkPreviewButton({
+                  label: '预览',
+                  rawTarget: this.linkTarget(link),
+                  availableNotes: this.availableNotes,
+                  allLinks: this.resolvedLinks(),
+                  buttonHeight: 22,
+                  compact: true,
+                  popupPlacement: Placement.Bottom,
+                  onOpenTarget: this.onOpenTarget
+                })
+              }
+            }
+            .padding({ right: 4 })
+            .margin({ right: 6, bottom: 6 })
+            .borderRadius(9)
+            .backgroundColor(this.palette.brand_soft)
           }, (link: NoteLink): string => `chip-${link.targetTitle}-${link.anchor}`)
         }.width('100%')
       }
@@ -449,10 +509,22 @@ export struct LexiMarkdownPreview {
             }.width('100%').padding(8).backgroundColor(this.palette.soft_surface).borderRadius(12)
           } else if (block.kind === 'embed') {
             Column({ space: 9 }) {
-              Row() {
+              Row({ space: 8 }) {
                 Text(`↗ ${block.text}`).fontSize(13).fontWeight(FontWeight.Bold).fontColor(this.palette.brand_ink).layoutWeight(1)
+                if (this.availableNotes.length > 0) {
+                  LexiLinkPreviewButton({
+                    label: '预览',
+                    rawTarget: block.meta,
+                    availableNotes: this.availableNotes,
+                    allLinks: this.resolvedLinks(),
+                    buttonHeight: 24,
+                    compact: true,
+                    popupPlacement: Placement.Top,
+                    onOpenTarget: this.onOpenTarget
+                  })
+                }
                 Text('引用笔记').fontSize(10).fontColor(this.palette.text_secondary)
-              }.width('100%')
+              }.width('100%').alignItems(VerticalAlign.Center)
               LexiPreviewInlineText({ sourceText: this.embeddedText(block), textSize: 14, textLeading: 23,
                 onOpenTarget: this.onOpenTarget,
                 onEditText: (): void => { if (this.editable) { this.onEditBlock(block.lineIndex); } },
@@ -488,16 +560,26 @@ export struct LexiMarkdownPreview {
                 onInteractiveAction: (): void => { this.lastInteractiveAt = Date.now(); } })
               }.layoutWeight(1)
             }.width('100%').alignItems(VerticalAlign.Top)
-          } else if (block.kind === 'quote' || block.kind === 'callout') {
+          } else if (block.kind === 'quote') {
             Column({ space: 6 }) {
-              if (block.kind === 'callout') {
-                Text(`✦ ${block.meta || 'NOTE'}`).fontSize(11).fontWeight(FontWeight.Bold).fontColor(this.palette.brand)
-              }
               LexiPreviewInlineText({ sourceText: block.text, textSize: 14, textLeading: 23,
-                muted: block.kind === 'quote', onOpenTarget: this.onOpenTarget,
+                muted: true, onOpenTarget: this.onOpenTarget,
                 onEditText: (): void => { if (this.editable) { this.onEditBlock(block.lineIndex); } },
                 onInteractiveAction: (): void => { this.lastInteractiveAt = Date.now(); } })
-            }.width('100%').padding(14).backgroundColor(this.palette.brand_soft).borderRadius(12)
+            }.width('100%').padding({ left: LexiTokens.SPACE_5, right: LexiTokens.SPACE_5, top: LexiTokens.SPACE_4, bottom: LexiTokens.SPACE_4 })
+              .backgroundColor(this.palette.soft_surface)
+              .border({ width: { left: 3 }, color: this.palette.brand })
+              .borderRadius({ topRight: LexiTokens.RADIUS_SM, bottomRight: LexiTokens.RADIUS_SM, topLeft: 2, bottomLeft: 2 })
+              .alignItems(HorizontalAlign.Start)
+          } else if (block.kind === 'callout') {
+            Column({ space: 6 }) {
+              Text(`✦ ${block.meta || 'NOTE'}`).fontSize(LexiTokens.TYPE_MICRO).fontWeight(FontWeight.Bold).fontColor(this.palette.brand)
+              LexiPreviewInlineText({ sourceText: block.text, textSize: 14, textLeading: 23,
+                muted: false, onOpenTarget: this.onOpenTarget,
+                onEditText: (): void => { if (this.editable) { this.onEditBlock(block.lineIndex); } },
+                onInteractiveAction: (): void => { this.lastInteractiveAt = Date.now(); } })
+            }.width('100%').padding(LexiTokens.SPACE_5).backgroundColor(LexiTokens.calloutBg(this.palette))
+              .border({ width: 1, color: LexiTokens.calloutBorder(this.palette) }).borderRadius(LexiTokens.RADIUS_MD)
               .alignItems(HorizontalAlign.Start)
           } else if (block.kind === 'code' || block.kind === 'formula') {
             Column({ space: 8 }) {
@@ -512,7 +594,8 @@ export struct LexiMarkdownPreview {
                   onEditText: (): void => { if (this.editable) { this.onEditBlock(block.lineIndex); } },
                   onInteractiveAction: (): void => { this.lastInteractiveAt = Date.now(); } })
               }
-            }.width('100%').padding(14).backgroundColor(this.palette.soft_surface).borderRadius(12)
+            }.width('100%').padding(LexiTokens.SPACE_5).backgroundColor(this.palette.soft_surface)
+              .border({ width: 0.5, color: this.palette.workspace_line }).borderRadius(LexiTokens.RADIUS_MD)
           } else {
             LexiPreviewInlineText({ sourceText: block.text, textSize: this.frameless ? 16 : 14,
               textLeading: this.frameless ? 28 : 23, onOpenTarget: this.onOpenTarget,

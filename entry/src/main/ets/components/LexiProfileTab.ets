@@ -1,4 +1,6 @@
 import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
+import { LexiTokens } from '../core/LexiTokens';
+import { LexiMotion } from '../core/LexiMotion';
 import { LexiI18n } from '../core/LexiI18n';
 import { LexiHeroHeading } from './LexiNoteCard';
 
@@ -11,6 +13,7 @@ import { LexiHeroHeading } from './LexiNoteCard';
 export struct LexiProfileTab {
   @StorageProp('lexiThemePalette') private palette: LexiThemePalette = LexiTheme.current();
   @StorageProp('lexiLanguage') private interfaceLanguage: string = LexiI18n.language();
+  @State private pressedCard: string = '';
 
   private tr(source: string, args: string[] = []): string {
     return LexiI18n.text(source, this.interfaceLanguage, args);
@@ -52,16 +55,19 @@ export struct LexiProfileTab {
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
       Text(this.tr('{0} 篇笔记', [this.noteCount.toString()]))
-        .fontSize(11)
+        .fontSize(LexiTokens.TYPE_CAPTION)
+        .fontFeature('"tnum" 1')
         .fontColor(this.palette.brand_ink)
-        .padding({ left: 9, right: 9, top: 5, bottom: 5 })
+        .padding({ left: 10, right: 10, top: 5, bottom: 5 })
         .backgroundColor(this.palette.brand_soft)
-        .borderRadius(10)
+        .borderRadius(LexiTokens.RADIUS_FULL)
     }
     .width('100%')
-    .padding(16)
+    .padding(LexiTokens.SPACE_5)
     .backgroundColor(this.palette.surface)
-    .borderRadius(20)
+    .border({ width: 0.5, color: this.palette.workspace_line })
+    .borderRadius(LexiTokens.RADIUS_LG)
+    .shadow(LexiTokens.elev1(this.palette))
   }
 
   @Builder
@@ -73,18 +79,20 @@ export struct LexiProfileTab {
             .fontSize(22)
             .fontColor([this.palette.brand])
         }
-        .width(46)
-        .height(46)
-        .borderRadius(15)
+        .width(44)
+        .height(44)
+        .borderRadius(LexiTokens.RADIUS_MD)
         .backgroundColor(this.palette.brand_soft)
 
         Column({ space: 4 }) {
           Text(this.tr('设置'))
-            .fontSize(16)
+            .fontSize(LexiTokens.TYPE_PHONE_UI)
+            .lineHeight(LexiTokens.LH_PHONE_UI)
             .fontWeight(FontWeight.Medium)
             .fontColor(this.palette.text_primary)
           Text(this.tr('外观、编辑器、插件与数据'))
-            .fontSize(12)
+            .fontSize(LexiTokens.TYPE_PHONE_CAPTION)
+            .lineHeight(LexiTokens.LH_PHONE_CAPTION)
             .fontColor(this.palette.text_secondary)
             .maxLines(2)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -97,16 +105,30 @@ export struct LexiProfileTab {
           .fontColor([this.palette.text_secondary])
       }
       .width('100%')
-      .padding({ left: 16, right: 14, top: 14, bottom: 14 })
+      .padding({ left: LexiTokens.SPACE_5, right: 14, top: 14, bottom: 14 })
     }
     .id('profile-settings')
     .width('100%')
-    .constraintSize({ minHeight: 84 })
+    .constraintSize({ minHeight: 80 })
     .padding(0)
-    .borderRadius(20)
-    .backgroundColor(this.palette.surface)
+    .borderRadius(LexiTokens.RADIUS_LG)
+    .backgroundColor(this.pressedCard === 'settings' ? LexiTokens.pressedSurface(this.palette) : this.palette.surface)
+    .border({ width: 0.5, color: this.palette.workspace_line })
+    .shadow(LexiTokens.elev1(this.palette))
+    .scale({
+      x: LexiMotion.pressScale(this.pressedCard === 'settings'),
+      y: LexiMotion.pressScale(this.pressedCard === 'settings')
+    })
+    .animation(LexiMotion.param(LexiMotion.DUR_MICRO, LexiMotion.easeOut()))
     .accessibilityText(this.tr('设置'))
     .accessibilityDescription(this.tr('外观、编辑器、插件与数据'))
+    .onTouch((event: TouchEvent): void => {
+      if (event.type === TouchType.Down) {
+        this.pressedCard = 'settings';
+      } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+        if (this.pressedCard === 'settings') { this.pressedCard = ''; }
+      }
+    })
     .onClick((): void => { this.onOpenSettings(); })
   }
 
@@ -119,18 +141,20 @@ export struct LexiProfileTab {
             .fontSize(21)
             .fontColor([this.palette.brand_ink])
         }
-        .width(46)
-        .height(46)
-        .borderRadius(15)
+        .width(44)
+        .height(44)
+        .borderRadius(LexiTokens.RADIUS_MD)
         .backgroundColor(this.palette.soft_surface)
 
         Column({ space: 4 }) {
           Text(this.tr('回收站'))
-            .fontSize(16)
+            .fontSize(LexiTokens.TYPE_PHONE_UI)
+            .lineHeight(LexiTokens.LH_PHONE_UI)
             .fontWeight(FontWeight.Medium)
             .fontColor(this.palette.text_primary)
           Text(this.tr('恢复已删除的笔记，或永久删除'))
-            .fontSize(12)
+            .fontSize(LexiTokens.TYPE_PHONE_CAPTION)
+            .lineHeight(LexiTokens.LH_PHONE_CAPTION)
             .fontColor(this.palette.text_secondary)
             .maxLines(2)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -140,7 +164,8 @@ export struct LexiProfileTab {
 
         if (this.deletedCount > 0) {
           Text(`${this.deletedCount}`)
-            .fontSize(11)
+            .fontSize(LexiTokens.TYPE_CAPTION)
+            .fontFeature('"tnum" 1')
             .fontWeight(FontWeight.Medium)
             .fontColor(this.palette.brand_ink)
             .constraintSize({ minWidth: 22 })
@@ -148,23 +173,37 @@ export struct LexiProfileTab {
             .padding({ left: 7, right: 7 })
             .textAlign(TextAlign.Center)
             .backgroundColor(this.palette.brand_soft)
-            .borderRadius(11)
+            .borderRadius(LexiTokens.RADIUS_FULL)
         }
         SymbolGlyph($r('sys.symbol.chevron_right'))
           .fontSize(12)
           .fontColor([this.palette.text_secondary])
       }
       .width('100%')
-      .padding({ left: 16, right: 14, top: 14, bottom: 14 })
+      .padding({ left: LexiTokens.SPACE_5, right: 14, top: 14, bottom: 14 })
     }
     .id('profile-trash')
     .width('100%')
-    .constraintSize({ minHeight: 84 })
+    .constraintSize({ minHeight: 80 })
     .padding(0)
-    .borderRadius(20)
-    .backgroundColor(this.palette.surface)
+    .borderRadius(LexiTokens.RADIUS_LG)
+    .backgroundColor(this.pressedCard === 'trash' ? LexiTokens.pressedSurface(this.palette) : this.palette.surface)
+    .border({ width: 0.5, color: this.palette.workspace_line })
+    .shadow(LexiTokens.elev1(this.palette))
+    .scale({
+      x: LexiMotion.pressScale(this.pressedCard === 'trash'),
+      y: LexiMotion.pressScale(this.pressedCard === 'trash')
+    })
+    .animation(LexiMotion.param(LexiMotion.DUR_MICRO, LexiMotion.easeOut()))
     .accessibilityText(this.tr('回收站'))
     .accessibilityDescription(this.tr('恢复已删除的笔记，或永久删除'))
+    .onTouch((event: TouchEvent): void => {
+      if (event.type === TouchType.Down) {
+        this.pressedCard = 'trash';
+      } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+        if (this.pressedCard === 'trash') { this.pressedCard = ''; }
+      }
+    })
     .onClick((): void => { this.onOpenTrash(); })
   }
 

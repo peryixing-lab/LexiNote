@@ -6,6 +6,7 @@ import { MarkdownEngine, LexiMarkdownInlineSpan } from '../core/MarkdownEngine';
 import { LexiContextSurface } from './LexiContextSurface';
 import { LexiContextBridge, LexiContextTarget, LexiContextAction } from '../core/LexiContextModels';
 import { LexiIcon } from './LexiIcon';
+import { LexiHighlightText } from './LexiLinkPreviewCard';
 
 @Component
 export struct LexiFilterChip {
@@ -73,6 +74,8 @@ export struct LexiNoteCard {
   @Prop query: string = '';
   @Prop outgoingCount: number = 0;
   @Prop backlinkCount: number = 0;
+  @Prop showAccessTime: boolean = false;
+  @Prop isUnconnected: boolean = false;
   onOpen: (noteId: string) => void = (_noteId: string): void => {};
   onFilterTag: (tag: string) => void = (_tag: string): void => {};
   onTogglePin: (note: NoteItem) => void = (_note: NoteItem): void => {};
@@ -151,7 +154,9 @@ export struct LexiNoteCard {
         if (this.note.favorite) {
           LexiIcon({ name: 'star', iconSize: 14 })
         }
-        Text(this.dateLabel(this.note.updatedAt))
+        Text(this.showAccessTime && this.note.lastOpenedAt > 0
+          ? this.tr('访问 {0}', [this.dateLabel(this.note.lastOpenedAt)])
+          : this.dateLabel(this.note.updatedAt))
           .fontSize(11)
           .fontColor(this.palette.text_secondary)
 
@@ -167,22 +172,23 @@ export struct LexiNoteCard {
       }
       .width('100%')
 
-      Text(MarkdownEngine.displayTitle(this.note))
-        .fontSize(16)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(this.palette.text_primary)
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .width('100%')
+      LexiHighlightText({
+        sourceText: MarkdownEngine.displayTitle(this.note),
+        queryText: this.query,
+        textSize: 16,
+        textLineHeight: 22,
+        textWeight: FontWeight.Bold,
+        lineLimit: 1
+      })
 
       Text() {
         ForEach(MarkdownEngine.previewSpans(this.note, this.query), (span: LexiMarkdownInlineSpan) => {
           Span(span.text)
-            .fontWeight(span.kind === 'bold' ? FontWeight.Bold : FontWeight.Regular)
+            .fontWeight(span.kind === 'bold' || span.searchMatch ? FontWeight.Bold : FontWeight.Regular)
             .fontStyle(span.kind === 'italic' ? FontStyle.Italic : FontStyle.Normal)
             .fontFamily(span.kind === 'code' ? 'monospace' : 'HarmonyOS Sans')
-            .fontColor(span.kind === 'link' || span.kind === 'url' ? this.palette.brand_ink : this.palette.text_secondary)
-            .textBackgroundStyle({ color: span.kind === 'highlight' ? this.palette.brand_soft : Color.Transparent, radius: 3 })
+            .fontColor(span.searchMatch ? this.palette.brand_ink : span.kind === 'link' || span.kind === 'url' ? this.palette.brand_ink : this.palette.text_secondary)
+            .textBackgroundStyle({ color: span.searchMatch ? '#59FACC15' : span.kind === 'highlight' ? this.palette.brand_soft : Color.Transparent, radius: 3 })
             .decoration({ type: span.kind === 'strike' ? TextDecorationType.LineThrough : TextDecorationType.None })
         }, (span: LexiMarkdownInlineSpan): string => span.id)
       }
@@ -216,6 +222,13 @@ export struct LexiNoteCard {
           Text(this.tr('🔗 {0} 出 · {1} 反', [this.outgoingCount.toString(), this.backlinkCount.toString()]))
             .fontSize(11)
             .fontColor(this.palette.brand)
+        } else if (this.isUnconnected && this.note.trashedAt === 0) {
+          Text(this.tr('未连接'))
+            .fontSize(10)
+            .fontColor(this.palette.text_secondary)
+            .padding({ left: 7, right: 7, top: 2, bottom: 2 })
+            .backgroundColor(this.palette.soft_surface)
+            .borderRadius(6)
         }
       }
       .width('100%')

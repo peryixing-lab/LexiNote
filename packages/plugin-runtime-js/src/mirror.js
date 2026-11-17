@@ -46,18 +46,51 @@ function toFileRef(raw) {
   return Object.freeze(ref);
 }
 
+function toEditorSelection(raw) {
+  if (!isPlainObject(raw)) {
+    return Object.freeze({ from: 0, to: 0 });
+  }
+  const fromRaw = typeof raw.from === 'number' && isFinite(raw.from)
+    ? Math.max(0, Math.floor(raw.from))
+    : (typeof raw.start === 'number' && isFinite(raw.start) ? Math.max(0, Math.floor(raw.start)) : 0);
+  const toRaw = typeof raw.to === 'number' && isFinite(raw.to)
+    ? Math.max(0, Math.floor(raw.to))
+    : (typeof raw.end === 'number' && isFinite(raw.end) ? Math.max(0, Math.floor(raw.end)) : fromRaw);
+  return Object.freeze({
+    from: Math.min(fromRaw, toRaw),
+    to: Math.max(fromRaw, toRaw)
+  });
+}
+
+function toEditorCursor(raw) {
+  if (!isPlainObject(raw)) {
+    return Object.freeze({ line: 0, ch: 0 });
+  }
+  const line = typeof raw.line === 'number' && isFinite(raw.line) ? Math.max(0, Math.floor(raw.line)) : 0;
+  const ch = typeof raw.ch === 'number' && isFinite(raw.ch) ? Math.max(0, Math.floor(raw.ch)) : 0;
+  return Object.freeze({ line, ch });
+}
+
 function toEditorSnapshot(raw) {
   if (!isPlainObject(raw)) {
     return null;
   }
+  const noteId = typeof raw.noteId === 'string' && raw.noteId
+    ? raw.noteId
+    : (typeof raw.fileId === 'string' ? raw.fileId : '');
+  const revision = typeof raw.revision === 'number' && isFinite(raw.revision)
+    ? raw.revision
+    : (typeof raw.version === 'number' && isFinite(raw.version) ? raw.version : 0);
   return Object.freeze({
     editorId: typeof raw.editorId === 'string' ? raw.editorId : '',
-    noteId: typeof raw.noteId === 'string' ? raw.noteId : '',
+    noteId,
     vaultId: typeof raw.vaultId === 'string' ? raw.vaultId : '',
     windowId: typeof raw.windowId === 'string' ? raw.windowId : '',
-    revision: typeof raw.revision === 'number' && isFinite(raw.revision) ? raw.revision : 0,
+    revision,
     baseContent: typeof raw.baseContent === 'string' ? raw.baseContent : '',
     content: typeof raw.content === 'string' ? raw.content : '',
+    selection: toEditorSelection(raw.selection),
+    cursor: toEditorCursor(raw.cursor),
     dirty: raw.dirty === true,
     readOnly: raw.readOnly === true,
     focused: raw.focused === true
@@ -273,6 +306,8 @@ class FileMirror {
       revision: current.revision,
       baseContent: current.baseContent,
       content: current.content,
+      selection: current.selection || toEditorSelection(null),
+      cursor: current.cursor || toEditorCursor(null),
       dirty: current.dirty,
       readOnly: current.readOnly,
       focused: current.focused
@@ -291,6 +326,18 @@ class FileMirror {
       }
       if (typeof patch.dirty === 'boolean') {
         next.dirty = patch.dirty;
+      }
+      if (typeof patch.readOnly === 'boolean') {
+        next.readOnly = patch.readOnly;
+      }
+      if (typeof patch.focused === 'boolean') {
+        next.focused = patch.focused;
+      }
+      if (isPlainObject(patch.selection)) {
+        next.selection = toEditorSelection(patch.selection);
+      }
+      if (isPlainObject(patch.cursor)) {
+        next.cursor = toEditorCursor(patch.cursor);
       }
     }
     this._editor = Object.freeze(next);

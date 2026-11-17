@@ -6,9 +6,10 @@ const path = require('node:path');
 const { createSandbox } = require('./lib/plugin-sandbox.cjs');
 const { createRuntime } = require('./lib/js-runtime-harness.cjs');
 const root = path.resolve(__dirname, '../..');
-const manifest = JSON.parse(fs.readFileSync(path.join(root, 'plugins/harness/manifest.json'), 'utf8'));
-const source = fs.readFileSync(path.join(root, 'plugins/harness/dist/main.js'), 'utf8');
-const { STORAGE_KEY } = require('../../plugins/harness/src/profile-store');
+const harnessDir = process.env.LEXINOTE_HARNESS_DIR || path.resolve(root, '../lexinote-Harness');
+const manifest = JSON.parse(fs.readFileSync(path.join(harnessDir, 'manifest.json'), 'utf8'));
+const source = fs.readFileSync(path.join(harnessDir, 'dist/main.js'), 'utf8');
+const { STORAGE_KEY } = require(path.join(harnessDir, 'src/profile-store'));
 const tick = () => new Promise(resolve => setTimeout(resolve, 10));
 async function until(predicate) {
   for (let n = 0; n < 300; n++) { if (predicate()) return; await tick(); }
@@ -90,9 +91,11 @@ async function run(mode) {
     const storedProfiles = JSON.parse(host.state.storage.get(STORAGE_KEY)).profiles;
     assert.ok(!storedProfiles.some(profile => Object.prototype.hasOwnProperty.call(profile, 'apiKey')),
       'plugin storage never holds an API key');
-    assert.ok([...box.state.prefs.entries()].some(([key, value]) =>
+    assert.ok(![...box.state.prefs.values()].some(value => String(value).includes('secret-')),
+      'general prefs never hold plaintext secrets');
+    assert.ok([...box.state.secretPrefs.entries()].some(([key, value]) =>
       key.startsWith('pluginAiSecret.v2.') && String(value).includes('secret-router')),
-      'host secret slot holds the key');
+    'isolated host secret store holds key separately from binding prefs');
     respond({ data: [{ id: 'vendor/beta' }, { id: 'vendor/router-only' }] });
     click('获取模型');
     await until(() => models().includes('切换到 vendor/router-only'));
@@ -156,6 +159,52 @@ async function run(mode) {
     assert.equal(JSON.parse(box.state.httpRequests.at(-1).options.extraData).model, 'vendor/spare');
     await until(() => surface().querySelectorAll('button').some(node => node.textContent === '发送'));
     click('模型');
+
+    // dsh-aligned UI validation, credential masking, credentialRef, compat, and clearApiKey flow
+    click('添加服务商');
+    set('服务商名称', 'OpenAI DSH');
+    set('Base URL', 'https://api.openai.com/v1');
+    set('模型名称', 'o3-mini');
+    set('API Key', '"sk-quoted-bad"');
+    click('保存并使用');
+    assert.ok(surface().querySelector('.harness-settings-error').textContent.includes('引号'));
+    set('API Key', 'OPENAI_API_KEY=sk-1234');
+    click('保存并使用');
+    assert.ok(surface().querySelector('.harness-settings-error').textContent.includes('ENV_VAR='));
+    set('API Key', 'sk-openai-12345678909988');
+    set('凭据环境变量名', 'CUSTOM_OPENAI_KEY');
+    const maxTokensSel = surface().querySelector('.harness-config').querySelectorAll('select')
+      .find(node => node.getAttribute('aria-label') === 'Max Tokens 字段');
+    maxTokensSel.value = 'max_completion_tokens';
+    maxTokensSel.dispatchEvent({ type: 'change' });
+    click('保存并使用');
+    await until(() => !surface().querySelector('.harness-config') && rows().length === 4);
+    assert.ok(surface().querySelector('.harness-models-service').textContent.includes('sk-opena••••••••••••9988'));
+    click('配置服务');
+    assert.ok(field('API Key').placeholder.includes('sk-opena••••••••••••9988'));
+    assert.ok(surface().querySelector('.harness-cred-hint').textContent.includes('sk-opena••••••••••••9988'));
+    click('显示');
+    assert.equal(field('API Key').type, 'text');
+    click('隐藏');
+    assert.equal(field('API Key').type, 'password');
+    click('清除 Key');
+    assert.ok(surface().querySelector('.harness-cred-hint').textContent.includes('撤销清除'));
+    click('撤销清除');
+    click('取消');
+    click('关闭');
+    respond({ choices: [{ message: { role: 'assistant', content: 'o3 ok' }, finish_reason: 'stop' }] });
+    composer.value = 'compat test';
+    composer.dispatchEvent({ type: 'keydown', key: 'Enter', shiftKey: false, isComposing: false });
+    await until(() => surface().textContent.includes('o3 ok'));
+    const compatWireBody = JSON.parse(box.state.httpRequests.at(-1).options.extraData);
+    assert.equal(compatWireBody.max_completion_tokens > 0, true);
+    assert.equal(Object.prototype.hasOwnProperty.call(compatWireBody, 'max_tokens'), false);
+    await until(() => surface().querySelectorAll('button').some(node => node.textContent === '发送'));
+    click('模型');
+    clickLabel('删除服务商 OpenAI DSH'); click('确认删除');
+    await until(() => rows().length === 3);
+    clickLabel('使用服务商 Router 备用');
+    await until(() => current() === 'vendor/spare');
 
     clickLabel('删除服务商 Router 备用');
     click('取消删除');

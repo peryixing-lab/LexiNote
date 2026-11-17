@@ -1,4 +1,4 @@
-import { NoteItem, NoteProperty } from './LexiModels';
+import { LexiHighlightSpan, NoteItem, NoteProperty } from './LexiModels';
 
 export class LexiSearchTerm {
   field: string = '';
@@ -67,5 +67,106 @@ export class LexiSearch {
       gaps += next - cursor; cursor = next + 1;
     }
     return 100 + gaps;
+  }
+
+  static highlightTerms(query: string): string[] {
+    const terms: string[] = [];
+    for (const term of LexiSearch.parse(query)) {
+      if (term.excluded || term.field === 'type') { continue; }
+      const raw = term.field === 'tag' ? term.text.replace(/^#/, '') : term.text;
+      const clean = raw.trim().toLowerCase();
+      if (clean.length > 0 && !terms.includes(clean)) {
+        terms.push(clean);
+      }
+    }
+    terms.sort((a: string, b: string): number => b.length - a.length);
+    return terms;
+  }
+
+  static highlightSegments(text: string, query: string): LexiHighlightSpan[] {
+    if (!text) { return []; }
+    const terms = LexiSearch.highlightTerms(query);
+    if (!terms.length) {
+      const whole = new LexiHighlightSpan();
+      whole.id = 'hl-0';
+      whole.text = text;
+      whole.hit = false;
+      return [whole];
+    }
+    const lower = text.toLowerCase();
+    const result: LexiHighlightSpan[] = [];
+    let cursor = 0;
+    let index = 0;
+    while (cursor < text.length) {
+      let bestStart = -1;
+      let bestLength = 0;
+      for (const term of terms) {
+        const found = lower.indexOf(term, cursor);
+        if (found >= 0 && (bestStart < 0 || found < bestStart || (found === bestStart && term.length > bestLength))) {
+          bestStart = found;
+          bestLength = term.length;
+        }
+      }
+      if (bestStart < 0 || bestLength <= 0) {
+        const tail = new LexiHighlightSpan();
+        tail.id = `hl-${index++}`;
+        tail.text = text.substring(cursor);
+        tail.hit = false;
+        result.push(tail);
+        break;
+      }
+      if (bestStart > cursor) {
+        const before = new LexiHighlightSpan();
+        before.id = `hl-${index++}`;
+        before.text = text.substring(cursor, bestStart);
+        before.hit = false;
+        result.push(before);
+      }
+      const match = new LexiHighlightSpan();
+      match.id = `hl-${index++}`;
+      match.text = text.substring(bestStart, bestStart + bestLength);
+      match.hit = true;
+      result.push(match);
+      cursor = bestStart + bestLength;
+    }
+    return result;
+  }
+
+  static sortNotes(notes: NoteItem[], sortMode: string): NoteItem[] {
+    const sorted = notes.slice();
+    if (sortMode === 'title') {
+      sorted.sort((a: NoteItem, b: NoteItem): number => {
+        const titleFor = (item: NoteItem): string => {
+          if (item.title.trim().length > 0) { return item.title.trim(); }
+          const first = item.content.split('\n')
+            .map((line: string): string => line.replace(/^[#>*\-\s]+/, '').trim())
+            .find((line: string): boolean => line.length > 0);
+          return first ? first.slice(0, 28) : '未命名速记';
+        };
+        return titleFor(a).localeCompare(titleFor(b));
+      });
+    } else if (sortMode === 'created') {
+      sorted.sort((a: NoteItem, b: NoteItem): number => b.createdAt - a.createdAt);
+    } else if (sortMode === 'accessed') {
+      sorted.sort((a: NoteItem, b: NoteItem): number => {
+        const aAccess = a.lastOpenedAt || 0;
+        const bAccess = b.lastOpenedAt || 0;
+        if (aAccess !== bAccess) {
+          return bAccess - aAccess;
+        }
+        if (a.pinned !== b.pinned) {
+          return a.pinned ? -1 : 1;
+        }
+        return b.updatedAt - a.updatedAt;
+      });
+    } else {
+      sorted.sort((a: NoteItem, b: NoteItem): number => {
+        if (a.pinned !== b.pinned) {
+          return a.pinned ? -1 : 1;
+        }
+        return b.updatedAt - a.updatedAt;
+      });
+    }
+    return sorted;
   }
 }

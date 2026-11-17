@@ -6,6 +6,7 @@ import { LexiKnowledgeCollections, LexiBookmark, LexiDatabaseCollection, LexiDat
 import { LexiStorageService } from '../core/LexiStorageService';
 import { NoteItem, NoteProperty, NoteRevision } from '../core/LexiModels';
 import { MarkdownEngine } from '../core/MarkdownEngine';
+import { LexiHistoryPanel } from './LexiHistoryPanel';
 
 /** Persistent bookmarks and editable collections, opened by the shared command dispatcher. */
 @Component
@@ -218,13 +219,17 @@ export struct LexiKnowledgePanel {
               Button('返回数据库列表').onClick((): void => { this.activeDatabase = new LexiDatabaseCollection(); })
             }
           } else if (this.command === 'history') {
-            ForEach(this.revisions, (revision: NoteRevision) => {
-              Text(new Date(revision.savedAt).toLocaleString()).fontSize(12).width('100%')
-              Text(revision.snapshot.content).fontSize(13).width('100%').maxLines(6)
-              Button('恢复这个版本').onClick((): void => { this.run(async (): Promise<void> => {
-                const saved = await LexiStorageService.restoreNoteRevision(this.context(), this.noteId, revision.id); this.onSaved(saved); this.message = '已恢复，原版本保留在历史记录中';
-              }); })
-            }, (revision: NoteRevision): string => String(revision.savedAt))
+            LexiHistoryPanel({
+              openSignal: this.requestRevision,
+              noteId: this.noteId,
+              hasLiveDraft: false,
+              conflictMode: false,
+              onRestored: (saved: NoteItem): void => {
+                this.onSaved(saved);
+                this.message = '已恢复选中版本，原版本已保留在历史记录中';
+              },
+              onClose: (): void => { this.panelOpen = false; }
+            }).height(520)
           } else if (this.command.startsWith('compose-') || this.command === 'tags-list' || this.command === 'properties-all') {
             ForEach(this.noteRows.filter((note: NoteItem): boolean => (!this.command.startsWith('compose-') || note.id !== this.noteId) && (note.title + note.tags.join(' ')).includes(this.panelQuery)), (note: NoteItem) => {
               Button(MarkdownEngine.displayTitle(note) + (this.command === 'tags-list' ? ' · ' + note.tags.join(' ') : this.command === 'properties-all' ? ' · ' + note.properties.map((prop: NoteProperty): string => prop.key + ': ' + prop.propValue).join(' ') : ''))

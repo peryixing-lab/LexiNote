@@ -1,4 +1,6 @@
 import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
+import { LexiTokens } from '../core/LexiTokens';
+import { LexiMotion } from '../core/LexiMotion';
 import { LexiHotkeySettings } from '../core/LexiHotkeySettings';
 import { LexiHotkeyRecorder } from '../core/LexiHotkeyRecorder';
 import { LexiShortcutRouter } from '../core/LexiShortcutRouter';
@@ -190,7 +192,7 @@ struct Index {
       lightEffect: { color: this.palette.dock_light }
     });
   }
-  private readonly tabSpring: curves.ICurve = curves.springMotion(0.30, 0.82);
+  private readonly tabSpring: curves.ICurve = LexiMotion.spring();
   private pathStack: NavPathStack = new NavPathStack();
   private readonly motionListener: (enabled: boolean) => void = (enabled: boolean): void => {
     this.reduceMotion = enabled;
@@ -353,6 +355,12 @@ struct Index {
     this.startupStep = 0;
     try {
       await LexiStorageService.init(this.context());
+      try {
+        const recovered = await LexiStorageService.recoverCrashDrafts(this.context());
+        if (recovered.length > 0) {
+          this.toast(`已从异常退出日志恢复 ${recovered.length} 篇笔记草稿至历史记录`);
+        }
+      } catch {}
       this.startupStep = 1;
       await this.startPluginSystem();
       await this.loadWorkspaceSettings(await LexiStorageService.getActiveVaultId());
@@ -384,13 +392,39 @@ struct Index {
       await PluginManager.init(this.context());
       const bridge = new PluginUiBridge();
       bridge.notice = (_message: string, _timeout: number): void => {};
-      bridge.openFile = (noteId: string): void => { this.openNote(noteId); };
+      bridge.openFile = (noteId: string): void => { this.openContextContent(noteId, 'tab'); };
+      bridge.refreshWorkspace = (): void => { this.syncPluginWorkspaceState().catch((): void => {}); };
+      bridge.applyTheme = (theme: string): void => { this.theme = theme; this.applyTheme(theme); };
+      bridge.executeHostCommand = async (commandId: string): Promise<boolean> => {
+        return this.executePluginHostCommand(commandId);
+      };
       bridge.hasConfirm = false;
       PluginManager.setUiBridge(bridge);
       PluginManager.requestRuntime();
     } catch (error) {
       this.dataStatus = (error as Error).message;
     }
+  }
+
+  private async syncPluginWorkspaceState(): Promise<void> {
+    this.theme = await LexiStorageService.getSetting('theme', 'system');
+    this.applyTheme(this.theme);
+    this.defaultTier = await LexiStorageService.getSetting('defaultTier', 'simple');
+    this.graphShowTags = await LexiStorageService.getSetting('graphShowTags', 'false') === 'true';
+    this.viewMode = await LexiStorageService.getSetting('vaultViewMode', 'list');
+    await this.refresh();
+  }
+
+  private async executePluginHostCommand(command: string): Promise<boolean> {
+    if (command === 'settings') { this.openSettings('general'); return true; }
+    if (command === 'help') { this.openHelp(); return true; }
+    if (command === 'graph') { this.selectTab(2); return true; }
+    if (command === 'library') { this.selectTab(this.wide() ? 4 : 1); return true; }
+    if (command === 'workspaces') { this.openWorkspaceManager(); return true; }
+    if (command === 'trash') { this.openTrash(); return true; }
+    if (command === 'templates') { await this.openTemplates(); return true; }
+    if (command === 'daily') { await this.openDailyNote(); return true; }
+    return false;
   }
 
   private pluginRevisionChanged(): void {
@@ -704,8 +738,33 @@ struct Index {
       value === 'light' ? ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT : ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
   }
 
+  private applyNoteOpenedTime(noteId: string, openedAt: number): void {
+    if (!noteId || openedAt <= 0) { return; }
+    let changed = false;
+    const next = this.notes.map((n: NoteItem): NoteItem => {
+      if (n.id === noteId) {
+        n.lastOpenedAt = openedAt;
+        changed = true;
+      }
+      return n;
+    });
+    if (changed) {
+      this.notes = next;
+    }
+  }
+
+  private recordOpenedNote(noteId: string): void {
+    if (!noteId || noteId.startsWith('map:') || noteId.startsWith('canvas:')) { return; }
+    const now = Date.now();
+    this.applyNoteOpenedTime(noteId, now);
+    LexiStorageService.recordNoteOpened(this.context(), noteId, now).then((ts: number): void => {
+      this.applyNoteOpenedTime(noteId, ts);
+    }).catch((): void => {});
+  }
+
   private openNote(noteId: string): void {
     if (noteId.length === 0) { return; }
+    this.recordOpenedNote(noteId);
     this.openNoteArkui(noteId);
   }
   private openNoteArkui(noteId: string): void {
@@ -754,6 +813,7 @@ struct Index {
     }
     if (id.startsWith('canvas:')) { this.openCanvas(id.substring(7)); return; }
     if (this.wide()) {
+      this.recordOpenedNote(id);
       this.activeTab = 1; this.desktopNoteId = id; this.desktopOpenMode = mode; this.desktopOpenRevision++;
     } else { this.openNote(id); }
   }
@@ -1362,7 +1422,7 @@ struct Index {
               .fontColor(this.palette.text_primary)
               .maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
-              .animation({ duration: 150, curve: Curve.EaseOut })
+              .animation(LexiMotion.param(LexiMotion.DUR_FAST, LexiMotion.easeOut(), this.reduceMotion))
           }
         }
 
@@ -1607,6 +1667,7 @@ struct Index {
         await this.executeDesktopCommand(command, id, title);
       },
       onSaved: (note: NoteItem): void => { this.desktopNoteSaved(note); },
+      onNoteOpened: (noteId: string, openedAt: number): void => { this.applyNoteOpenedTime(noteId, openedAt); },
       onMapSaved: (doc: MindMapDoc): void => { this.desktopMapSaved(doc); },
       onSelectProject: async (projectId: string): Promise<void> => { await this.selectProject(projectId); },
       onManageWorkspaces: (): void => { this.openWorkspaceManager(); },
@@ -1729,7 +1790,7 @@ struct Index {
               : undefined
           )
           .animationCurve(this.tabSpring)
-          .animationDuration(this.reduceMotion ? 0 : 260)
+          .animationDuration(this.reduceMotion ? 0 : LexiMotion.DUR_BASE)
           .scrollable(false)
           .onChange((index: number) => {
             this.activateTab(index);
@@ -1754,7 +1815,7 @@ struct Index {
           preferType: SheetType.CENTER,
           dragBar: false,
           showClose: false,
-          radius: LengthMetrics.vp(12),
+          radius: LengthMetrics.vp(LexiTokens.RADIUS_LG),
           backgroundColor: this.palette.workspace_page,
           onDisappear: (): void => { LexiHotkeyRecorder.cancel(); this.storageAccessChanged(); }
         })
@@ -1765,7 +1826,7 @@ struct Index {
           preferType: SheetType.CENTER,
           dragBar: false,
           showClose: false,
-          radius: LengthMetrics.vp(16),
+          radius: LengthMetrics.vp(LexiTokens.RADIUS_LG),
           backgroundColor: this.palette.workspace_page
         })
       Column().width(0).height(0)

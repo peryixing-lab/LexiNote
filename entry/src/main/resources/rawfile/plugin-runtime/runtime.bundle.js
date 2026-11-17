@@ -378,18 +378,51 @@ function toFileRef(raw) {
   return Object.freeze(ref);
 }
 
+function toEditorSelection(raw) {
+  if (!isPlainObject(raw)) {
+    return Object.freeze({ from: 0, to: 0 });
+  }
+  const fromRaw = typeof raw.from === 'number' && isFinite(raw.from)
+    ? Math.max(0, Math.floor(raw.from))
+    : (typeof raw.start === 'number' && isFinite(raw.start) ? Math.max(0, Math.floor(raw.start)) : 0);
+  const toRaw = typeof raw.to === 'number' && isFinite(raw.to)
+    ? Math.max(0, Math.floor(raw.to))
+    : (typeof raw.end === 'number' && isFinite(raw.end) ? Math.max(0, Math.floor(raw.end)) : fromRaw);
+  return Object.freeze({
+    from: Math.min(fromRaw, toRaw),
+    to: Math.max(fromRaw, toRaw)
+  });
+}
+
+function toEditorCursor(raw) {
+  if (!isPlainObject(raw)) {
+    return Object.freeze({ line: 0, ch: 0 });
+  }
+  const line = typeof raw.line === 'number' && isFinite(raw.line) ? Math.max(0, Math.floor(raw.line)) : 0;
+  const ch = typeof raw.ch === 'number' && isFinite(raw.ch) ? Math.max(0, Math.floor(raw.ch)) : 0;
+  return Object.freeze({ line, ch });
+}
+
 function toEditorSnapshot(raw) {
   if (!isPlainObject(raw)) {
     return null;
   }
+  const noteId = typeof raw.noteId === 'string' && raw.noteId
+    ? raw.noteId
+    : (typeof raw.fileId === 'string' ? raw.fileId : '');
+  const revision = typeof raw.revision === 'number' && isFinite(raw.revision)
+    ? raw.revision
+    : (typeof raw.version === 'number' && isFinite(raw.version) ? raw.version : 0);
   return Object.freeze({
     editorId: typeof raw.editorId === 'string' ? raw.editorId : '',
-    noteId: typeof raw.noteId === 'string' ? raw.noteId : '',
+    noteId,
     vaultId: typeof raw.vaultId === 'string' ? raw.vaultId : '',
     windowId: typeof raw.windowId === 'string' ? raw.windowId : '',
-    revision: typeof raw.revision === 'number' && isFinite(raw.revision) ? raw.revision : 0,
+    revision,
     baseContent: typeof raw.baseContent === 'string' ? raw.baseContent : '',
     content: typeof raw.content === 'string' ? raw.content : '',
+    selection: toEditorSelection(raw.selection),
+    cursor: toEditorCursor(raw.cursor),
     dirty: raw.dirty === true,
     readOnly: raw.readOnly === true,
     focused: raw.focused === true
@@ -605,6 +638,8 @@ class FileMirror {
       revision: current.revision,
       baseContent: current.baseContent,
       content: current.content,
+      selection: current.selection || toEditorSelection(null),
+      cursor: current.cursor || toEditorCursor(null),
       dirty: current.dirty,
       readOnly: current.readOnly,
       focused: current.focused
@@ -623,6 +658,18 @@ class FileMirror {
       }
       if (typeof patch.dirty === 'boolean') {
         next.dirty = patch.dirty;
+      }
+      if (typeof patch.readOnly === 'boolean') {
+        next.readOnly = patch.readOnly;
+      }
+      if (typeof patch.focused === 'boolean') {
+        next.focused = patch.focused;
+      }
+      if (isPlainObject(patch.selection)) {
+        next.selection = toEditorSelection(patch.selection);
+      }
+      if (isPlainObject(patch.cursor)) {
+        next.cursor = toEditorCursor(patch.cursor);
       }
     }
     this._editor = Object.freeze(next);
@@ -1910,6 +1957,19 @@ function createContext(options) {
       commandMap.delete(id);
       quietRpc('commands.unregister', { id });
       return null;
+    },
+    async listHost() {
+      const list = await rpc('commands.listHost', {});
+      return Array.isArray(list) ? list : [];
+    },
+    async executeHost(id, title) {
+      const payload = isPlainObject(id)
+        ? { id: typeof id.id === 'string' ? id.id : '', title: typeof id.title === 'string' ? id.title : '' }
+        : { id: typeof id === 'string' ? id : String(id || ''), title: typeof title === 'string' ? title : '' };
+      if (!payload.id.trim()) {
+        throw createError(ERROR_CODES.INVALID_ARGUMENT, '命令 id 不能为空');
+      }
+      return rpc('commands.executeHost', payload);
     }
   };
   Object.freeze(commands);
@@ -2117,6 +2177,25 @@ function createContext(options) {
       if (typeof source.baseUrl === 'string') { params.baseUrl = source.baseUrl; }
       if (typeof source.model === 'string') { params.model = source.model; }
       if (typeof source.apiKey === 'string' && source.apiKey.length > 0) { params.apiKey = source.apiKey; }
+      if (typeof source.credentialRef === 'string') { params.credentialRef = source.credentialRef; }
+      if (source.clearApiKey === true) { params.clearApiKey = true; }
+      if (isPlainObject(source.compat)) {
+        const compat = {};
+        if (typeof source.compat.maxTokensField === 'string') { compat.maxTokensField = source.compat.maxTokensField; }
+        if (typeof source.compat.thinkingFormat === 'string') { compat.thinkingFormat = source.compat.thinkingFormat; }
+        if (typeof source.compat.supportsDeveloperRole === 'boolean') {
+          compat.supportsDeveloperRole = source.compat.supportsDeveloperRole;
+        }
+        params.compat = compat;
+      }
+      if (isPlainObject(source.retryPolicy)) {
+        const retryPolicy = {};
+        if (typeof source.retryPolicy.mode === 'string') { retryPolicy.mode = source.retryPolicy.mode; }
+        if (typeof source.retryPolicy.maxRetries === 'number' && isFinite(source.retryPolicy.maxRetries)) {
+          retryPolicy.maxRetries = Math.floor(source.retryPolicy.maxRetries);
+        }
+        params.retryPolicy = retryPolicy;
+      }
       if (typeof source.maxTokens === 'number' && isFinite(source.maxTokens)) {
         params.maxTokens = Math.floor(source.maxTokens);
       }
@@ -2210,6 +2289,94 @@ function createContext(options) {
     },
     list() {
       return Array.from(viewRegistry.keys());
+    }
+  });
+
+  const mindmap = Object.freeze({
+    async list() {
+      const list = await rpc('mindmap.list', { vaultId });
+      return Array.isArray(list) ? list : [];
+    },
+    async get(query) {
+      const payload = typeof query === 'string'
+        ? { vaultId, id: query, title: query }
+        : Object.assign({ vaultId }, isPlainObject(query) ? query : {});
+      return rpc('mindmap.get', payload);
+    },
+    async create(options) {
+      const payload = Object.assign({ vaultId }, isPlainObject(options) ? options : {});
+      return rpc('mindmap.create', payload);
+    },
+    async update(options) {
+      const payload = Object.assign({ vaultId }, isPlainObject(options) ? options : {});
+      if (typeof payload.id !== 'string' || !payload.id.trim()) {
+        throw createError(ERROR_CODES.INVALID_ARGUMENT, '缺少思维导图 id');
+      }
+      return rpc('mindmap.update', payload);
+    },
+    async delete(idOrDoc) {
+      const id = typeof idOrDoc === 'string' ? idOrDoc : (isPlainObject(idOrDoc) && typeof idOrDoc.id === 'string' ? idOrDoc.id : '');
+      if (!id.trim()) {
+        throw createError(ERROR_CODES.INVALID_ARGUMENT, '缺少思维导图 id');
+      }
+      return rpc('mindmap.delete', { vaultId, id });
+    },
+    async open(idOrDoc) {
+      const id = typeof idOrDoc === 'string' ? idOrDoc : (isPlainObject(idOrDoc) && typeof idOrDoc.id === 'string' ? idOrDoc.id : '');
+      if (!id.trim()) {
+        throw createError(ERROR_CODES.INVALID_ARGUMENT, '缺少思维导图 id');
+      }
+      return rpc('mindmap.open', { vaultId, id });
+    }
+  });
+
+  const canvas = Object.freeze({
+    async list() {
+      const list = await rpc('canvas.list', { vaultId });
+      return Array.isArray(list) ? list : [];
+    },
+    async get(query) {
+      const payload = typeof query === 'string'
+        ? { vaultId, id: query, title: query }
+        : Object.assign({ vaultId }, isPlainObject(query) ? query : {});
+      return rpc('canvas.get', payload);
+    },
+    async create(options) {
+      const payload = Object.assign({ vaultId }, isPlainObject(options) ? options : {});
+      return rpc('canvas.create', payload);
+    },
+    async update(options) {
+      const payload = Object.assign({ vaultId }, isPlainObject(options) ? options : {});
+      if (typeof payload.id !== 'string' || !payload.id.trim()) {
+        throw createError(ERROR_CODES.INVALID_ARGUMENT, '缺少白板 id');
+      }
+      return rpc('canvas.update', payload);
+    },
+    async delete(idOrBoard) {
+      const id = typeof idOrBoard === 'string' ? idOrBoard : (isPlainObject(idOrBoard) && typeof idOrBoard.id === 'string' ? idOrBoard.id : '');
+      if (!id.trim()) {
+        throw createError(ERROR_CODES.INVALID_ARGUMENT, '缺少白板 id');
+      }
+      return rpc('canvas.delete', { vaultId, id });
+    },
+    async open(idOrBoard) {
+      const id = typeof idOrBoard === 'string' ? idOrBoard : (isPlainObject(idOrBoard) && typeof idOrBoard.id === 'string' ? idOrBoard.id : '');
+      if (!id.trim()) {
+        throw createError(ERROR_CODES.INVALID_ARGUMENT, '缺少白板 id');
+      }
+      return rpc('canvas.open', { vaultId, id });
+    }
+  });
+
+  const appSettings = Object.freeze({
+    async get() {
+      return rpc('settings.get', {});
+    },
+    async set(patch) {
+      if (!isPlainObject(patch)) {
+        throw createError(ERROR_CODES.INVALID_ARGUMENT, 'settings patch 必须是对象');
+      }
+      return rpc('settings.set', patch);
     }
   });
 
@@ -2307,6 +2474,9 @@ function createContext(options) {
     ai,
     views,
     storage,
+    mindmap,
+    canvas,
+    appSettings,
     log(level, message) {
       log(level, message);
     }

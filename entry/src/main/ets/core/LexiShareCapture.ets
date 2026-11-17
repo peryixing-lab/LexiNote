@@ -430,13 +430,19 @@ export class LexiShareCapture {
     const parsed = LexiFrontmatter.parse(rawMarkdown);
     const titleProp = parsed.properties.find((p: NoteProperty): boolean => p.key === 'title' && !!p.propValue.trim());
     const notebookProp = parsed.properties.find((p: NoteProperty): boolean => p.key === 'notebook' && !!p.propValue.trim());
-    const initialTitle = titleProp
-      ? titleProp.propValue.trim()
-      : (draft.title || '').replace(/\.(md|markdown)$/i, '').trim();
+    const initialTitle = parsed.title.trim()
+      ? parsed.title.trim()
+      : titleProp
+        ? titleProp.propValue.trim()
+        : (draft.title || '').replace(/\.(md|markdown)$/i, '').trim();
     const cleanedPair = LexiShareCapture.stripDuplicateLeadingH1(parsed.body, initialTitle);
     const noteTitle = cleanedPair[0].slice(0, 160);
     const cleanBody = cleanedPair[1];
-    const targetNotebook = notebookProp ? notebookProp.propValue.trim().slice(0, 80) : defaultNotebook;
+    const targetNotebook = parsed.notebook.trim()
+      ? parsed.notebook.trim().slice(0, 80)
+      : notebookProp
+        ? notebookProp.propValue.trim().slice(0, 80)
+        : defaultNotebook;
 
     const existingNotes = (await LexiStorageService.getNotes(targetVault.id)).filter(
       (n: NoteItem): boolean => n.trashedAt === 0 && !n.sourceMissing

@@ -440,6 +440,19 @@ function createContext(options) {
       commandMap.delete(id);
       quietRpc('commands.unregister', { id });
       return null;
+    },
+    async listHost() {
+      const list = await rpc('commands.listHost', {});
+      return Array.isArray(list) ? list : [];
+    },
+    async executeHost(id, title) {
+      const payload = isPlainObject(id)
+        ? { id: typeof id.id === 'string' ? id.id : '', title: typeof id.title === 'string' ? id.title : '' }
+        : { id: typeof id === 'string' ? id : String(id || ''), title: typeof title === 'string' ? title : '' };
+      if (!payload.id.trim()) {
+        throw createError(ERROR_CODES.INVALID_ARGUMENT, '命令 id 不能为空');
+      }
+      return rpc('commands.executeHost', payload);
     }
   };
   Object.freeze(commands);
@@ -647,6 +660,25 @@ function createContext(options) {
       if (typeof source.baseUrl === 'string') { params.baseUrl = source.baseUrl; }
       if (typeof source.model === 'string') { params.model = source.model; }
       if (typeof source.apiKey === 'string' && source.apiKey.length > 0) { params.apiKey = source.apiKey; }
+      if (typeof source.credentialRef === 'string') { params.credentialRef = source.credentialRef; }
+      if (source.clearApiKey === true) { params.clearApiKey = true; }
+      if (isPlainObject(source.compat)) {
+        const compat = {};
+        if (typeof source.compat.maxTokensField === 'string') { compat.maxTokensField = source.compat.maxTokensField; }
+        if (typeof source.compat.thinkingFormat === 'string') { compat.thinkingFormat = source.compat.thinkingFormat; }
+        if (typeof source.compat.supportsDeveloperRole === 'boolean') {
+          compat.supportsDeveloperRole = source.compat.supportsDeveloperRole;
+        }
+        params.compat = compat;
+      }
+      if (isPlainObject(source.retryPolicy)) {
+        const retryPolicy = {};
+        if (typeof source.retryPolicy.mode === 'string') { retryPolicy.mode = source.retryPolicy.mode; }
+        if (typeof source.retryPolicy.maxRetries === 'number' && isFinite(source.retryPolicy.maxRetries)) {
+          retryPolicy.maxRetries = Math.floor(source.retryPolicy.maxRetries);
+        }
+        params.retryPolicy = retryPolicy;
+      }
       if (typeof source.maxTokens === 'number' && isFinite(source.maxTokens)) {
         params.maxTokens = Math.floor(source.maxTokens);
       }
@@ -740,6 +772,94 @@ function createContext(options) {
     },
     list() {
       return Array.from(viewRegistry.keys());
+    }
+  });
+
+  const mindmap = Object.freeze({
+    async list() {
+      const list = await rpc('mindmap.list', { vaultId });
+      return Array.isArray(list) ? list : [];
+    },
+    async get(query) {
+      const payload = typeof query === 'string'
+        ? { vaultId, id: query, title: query }
+        : Object.assign({ vaultId }, isPlainObject(query) ? query : {});
+      return rpc('mindmap.get', payload);
+    },
+    async create(options) {
+      const payload = Object.assign({ vaultId }, isPlainObject(options) ? options : {});
+      return rpc('mindmap.create', payload);
+    },
+    async update(options) {
+      const payload = Object.assign({ vaultId }, isPlainObject(options) ? options : {});
+      if (typeof payload.id !== 'string' || !payload.id.trim()) {
+        throw createError(ERROR_CODES.INVALID_ARGUMENT, '缺少思维导图 id');
+      }
+      return rpc('mindmap.update', payload);
+    },
+    async delete(idOrDoc) {
+      const id = typeof idOrDoc === 'string' ? idOrDoc : (isPlainObject(idOrDoc) && typeof idOrDoc.id === 'string' ? idOrDoc.id : '');
+      if (!id.trim()) {
+        throw createError(ERROR_CODES.INVALID_ARGUMENT, '缺少思维导图 id');
+      }
+      return rpc('mindmap.delete', { vaultId, id });
+    },
+    async open(idOrDoc) {
+      const id = typeof idOrDoc === 'string' ? idOrDoc : (isPlainObject(idOrDoc) && typeof idOrDoc.id === 'string' ? idOrDoc.id : '');
+      if (!id.trim()) {
+        throw createError(ERROR_CODES.INVALID_ARGUMENT, '缺少思维导图 id');
+      }
+      return rpc('mindmap.open', { vaultId, id });
+    }
+  });
+
+  const canvas = Object.freeze({
+    async list() {
+      const list = await rpc('canvas.list', { vaultId });
+      return Array.isArray(list) ? list : [];
+    },
+    async get(query) {
+      const payload = typeof query === 'string'
+        ? { vaultId, id: query, title: query }
+        : Object.assign({ vaultId }, isPlainObject(query) ? query : {});
+      return rpc('canvas.get', payload);
+    },
+    async create(options) {
+      const payload = Object.assign({ vaultId }, isPlainObject(options) ? options : {});
+      return rpc('canvas.create', payload);
+    },
+    async update(options) {
+      const payload = Object.assign({ vaultId }, isPlainObject(options) ? options : {});
+      if (typeof payload.id !== 'string' || !payload.id.trim()) {
+        throw createError(ERROR_CODES.INVALID_ARGUMENT, '缺少白板 id');
+      }
+      return rpc('canvas.update', payload);
+    },
+    async delete(idOrBoard) {
+      const id = typeof idOrBoard === 'string' ? idOrBoard : (isPlainObject(idOrBoard) && typeof idOrBoard.id === 'string' ? idOrBoard.id : '');
+      if (!id.trim()) {
+        throw createError(ERROR_CODES.INVALID_ARGUMENT, '缺少白板 id');
+      }
+      return rpc('canvas.delete', { vaultId, id });
+    },
+    async open(idOrBoard) {
+      const id = typeof idOrBoard === 'string' ? idOrBoard : (isPlainObject(idOrBoard) && typeof idOrBoard.id === 'string' ? idOrBoard.id : '');
+      if (!id.trim()) {
+        throw createError(ERROR_CODES.INVALID_ARGUMENT, '缺少白板 id');
+      }
+      return rpc('canvas.open', { vaultId, id });
+    }
+  });
+
+  const appSettings = Object.freeze({
+    async get() {
+      return rpc('settings.get', {});
+    },
+    async set(patch) {
+      if (!isPlainObject(patch)) {
+        throw createError(ERROR_CODES.INVALID_ARGUMENT, 'settings patch 必须是对象');
+      }
+      return rpc('settings.set', patch);
     }
   });
 
@@ -837,6 +957,9 @@ function createContext(options) {
     ai,
     views,
     storage,
+    mindmap,
+    canvas,
+    appSettings,
     log(level, message) {
       log(level, message);
     }

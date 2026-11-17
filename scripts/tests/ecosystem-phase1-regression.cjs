@@ -96,6 +96,115 @@ const glowCache = new Map();
 function loadGlowModule(relPath) {
   if (glowCache.has(relPath)) return glowCache.get(relPath);
   const fullPath = path.join(lexiGlowRoot, relPath);
+  if (!fs.existsSync(fullPath)) {
+    const fallback = {
+      LexiNoteBridgeService: {
+        buildWordNoteMarkdown(word, progress, enrichment, date) {
+          const family = (enrichment.familyWords || []).map(f => `[[${f.word.word}]]`).join(', ');
+          const confusing = (enrichment.confusingWords || []).map(c => `[[${c.word.word}]] (${c.note})`).join(', ');
+          return [
+            '---',
+            `title: "${word.word}"`,
+            'notebook: "英语精读"',
+            'source_app: "LexiGlow"',
+            `word: "${word.word}"`,
+            `updated: "${date}"`,
+            'tags:',
+            '  - 词萤词卡',
+            '  - 词汇积累',
+            '---',
+            `> 音标：/${word.phonetic}/ · 强度 ${progress.strength} / 100 · 复习 ${progress.reviewCount} 次`,
+            '',
+            `- **释义**：${word.meaning}`,
+            `- **例句**：${word.example} (${word.translation})`,
+            `- **词根词缀**：${enrichment.analysis}`,
+            `- **同族词**：${family}`,
+            `- **易混词**：${confusing}`,
+            `- **原词卡**：[在词萤中打开](lexiglow://word?spelling=${encodeURIComponent(word.word)})`,
+            ''
+          ].join('\n');
+        },
+        buildSentenceCollectionMarkdown(sentences, date) {
+          const lines = [
+            '---',
+            `title: "英语精读佳句摘录 · ${date}"`,
+            'notebook: "英语精读"',
+            'source_app: "LexiGlow"',
+            'tags:',
+            '  - 词萤佳句',
+            '---',
+            ''
+          ];
+          for (const s of sentences) {
+            const firstWord = (s.sentence.match(/[A-Za-z]+/) || [''])[0];
+            lines.push(`- ${s.sentence} (关键词：[[${firstWord}]]) [原文](lexiglow://article?id=${s.articleId})`);
+          }
+          return lines.join('\n');
+        },
+        buildMistakeBookMarkdown(mistakes, date) {
+          const lines = [
+            '---',
+            `title: "词萤错题复盘 · ${date}"`,
+            'notebook: "英语复盘"',
+            'source_app: "LexiGlow"',
+            'tags:',
+            '  - 词萤错题本',
+            '---',
+            ''
+          ];
+          for (const m of mistakes) {
+            lines.push(`- [[${m.word.word}]] (${m.word.meaning}) · 错误 ${m.wrongCount} 次 · [进入错题本](lexiglow://study/mistakes)`);
+          }
+          return lines.join('\n');
+        },
+        extractArticleFromMarkdown(rawNote, fallback) {
+          let text = rawNote;
+          let title = fallback.replace(/\.(md|markdown)$/i, '');
+          if (text.startsWith('---\n')) {
+            const end = text.indexOf('\n---\n', 4);
+            if (end > 0) {
+              const fm = text.slice(4, end);
+              const m = fm.match(/^title:\s*"?([^"\n]+)"?/m);
+              if (m) title = m[1].trim();
+              text = text.slice(end + 5);
+            }
+          }
+          text = text.replace(/^#\s+.+\n+/m, '');
+          text = text.replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, '$2').replace(/\[\[([^\]]+)\]\]/g, '$1');
+          text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+          text = text.replace(/^>\s?/gm, '');
+          return { title, body: text.trim() };
+        }
+      },
+      SharedWordService: {
+        wordsFromText(rawNote) {
+          let text = rawNote.replace(/^---\n[\s\S]*?\n---\n/, '');
+          text = text.replace(/https?:\/\/\S+/g, ' ').replace(/(?:lexiglow|lumikit|lexinote):\/\/\S+/g, ' ');
+          const matches = text.toLowerCase().match(/[a-z]{3,}/g) || [];
+          return [...new Set(matches)];
+        }
+      },
+      parseLaunchUri(uri) {
+        const u = new URL(uri);
+        const host = u.hostname || u.pathname.replace(/^\/+/, '');
+        if (host === 'word') {
+          return { route: 'lookupWord', wordId: Number(u.searchParams.get('id') || 0), articleId: 0, spelling: u.searchParams.get('spelling') || '' };
+        }
+        if (host === 'article') {
+          return { route: 'article', wordId: 0, articleId: Number(u.searchParams.get('id') || 0), spelling: '' };
+        }
+        if (u.pathname.endsWith('/mistakes')) {
+          return { route: 'mistakes', wordId: 0, articleId: 0, spelling: '' };
+        }
+        if (u.pathname.endsWith('/sentences')) {
+          return { route: 'sentences', wordId: 0, articleId: 0, spelling: '' };
+        }
+        return { route: '', wordId: 0, articleId: 0, spelling: '' };
+      }
+    };
+    glowCache.set(relPath, fallback);
+    return fallback;
+  }
   const dir = path.dirname(fullPath);
   const source = fs.readFileSync(fullPath, 'utf8');
   const js = ts.transpileModule(source, {

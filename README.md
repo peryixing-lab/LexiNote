@@ -9,6 +9,7 @@
 - [HarmonyOS：鸿蒙工程](https://github.com/peryixing-lab/LexiNote/tree/HarmonyOS)
 - [Windows：Windows 工程](https://github.com/peryixing-lab/LexiNote/tree/Windows)
 - [macOS：macOS 原生工程](https://github.com/peryixing-lab/LexiNote/tree/macOS)
+- [Android：Android 手机工程](https://github.com/peryixing-lab/LexiNote/tree/Android)
 - [main：项目概览、Harness 插件和共享文档](https://github.com/peryixing-lab/LexiNote/tree/main)
 
 克隆当前平台：

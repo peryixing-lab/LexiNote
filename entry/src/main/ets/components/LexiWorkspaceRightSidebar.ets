@@ -1,7 +1,10 @@
 import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
+import { LexiTokens } from '../core/LexiTokens';
+import { LexiMotion } from '../core/LexiMotion';
 import { LexiI18n } from '../core/LexiI18n';
 import { LexiWorkspaceInspectorSnapshot } from '../core/LexiWorkspaceModels';
-import { NoteLink, NoteProperty, OutlineHeading } from '../core/LexiModels';
+import { LexiLinkCandidate, NoteItem, NoteLink, NoteProperty, OutlineHeading } from '../core/LexiModels';
+import { LexiLinkPreviewButton } from './LexiLinkPreviewCard';
 import { PluginRuntimeController, PluginRuntimeHost } from '../plugin/runtime/PluginRuntimeHost';
 import { PluginManager } from '../plugin/core/PluginManager';
 import { PluginRecord, PluginState } from '../plugin/model/PluginModels';
@@ -18,7 +21,10 @@ export struct LexiWorkspaceRightSidebar {
   @StorageProp('lexiPluginRuntimeNeeded') private runtimeNeeded: boolean = false;
   @StorageProp('lexiPluginOpenView') @Watch('onOpenViewRequest') private openViewRequest: string = '';
   @Prop sidebarOpen: boolean = false;
+  @Prop panelWidth: number = 0;
   @Prop snapshot: LexiWorkspaceInspectorSnapshot = new LexiWorkspaceInspectorSnapshot();
+  @Prop vaultNotes: NoteItem[] = [];
+  @Prop allLinks: NoteLink[] = [];
   @Prop selectedMode: string = 'outline';
   @State private plugins: PluginRecord[] = [];
   @State private loadedPluginId: string = '';
@@ -29,9 +35,24 @@ export struct LexiWorkspaceRightSidebar {
   onSelectMode: (mode: string) => void = (_mode: string): void => {};
   onRevealHeading: (heading: OutlineHeading) => void = (_heading: OutlineHeading): void => {};
   onOpenTarget: (target: string) => void = (_target: string): void => {};
+  onInsertWikiLink: (title: string) => void = (_title: string): void => {};
   onManagePlugins: () => void = (): void => {};
 
   private tr(source: string): string { return LexiI18n.text(source, this.interfaceLanguage); }
+
+  private linkTarget(link: NoteLink): string {
+    return `${link.targetId || link.targetTitle}${link.anchor ? '#' + link.anchor : ''}`;
+  }
+
+  private resolvedLinks(): NoteLink[] {
+    return this.allLinks.length > 0 ? this.allLinks : this.snapshot.outgoing.concat(this.snapshot.backlinks);
+  }
+
+  private candidateReasonLabel(reason: string): string {
+    if (reason === 'mention') { return this.tr('正文中提到'); }
+    if (reason === 'shared-tag') { return this.tr('共同标签'); }
+    return this.tr('同笔记本');
+  }
 
   aboutToAppear(): void {
     this.disposed = false;
@@ -163,23 +184,131 @@ export struct LexiWorkspaceRightSidebar {
           Text(this.tr('出链') + ` · ${this.snapshot.outgoing.length}`).fontSize(12).fontWeight(FontWeight.Medium)
             .fontColor(this.palette.text_secondary).width('100%').margin({ top: 22, bottom: 4 })
           ForEach(this.snapshot.outgoing, (link: NoteLink) => {
-            Button(link.targetTitle, { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-              .fontSize(12).fontColor(this.palette.brand_ink).width('100%').constraintSize({ minHeight: 34 })
-              .padding({ left: 8, right: 8 }).backgroundColor(Color.Transparent)
-              .onClick((): void => {
-                this.onOpenTarget(`${link.targetId || link.targetTitle}${link.anchor ? '#' + link.anchor : ''}`);
+            Row({ space: 6 }) {
+              Button(link.anchor ? `${link.targetTitle}#${link.anchor}` : link.targetTitle, { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
+                .fontSize(12).fontColor(this.palette.brand_ink).layoutWeight(1).constraintSize({ minHeight: 34 })
+                .padding({ left: 8, right: 4 }).backgroundColor(Color.Transparent)
+                .onClick((): void => {
+                  this.onOpenTarget(this.linkTarget(link));
+                })
+              LexiLinkPreviewButton({
+                label: '预览',
+                rawTarget: this.linkTarget(link),
+                availableNotes: this.vaultNotes,
+                allLinks: this.resolvedLinks(),
+                buttonHeight: 26,
+                compact: true,
+                popupPlacement: Placement.Left,
+                onOpenTarget: this.onOpenTarget
               })
+            }.width('100%').alignItems(VerticalAlign.Center)
           }, (link: NoteLink): string => `${link.sourceId}-${link.targetTitle}-${link.anchor}`)
         }
         if (this.selectedMode === 'outline' || this.selectedMode === 'backlinks') {
           Text(this.tr('反向链接') + ` · ${this.snapshot.backlinks.length}`).fontSize(12).fontWeight(FontWeight.Medium)
             .fontColor(this.palette.text_secondary).width('100%').margin({ top: 22, bottom: 4 })
           ForEach(this.snapshot.backlinks, (link: NoteLink) => {
-            Button(link.sourceTitle, { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-              .fontSize(12).fontColor(this.palette.brand_ink).width('100%').constraintSize({ minHeight: 34 })
-              .padding({ left: 8, right: 8 }).backgroundColor(Color.Transparent)
-              .onClick((): void => { this.onOpenTarget(link.sourceId); })
+            Row({ space: 6 }) {
+              Button(link.sourceTitle, { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
+                .fontSize(12).fontColor(this.palette.brand_ink).layoutWeight(1).constraintSize({ minHeight: 34 })
+                .padding({ left: 8, right: 4 }).backgroundColor(Color.Transparent)
+                .onClick((): void => { this.onOpenTarget(link.sourceId); })
+              LexiLinkPreviewButton({
+                label: '预览',
+                rawTarget: link.sourceId,
+                availableNotes: this.vaultNotes,
+                allLinks: this.resolvedLinks(),
+                buttonHeight: 26,
+                compact: true,
+                popupPlacement: Placement.Left,
+                onOpenTarget: this.onOpenTarget
+              })
+            }.width('100%').alignItems(VerticalAlign.Center)
           }, (link: NoteLink): string => `${link.sourceId}-${link.targetTitle}-${link.anchor}`)
+        }
+        if ((this.selectedMode === 'outline' || this.selectedMode === 'outgoing' || this.selectedMode === 'backlinks') && this.snapshot.isUnconnected) {
+          Column({ space: 8 }) {
+            Text(this.tr('当前笔记尚未建立连接'))
+              .fontSize(12)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(this.palette.text_primary)
+              .width('100%')
+            Text(this.tr('插入 [[双向链接]] 与相关笔记建立关联，可在图谱和知识库中快速串起内容。'))
+              .fontSize(11)
+              .lineHeight(17)
+              .fontColor(this.palette.text_secondary)
+              .width('100%')
+            if (this.snapshot.candidates.length > 0) {
+              Text(this.tr('建议连接的笔记'))
+                .fontSize(11)
+                .fontWeight(FontWeight.Medium)
+                .fontColor(this.palette.text_secondary)
+                .width('100%')
+                .margin({ top: 4 })
+              ForEach(
+                this.snapshot.candidates,
+                (cand: LexiLinkCandidate) => {
+                  Column({ space: 6 }) {
+                    Row({ space: 6 }) {
+                      Text(cand.title)
+                        .fontSize(12)
+                        .fontWeight(FontWeight.Medium)
+                        .fontColor(this.palette.text_primary)
+                        .maxLines(1)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis })
+                        .layoutWeight(1)
+                      Text(this.candidateReasonLabel(cand.reason))
+                        .fontSize(10)
+                        .fontColor(this.palette.brand_ink)
+                        .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+                        .backgroundColor(this.palette.brand_soft)
+                        .borderRadius(5)
+                    }.width('100%')
+                    Row({ space: 6 }) {
+                      LexiLinkPreviewButton({
+                        label: '预览',
+                        rawTarget: cand.noteId,
+                        availableNotes: this.vaultNotes,
+                        allLinks: this.resolvedLinks(),
+                        buttonHeight: 26,
+                        compact: true,
+                        popupPlacement: Placement.Left,
+                        onOpenTarget: this.onOpenTarget
+                      })
+                      Button({ type: ButtonType.Normal }) {
+                        Text(`+ [[${cand.title}]]`)
+                          .fontSize(11)
+                          .fontColor(this.palette.inverse_text)
+                          .maxLines(1)
+                          .textOverflow({ overflow: TextOverflow.Ellipsis })
+                      }
+                        .height(26)
+                        .layoutWeight(1)
+                        .padding({ left: 8, right: 8 })
+                        .borderRadius(7)
+                        .backgroundColor(this.palette.brand)
+                        .onClick((): void => {
+                          this.onInsertWikiLink(cand.title);
+                        })
+                    }.width('100%')
+                  }
+                  .width('100%')
+                  .padding(8)
+                  .backgroundColor(this.palette.surface)
+                  .border({ width: 0.5, color: this.palette.workspace_line })
+                  .borderRadius(LexiTokens.RADIUS_SM)
+                },
+                (cand: LexiLinkCandidate): string => `${this.snapshot.noteId}-cand-${cand.noteId}-${cand.reason}`
+              )
+            }
+          }
+          .width('100%')
+          .padding(10)
+          .margin({ top: 18 })
+          .backgroundColor(LexiTokens.calloutBg(this.palette))
+          .border({ width: 1, color: LexiTokens.calloutBorder(this.palette) })
+          .borderRadius(LexiTokens.RADIUS_MD)
+          .alignItems(HorizontalAlign.Start)
         }
       }
     }.width('100%').alignItems(HorizontalAlign.Start)
@@ -190,31 +319,34 @@ export struct LexiWorkspaceRightSidebar {
       Scroll() {
         Row({ space: 4 }) {
           if (this.harnessRecord()) {
+              Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+                Image($r('app.media.ic_star_muted')).supportSvg2(true).colorFilter(this.palette.text_secondary).width(18).height(18).draggable(false)
+              }.id('workspace-right-harness-tab').width(30).height(30).padding(6).borderRadius(LexiTokens.RADIUS_XS)
+                .accessibilityText('Harness')
+                .backgroundColor(this.selectedMode === 'plugin:' + HARNESS_PLUGIN_ID
+                  ? this.palette.workspace_selection : Color.Transparent)
+                .animation(LexiMotion.param(LexiMotion.DUR_FAST, LexiMotion.easeOut()))
+                .onClick((): void => {
+                  const record = this.harnessRecord();
+                  if (record) { this.selectPlugin(record); }
+                })
+            }
             Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-              Image($r('app.media.ic_star_muted')).supportSvg2(true).colorFilter(this.palette.text_secondary).width(18).height(18).draggable(false)
-            }.id('workspace-right-harness-tab').width(30).height(30).padding(6).borderRadius(5)
-              .accessibilityText('Harness')
-              .backgroundColor(this.selectedMode === 'plugin:' + HARNESS_PLUGIN_ID
-                ? this.palette.workspace_selection : Color.Transparent)
-              .onClick((): void => {
-                const record = this.harnessRecord();
-                if (record) { this.selectPlugin(record); }
-              })
-          }
-          Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-            Image($r('app.media.ic_sidebar_outline')).supportSvg2(true).colorFilter(this.palette.text_secondary).width(18).height(18).draggable(false)
-          }.id('workspace-right-outline-tab').width(30).height(30).padding(6).borderRadius(5)
-            .accessibilityText(this.tr('大纲'))
-            .backgroundColor(this.selectedMode.indexOf('plugin:') !== 0 ? this.palette.workspace_selection : Color.Transparent)
-            .onClick((): void => { this.onSelectMode('outline'); })
-          ForEach(this.otherPlugins(), (record: PluginRecord) => {
-            Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-              Image(this.pluginIcon(record)).supportSvg2(true).colorFilter(this.palette.text_secondary).width(18).height(18).draggable(false)
-            }.id('workspace-right-plugin-' + record.id).width(30).height(30).padding(6).borderRadius(5)
-              .accessibilityText(record.name || record.id)
-              .backgroundColor(this.selectedMode === 'plugin:' + record.id ? this.palette.workspace_selection : Color.Transparent)
-              .onClick((): void => { this.selectPlugin(record); })
-          }, (record: PluginRecord): string => record.id)
+              Image($r('app.media.ic_sidebar_outline')).supportSvg2(true).colorFilter(this.palette.text_secondary).width(18).height(18).draggable(false)
+            }.id('workspace-right-outline-tab').width(30).height(30).padding(6).borderRadius(LexiTokens.RADIUS_XS)
+              .accessibilityText(this.tr('大纲'))
+              .backgroundColor(this.selectedMode.indexOf('plugin:') !== 0 ? this.palette.workspace_selection : Color.Transparent)
+              .animation(LexiMotion.param(LexiMotion.DUR_FAST, LexiMotion.easeOut()))
+              .onClick((): void => { this.onSelectMode('outline'); })
+            ForEach(this.otherPlugins(), (record: PluginRecord) => {
+              Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
+                Image(this.pluginIcon(record)).supportSvg2(true).colorFilter(this.palette.text_secondary).width(18).height(18).draggable(false)
+              }.id('workspace-right-plugin-' + record.id).width(30).height(30).padding(6).borderRadius(LexiTokens.RADIUS_XS)
+                .accessibilityText(record.name || record.id)
+                .backgroundColor(this.selectedMode === 'plugin:' + record.id ? this.palette.workspace_selection : Color.Transparent)
+                .animation(LexiMotion.param(LexiMotion.DUR_FAST, LexiMotion.easeOut()))
+                .onClick((): void => { this.selectPlugin(record); })
+            }, (record: PluginRecord): string => record.id)
         }.height(48).padding({ left: 12, right: 12 }).alignItems(VerticalAlign.Center)
       }.id('workspace-right-toolbar').width('100%').height(48).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
         .border({ width: { bottom: 0.5 }, color: this.palette.workspace_line })
@@ -248,7 +380,7 @@ export struct LexiWorkspaceRightSidebar {
             .backgroundColor(this.palette.workspace_inspector)
         }
       }.width('100%').layoutWeight(1)
-    }.id('workspace-right-sidebar').width('100%').height('100%')
+    }.id('workspace-right-sidebar').width(this.panelWidth > 0 ? this.panelWidth : '100%').height('100%')
       .backgroundColor(this.palette.workspace_inspector)
       .border({ width: { left: 0.5 }, color: this.palette.workspace_line })
   }

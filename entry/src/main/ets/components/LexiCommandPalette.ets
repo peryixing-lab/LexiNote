@@ -1,10 +1,13 @@
 import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
+import { LexiTokens } from '../core/LexiTokens';
+import { LexiMotion } from '../core/LexiMotion';
 import { LexiHotkeySettings } from '../core/LexiHotkeySettings';
 import { LexiI18n } from '../core/LexiI18n';
 import { CanvasBoard, MindMapDoc, NoteItem } from '../core/LexiModels';
 import { LEXI_COMMANDS, LexiCommand } from '../core/LexiCommands';
 import { LexiSearch } from '../core/LexiSearch';
 import { MarkdownEngine } from '../core/MarkdownEngine';
+import { LexiHighlightText } from './LexiLinkPreviewCard';
 import { PluginCommandRegistry, PluginCommandEntry } from '../plugin/core/PluginCommandRegistry';
 import { KeyCode } from '@kit.InputKit';
 
@@ -54,28 +57,43 @@ export struct LexiCommandPalette {
         .map((entry: PluginCommandEntry): LexiCommand => new LexiCommand(entry.qualifiedId, entry.title, '插件'));
       return builtin.concat(pluginCommands);
     }
+    const trimmedQuery = this.paletteQuery.trim();
+    const accessById = new Map<string, number>();
     const result: LexiCommand[] = [];
     for (const note of this.notes) {
       if (note.trashedAt > 0) { continue; }
       const title = MarkdownEngine.displayTitle(note);
-      if (LexiSearch.rank(title, this.paletteQuery) >= 0 || (this.paletteQuery && LexiSearch.matches(note, this.paletteQuery))) {
-        result.push(new LexiCommand(note.id, title, this.tr('笔记 · {0}', [note.notebook])));
+      if (LexiSearch.rank(title, this.paletteQuery) >= 0 || (trimmedQuery.length > 0 && LexiSearch.matches(note, this.paletteQuery))) {
+        accessById.set(note.id, note.lastOpenedAt > 0 ? note.lastOpenedAt : note.updatedAt);
+        const snippet = trimmedQuery.length > 0 ? MarkdownEngine.extractSnippet(note, this.paletteQuery).trim() : '';
+        const baseHint = this.tr('笔记 · {0}', [note.notebook]);
+        const hint = snippet.length > 0 ? `${baseHint} · ${snippet}` : baseHint;
+        result.push(new LexiCommand(note.id, title, hint));
       }
     }
     for (const map of this.maps) {
       if (map.trashedAt === 0 && LexiSearch.rank(map.title, this.paletteQuery) >= 0) {
-        result.push(new LexiCommand(`map:${map.id}`, map.title || this.tr('未命名导图'), this.tr('思维导图')));
+        const key = `map:${map.id}`;
+        accessById.set(key, map.updatedAt);
+        result.push(new LexiCommand(key, map.title || this.tr('未命名导图'), this.tr('思维导图')));
       }
     }
     for (const board of this.canvases) {
       if (LexiSearch.rank(board.title, this.paletteQuery) >= 0) {
-        result.push(new LexiCommand(`canvas:${board.id}`, board.title || this.tr('未命名白板'), this.tr('白板')));
+        const key = `canvas:${board.id}`;
+        accessById.set(key, board.updatedAt);
+        result.push(new LexiCommand(key, board.title || this.tr('未命名白板'), this.tr('白板')));
       }
     }
     return result.sort((a: LexiCommand, b: LexiCommand): number => {
+      if (!trimmedQuery) {
+        return (accessById.get(b.id) ?? 0) - (accessById.get(a.id) ?? 0);
+      }
       const ar = LexiSearch.rank(a.title, this.paletteQuery);
       const br = LexiSearch.rank(b.title, this.paletteQuery);
-      return (ar < 0 ? 1000 : ar) - (br < 0 ? 1000 : br);
+      const diff = (ar < 0 ? 1000 : ar) - (br < 0 ? 1000 : br);
+      if (diff !== 0) { return diff; }
+      return (accessById.get(b.id) ?? 0) - (accessById.get(a.id) ?? 0);
     }).slice(0, 60);
   }
 
@@ -157,32 +175,72 @@ export struct LexiCommandPalette {
   @Builder
   private resultRow(command: LexiCommand, rowIndex: number) {
     Button({ type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL }) {
-      Column({ space: 3 }) {
-        Text(this.commandTitle(command))
-          .fontSize(14)
-          .fontWeight(rowIndex === this.selectedResult ? FontWeight.Medium : FontWeight.Normal)
-          .fontColor(this.palette.text_primary)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .width('100%')
-        if (command.hint) {
+      Row({ space: 12 }) {
+        Column({ space: 3 }) {
+          if (this.paletteQuery.trim().length > 0) {
+            LexiHighlightText({
+              sourceText: this.commandTitle(command),
+              queryText: this.paletteQuery,
+              textSize: 14,
+              textLineHeight: 19,
+              textWeight: rowIndex === this.selectedResult ? FontWeight.Medium : FontWeight.Normal,
+              customTextColor: this.palette.text_primary,
+              lineLimit: 1
+            })
+          } else {
+            Text(this.commandTitle(command))
+              .fontSize(14)
+              .fontWeight(rowIndex === this.selectedResult ? FontWeight.Medium : FontWeight.Normal)
+              .fontColor(this.palette.text_primary)
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .width('100%')
+          }
+          if (command.hint && this.mode !== 'commands') {
+            if (this.paletteQuery.trim().length > 0) {
+              LexiHighlightText({
+                sourceText: command.hint,
+                queryText: this.paletteQuery,
+                textSize: LexiTokens.TYPE_MICRO,
+                textLineHeight: 15,
+                textWeight: FontWeight.Normal,
+                customTextColor: this.palette.text_secondary,
+                lineLimit: 1
+              })
+            } else {
+              Text(command.hint)
+                .fontSize(LexiTokens.TYPE_MICRO)
+                .fontColor(this.palette.text_secondary)
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .width('100%')
+            }
+          }
+        }
+        .layoutWeight(1)
+        .alignItems(HorizontalAlign.Start)
+
+        if (command.hint && this.mode === 'commands') {
           Text(command.hint)
-            .fontSize(11)
+            .fontSize(LexiTokens.TYPE_MICRO)
             .fontColor(this.palette.text_secondary)
+            .padding({ left: 7, right: 7, top: 2, bottom: 2 })
+            .backgroundColor(this.palette.soft_surface)
+            .border({ width: 0.5, color: this.palette.workspace_line })
+            .borderRadius(LexiTokens.RADIUS_XS)
             .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .width('100%')
         }
       }
       .width('100%')
-      .alignItems(HorizontalAlign.Start)
+      .alignItems(VerticalAlign.Center)
     }
     .id(`palette-result-${command.id}`)
     .width('100%')
     .height(PALETTE_ROW_HEIGHT)
-    .padding({ left: 12, right: 12 })
-    .borderRadius(8)
+    .padding({ left: LexiTokens.SPACE_4, right: LexiTokens.SPACE_4 })
+    .borderRadius(LexiTokens.RADIUS_SM)
     .backgroundColor(rowIndex === this.selectedResult ? this.palette.brand_soft : Color.Transparent)
+    .animation(LexiMotion.param(LexiMotion.DUR_MICRO, LexiMotion.easeOut()))
     .onClick((): void => { this.choose(command.id); })
   }
 
@@ -222,7 +280,8 @@ export struct LexiCommandPalette {
           .placeholderColor(this.palette.text_secondary)
           .caretColor(this.palette.brand)
           .backgroundColor(this.palette.soft_surface)
-          .borderRadius(10)
+          .border({ width: 0.5, color: this.palette.workspace_line })
+          .borderRadius(LexiTokens.RADIUS_MD)
           .defaultFocus(true)
           .onChange((text: string): void => {
             this.paletteQuery = text;

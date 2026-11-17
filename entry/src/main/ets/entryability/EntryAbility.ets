@@ -11,6 +11,7 @@ import { LexiNativeLaunch } from '../core/LexiNativeLaunch';
 import { LexiOfflineSpeech } from '../core/LexiOfflineSpeech';
 import { LexiShareCapture } from '../core/LexiShareCapture';
 import { LexiShareService } from '../core/LexiShareService';
+import { LexiStorageService } from '../core/LexiStorageService';
 
 const DOMAIN = 0x1050;
 const PC_TITLE_BUTTON_SIZE: number = 32;
@@ -58,6 +59,7 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate<boolean>('lexiAbilityForeground', false);
     LexiOfflineSpeech.interruptAll();
     LexiShareService.unregisterWindow('EntryAbility');
+    LexiStorageService.flushRegisteredDrafts().catch((): void => {});
   }
 
   onForeground(): void {
@@ -259,6 +261,7 @@ export default class EntryAbility extends UIAbility {
   }
 
   onWindowStageDestroy(): void {
+    LexiStorageService.flushRegisteredDrafts().catch((): void => {});
     LexiTheme.bindWindow(undefined);
     LexiInterfaceSettings.detachStage();
     LexiShareService.unregisterWindow('EntryAbility');

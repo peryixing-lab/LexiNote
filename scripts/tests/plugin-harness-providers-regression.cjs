@@ -1,6 +1,8 @@
 'use strict';
 const assert = require('node:assert/strict');
-const { serviceName } = require('../../plugins/harness/src/providers.js');
+const path = require('node:path');
+const harnessDir = process.env.LEXINOTE_HARNESS_DIR || path.resolve(__dirname, '../../../lexinote-Harness');
+const { serviceName } = require(path.join(harnessDir, 'src/providers.js'));
 for (const [baseUrl, expected] of [
   ['https://api.deepseek.com/v1', 'DeepSeek'],
   ['https://API.DEEPSEEK.COM:443/anthropic', 'DeepSeek'],

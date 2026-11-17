@@ -1,4 +1,6 @@
 import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
+import { LexiTokens } from '../core/LexiTokens';
+import { LexiMotion } from '../core/LexiMotion';
 import { LexiEditingActions } from '../core/LexiEditingActions';
 import { LexiHotkeySettings } from '../core/LexiHotkeySettings';
 import { LexiAppearanceSettings } from '../core/LexiAppearanceSettings';
@@ -11,12 +13,14 @@ import { LexiAnchorNavigation } from '../core/LexiAnchorNavigation';
 import { FrameCallback, KeyboardAvoidMode as UIKeyboardAvoidMode, LengthMetrics } from '@kit.ArkUI';
 import { LexiBackHeader } from '../components/LexiBackHeader';
 import { LexiMarkdownPreview } from '../components/LexiEditorPanels';
+import { LexiLinkPreviewButton } from '../components/LexiLinkPreviewCard';
 import { LexiIcon } from '../components/LexiIcon';
 import { LexiLiveMarkdownEditor } from '../components/LexiLiveMarkdownEditor';
 import { LexiLiveEditorController } from '../core/LexiLiveMarkdown';
 import { LexiEditorBridge, PluginEditorHandle } from '../plugin/adapters/LexiEditorBridge';
 import { PluginSelectionRange } from '../plugin/model/PluginModels';
 import {
+  LexiLinkCandidate,
   MarkdownBlock,
   MindMapRouteParam,
   NoteEditorRouteParam,
@@ -25,6 +29,7 @@ import {
   NoteProperty,
   OutlineHeading
 } from '../core/LexiModels';
+import { LexiRelations } from '../core/LexiRelations';
 import { MarkdownEngine } from '../core/MarkdownEngine';
 import { LexiFrontmatter } from '../core/LexiFrontmatter';
 import { LexiShareCapture } from '../core/LexiShareCapture';
@@ -32,6 +37,8 @@ import { LexiSharableNoteSnapshot, LexiShareService } from '../core/LexiShareSer
 import { LexiStorageService } from '../core/LexiStorageService';
 import { LexiTemplateItem, LexiTemplateLibrary } from '../core/LexiTemplateLibrary';
 import { LexiCaptureAssistantPanel } from '../components/LexiCaptureAssistantPanel';
+import { LexiHistoryPanel } from '../components/LexiHistoryPanel';
+import { LexiDraftWalEntry } from '../core/LexiNoteHistory';
 import { LexiContinuationData, LexiContinuationDraft } from '../core/LexiContinuationData';
 import { LexiContinuationSession } from '../core/LexiContinuationSession';
 
@@ -110,12 +117,18 @@ export struct NoteEditorPage {
   @State private allVaultNotes: NoteItem[] = [];
   @State private outgoingLinks: NoteLink[] = [];
   @State private backlinks: NoteLink[] = [];
+  @State private allVaultLinks: NoteLink[] = [];
+  @State private isUnconnectedNote: boolean = false;
+  @State private linkCandidates: LexiLinkCandidate[] = [];
   @State private blocks: MarkdownBlock[] = [];
   @State private outlineHeadings: OutlineHeading[] = [];
   @State private undoCount: number = 0;
   @State private redoCount: number = 0;
   @State private viewportWidth: number = 390;
   @State private showToolsPanel: boolean = false;
+  @State private showHistorySheet: boolean = false;
+  @State private historyConflictMode: boolean = false;
+  @State private historyOpenSignal: number = 0;
   @State private toolPage: string = 'format';
   @StorageProp('lexiViewportHeight') viewportHeight: number = 760;
   private previousKeyboardMode: UIKeyboardAvoidMode | undefined;
@@ -152,6 +165,7 @@ export struct NoteEditorPage {
   aboutToAppear(): void {
     this.pageAttached = true; this.pageVisible = true;
     this.registerPluginHandle();
+    LexiStorageService.registerDraftFlusher(this.continuationOwner, (): Promise<void> => this.persistNow());
     LexiShareService.activateKnockSource(this.continuationOwner, (): LexiSharableNoteSnapshot | undefined => {
       if (!this.pageAttached || !this.pageVisible || !this.pageLoaded || this.templateMode || this.deferredCreation) {
         return undefined;
@@ -178,7 +192,7 @@ export struct NoteEditorPage {
     handle.vaultId = this.note.vaultId;
     handle.windowId = 'main';
     handle.isDirty = (): boolean => this.hasUnsavedChanges();
-    handle.isReadOnly = (): boolean => this.externalFileMode || this.templateMode;
+    handle.isReadOnly = (): boolean => this.externalFileMode || this.templateMode || this.viewMode === 'preview';
     handle.isVisible = (): boolean => this.pageAttached && this.pageVisible;
     handle.isFocused = (): boolean => this.pageAttached && this.pageVisible && this.abilityForeground;
     handle.getContent = (): string => this.contentText;
@@ -195,7 +209,7 @@ export struct NoteEditorPage {
   }
 
   private pluginReplaceRange(start: number, end: number, text: string): boolean {
-    if (!this.pageLoaded || this.externalFileMode || this.templateMode) { return false; }
+    if (!this.pageLoaded || this.externalFileMode || this.templateMode || this.viewMode === 'preview') { return false; }
     const content = this.contentText;
     const from = Math.max(0, Math.min(content.length, Math.min(start, end)));
     const to = Math.max(from, Math.min(content.length, Math.max(start, end)));
@@ -219,6 +233,7 @@ export struct NoteEditorPage {
 
   aboutToDisappear(): void {
     this.pageAttached = false; this.pageVisible = false; this.focusRevision++; this.externalReadRevision++;
+    LexiStorageService.unregisterDraftFlusher(this.continuationOwner);
     if (this.pluginHandleId.length > 0) { LexiEditorBridge.unregister(this.pluginHandleId); this.pluginHandleId = ''; }
     LexiShareService.deactivateKnockSource(this.continuationOwner);
     this.releaseContinuation();
@@ -302,6 +317,9 @@ export struct NoteEditorPage {
     if (param && param.noteId.length > 0 && !param.createNew) {
       const existing = await LexiStorageService.getNoteById(param.noteId);
       if (existing) {
+        LexiStorageService.recordNoteOpened(this.context(), existing.id).then((ts: number): void => {
+          if (this.note.id === existing.id) { this.note.lastOpenedAt = ts; }
+        }).catch((): void => {});
         this.note = existing;
         this.titleText = existing.title;
         this.contentText = existing.content;
@@ -447,9 +465,28 @@ export struct NoteEditorPage {
       return;
     }
     this.saveStatus = '正在自动保存…';
+    if (this.pageLoaded && !this.templateMode && this.note.id && (this.titleText.trim() || this.contentText.trim())) {
+      const entry = new LexiDraftWalEntry();
+      entry.noteId = this.note.id;
+      entry.vaultId = this.note.vaultId;
+      entry.projectId = this.note.projectId || '';
+      entry.title = this.titleText;
+      entry.content = this.contentText;
+      entry.notebook = this.notebookText || '速记收件箱';
+      entry.editorLevel = this.editorTier || 'simple';
+      entry.tags = this.note.tags.slice();
+      entry.properties = this.note.properties.map((p: NoteProperty): NoteProperty => new NoteProperty(p.key, p.propValue));
+      entry.baseTitle = this.baseTitle;
+      entry.baseContent = this.baseContent;
+      entry.baseUpdatedAt = this.note.updatedAt;
+      entry.updatedAt = Date.now();
+      entry.windowId = this.continuationOwner;
+      LexiStorageService.writeDraftWalSync(this.context(), entry);
+    }
     this.saveTimer = setTimeout(() => {
       this.persistNow().catch((error: Error): void => {
-        this.saveStatus = error.message === 'DOCUMENT_CHANGED_ELSEWHERE' ? '其他位置已更新，当前草稿已保留' : '待重试保存';
+        this.saveStatus = error.message === 'DOCUMENT_CHANGED_ELSEWHERE' ? '其他位置已更新，当前草稿已保留' :
+          LexiStorageService.friendlySaveError(error, '待重试保存');
       });
     }, 360);
   }
@@ -541,9 +578,12 @@ export struct NoteEditorPage {
     if (this.conflictVisible || !this.pageAttached || !this.pageVisible || !this.abilityForeground) { return; }
     this.conflictVisible = true;
     try { this.getUIContext().showAlertDialog({ title: '笔记已在其他位置更新',
-      message: '当前草稿仍然保留。可另存为副本，避免覆盖桌面卡片或其他窗口的修改。',
-      primaryButton: { value: '保留草稿', action: (): void => { this.conflictVisible = false; } },
-      secondaryButton: { value: '另存为副本', action: (): void => { this.saveConflictCopy(); } },
+      message: '当前草稿仍然保留。可对比两个版本差异并选择如何处理，或另存为副本。',
+      buttons: [
+        { value: '对比差异并处理', action: (): void => { this.conflictVisible = false; this.openHistorySheet(true); } },
+        { value: '另存为副本', action: (): void => { this.saveConflictCopy(); } },
+        { value: '保留草稿', action: (): void => { this.conflictVisible = false; } }
+      ],
       cancel: (): void => { this.conflictVisible = false; }
     }); } catch { this.conflictVisible = false; }
   }
@@ -615,6 +655,8 @@ export struct NoteEditorPage {
     const snapshotNote = new NoteItem();
     snapshotNote.id = this.note.id || 'temp-note';
     snapshotNote.vaultId = this.note.vaultId;
+    snapshotNote.notebook = this.notebookText;
+    snapshotNote.tags = this.note.tags.slice();
     snapshotNote.title = this.titleText;
     snapshotNote.content = this.contentText;
     if (idx >= 0) {
@@ -623,6 +665,7 @@ export struct NoteEditorPage {
       workingNotes.push(snapshotNote);
     }
     const allLinks = MarkdownEngine.buildNoteLinks(workingNotes);
+    this.allVaultLinks = allLinks;
     this.outgoingLinks = allLinks.filter((l: NoteLink): boolean => l.sourceId === snapshotNote.id);
     const currentTitle = MarkdownEngine.displayTitle(snapshotNote).toLowerCase();
     this.backlinks = allLinks.filter(
@@ -630,6 +673,10 @@ export struct NoteEditorPage {
         l.sourceId !== snapshotNote.id &&
         (l.targetId === snapshotNote.id || l.targetTitle.toLowerCase() === currentTitle)
     );
+    this.isUnconnectedNote = LexiRelations.isNoteUnconnected(snapshotNote.id, allLinks);
+    this.linkCandidates = this.isUnconnectedNote
+      ? LexiRelations.suggestLinkCandidates(snapshotNote, workingNotes, allLinks, 4)
+      : [];
   }
 
   private insertSnippet(snippet: string): void {
@@ -1158,6 +1205,7 @@ export struct NoteEditorPage {
       this.popupAction('导出 .md', (): void => { this.showToolsPanel = false; this.exportCurrentMarkdown(); })
       this.popupAction('系统分享', (): void => { this.showToolsPanel = false; this.shareCurrentMarkdown(); })
       if (!this.templateMode) {
+        this.popupAction('版本历史', (): void => { this.showToolsPanel = false; this.openHistorySheet(false); })
         this.popupAction('词萤伴读', (): void => { this.showToolsPanel = false; this.openCurrentNoteInLexiGlow(); })
         this.popupAction('集萤 OCR', (): void => { this.showToolsPanel = false; this.openLumiKitTool('image-ocr'); })
         this.popupAction('语音 / 整理', (): void => { this.requestAssistant(); })
@@ -1277,15 +1325,74 @@ export struct NoteEditorPage {
     Column({ space: 6 }) {
       Text(`${this.outgoingLinks.length} 出链 · ${this.backlinks.length} 反向链接`).fontSize(12).fontColor(this.palette.text_secondary)
       ForEach(this.outgoingLinks, (link: NoteLink) => {
-        Button(`↗ ${link.displayText || link.targetTitle}`, { buttonStyle: ButtonStyleMode.TEXTUAL }).width('100%').height(34).fontSize(12)
-          .fontColor(this.palette.brand_ink).onClick((): void => {
-            this.showToolsPanel = false; this.openWikiLinkTarget(`${link.targetId || link.targetTitle}${link.anchor ? '#' + link.anchor : ''}`);
+        Row({ space: 6 }) {
+          Button(`↗ ${link.displayText || link.targetTitle}`, { buttonStyle: ButtonStyleMode.TEXTUAL })
+            .layoutWeight(1).height(34).fontSize(12)
+            .fontColor(this.palette.brand_ink).onClick((): void => {
+              this.showToolsPanel = false; this.openWikiLinkTarget(`${link.targetId || link.targetTitle}${link.anchor ? '#' + link.anchor : ''}`);
+            })
+          LexiLinkPreviewButton({
+            label: '预览',
+            rawTarget: `${link.targetId || link.targetTitle}${link.anchor ? '#' + link.anchor : ''}`,
+            availableNotes: this.allVaultNotes,
+            allLinks: this.allVaultLinks,
+            buttonHeight: 26,
+            compact: true,
+            popupPlacement: Placement.Top,
+            onOpenTarget: (target: string): void => {
+              this.showToolsPanel = false;
+              this.openWikiLinkTarget(target);
+            }
           })
+        }.width('100%').alignItems(VerticalAlign.Center)
       }, (link: NoteLink): string => `out-${link.targetId}-${link.targetTitle}-${link.anchor}`)
       ForEach(this.backlinks, (link: NoteLink) => {
-        Button(`↙ ${link.sourceTitle}`, { buttonStyle: ButtonStyleMode.TEXTUAL }).width('100%').height(34).fontSize(12)
-          .fontColor(this.palette.brand_ink).onClick((): void => { this.showToolsPanel = false; this.openWikiLinkTarget(link.sourceId); })
+        Row({ space: 6 }) {
+          Button(`↙ ${link.sourceTitle}`, { buttonStyle: ButtonStyleMode.TEXTUAL })
+            .layoutWeight(1).height(34).fontSize(12)
+            .fontColor(this.palette.brand_ink).onClick((): void => { this.showToolsPanel = false; this.openWikiLinkTarget(link.sourceId); })
+          LexiLinkPreviewButton({
+            label: '预览',
+            rawTarget: link.sourceId,
+            availableNotes: this.allVaultNotes,
+            allLinks: this.allVaultLinks,
+            buttonHeight: 26,
+            compact: true,
+            popupPlacement: Placement.Top,
+            onOpenTarget: (target: string): void => {
+              this.showToolsPanel = false;
+              this.openWikiLinkTarget(target);
+            }
+          })
+        }.width('100%').alignItems(VerticalAlign.Center)
       }, (link: NoteLink): string => `back-${link.sourceId}-${link.targetTitle}-${link.anchor}`)
+      if (this.isUnconnectedNote && !this.templateMode) {
+        Column({ space: 6 }) {
+          Text('当前笔记尚未建立连接').fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.palette.text_primary).width('100%')
+          Text('选择相关笔记插入 [[双向链接]]，即可关联进知识网络。').fontSize(11).lineHeight(16).fontColor(this.palette.text_secondary).width('100%')
+          ForEach(this.linkCandidates, (cand: LexiLinkCandidate) => {
+            Row({ space: 6 }) {
+              LexiLinkPreviewButton({
+                label: '预览',
+                rawTarget: cand.noteId,
+                availableNotes: this.allVaultNotes,
+                allLinks: this.allVaultLinks,
+                buttonHeight: 26,
+                compact: true,
+                popupPlacement: Placement.Top,
+                onOpenTarget: (target: string): void => {
+                  this.showToolsPanel = false;
+                  this.openWikiLinkTarget(target);
+                }
+              })
+              Button(`+ [[${cand.title}]]`, { type: ButtonType.Normal })
+                .layoutWeight(1).height(28).fontSize(11).borderRadius(7)
+                .fontColor(this.palette.inverse_text).backgroundColor(this.palette.brand)
+                .onClick((): void => { this.insertWikiLink(cand.title); })
+            }.width('100%').alignItems(VerticalAlign.Center)
+          }, (cand: LexiLinkCandidate): string => `pop-cand-${cand.noteId}-${cand.reason}`)
+        }.width('100%').padding(8).margin({ top: 6 }).backgroundColor(this.palette.brand_soft).borderRadius(8)
+      }
     }.width('100%')
   }
 
@@ -1311,13 +1418,17 @@ export struct NoteEditorPage {
       }.width('100%')
       if (this.toolPage === 'format' || this.toolPage === 'panels') {
         Row({ space: 5 }) {
-          Button('格式', { buttonStyle: ButtonStyleMode.TEXTUAL }).layoutWeight(1).height(30).fontSize(12)
-            .fontColor(this.palette.brand_ink)
+          Button('格式', { buttonStyle: ButtonStyleMode.TEXTUAL }).layoutWeight(1).height(30).fontSize(LexiTokens.TYPE_CAPTION)
+            .fontColor(this.toolPage === 'format' ? this.palette.brand_ink : this.palette.text_secondary)
+            .borderRadius(LexiTokens.RADIUS_SM)
             .backgroundColor(this.toolPage === 'format' ? this.palette.brand_soft : Color.Transparent)
+            .animation(LexiMotion.param(LexiMotion.DUR_FAST, LexiMotion.easeOut()))
             .onClick((): void => { this.toolPage = 'format'; })
-          Button('面板与视图', { buttonStyle: ButtonStyleMode.TEXTUAL }).layoutWeight(1).height(30).fontSize(12)
-            .fontColor(this.palette.brand_ink)
+          Button('面板与视图', { buttonStyle: ButtonStyleMode.TEXTUAL }).layoutWeight(1).height(30).fontSize(LexiTokens.TYPE_CAPTION)
+            .fontColor(this.toolPage === 'panels' ? this.palette.brand_ink : this.palette.text_secondary)
+            .borderRadius(LexiTokens.RADIUS_SM)
             .backgroundColor(this.toolPage === 'panels' ? this.palette.brand_soft : Color.Transparent)
+            .animation(LexiMotion.param(LexiMotion.DUR_FAST, LexiMotion.easeOut()))
             .onClick((): void => { this.toolPage = 'panels'; })
         }.width('100%')
       }
@@ -1330,8 +1441,10 @@ export struct NoteEditorPage {
           else if (this.toolPage === 'relations') { this.popupRelations(); }
         }.width('100%').alignItems(HorizontalAlign.Start)
       }.width('100%').layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Auto)
-    }.id(`note-tools-popup-${this.note.id}-${this.continuationOwner}`).width(this.toolPopupWidth()).height(this.toolPopupHeight()).padding(12)
-      .backgroundColor(this.palette.surface).borderRadius(16)
+    }.id(`note-tools-popup-${this.note.id}-${this.continuationOwner}`).width(this.toolPopupWidth()).height(this.toolPopupHeight()).padding(LexiTokens.SPACE_4)
+      .backgroundColor(this.palette.surface).borderRadius(LexiTokens.RADIUS_LG)
+      .border({ width: 0.5, color: this.palette.workspace_line })
+      .shadow(LexiTokens.elev2(this.palette))
       .onDisAppear((): void => { this.insertPendingToolSnippet(); })
   }
 
@@ -1377,6 +1490,116 @@ export struct NoteEditorPage {
     if (param && param.launchAssistant) {
       this.pendingRouteRestore = false; this.requestAssistant();
     } else if (this.pendingRouteRestore) { this.restoreRouteSelection(); }
+    this.checkPendingCrashRecovery();
+  }
+
+  private openHistorySheet(conflict: boolean = false): void {
+    if (this.externalFileMode || this.templateMode || !this.note.id) { return; }
+    this.historyConflictMode = conflict;
+    this.historyOpenSignal++;
+    this.showHistorySheet = true;
+  }
+
+  private applyRestoredNote(saved: NoteItem, status: string): void {
+    this.note = saved;
+    this.titleText = saved.title;
+    this.contentText = saved.content;
+    this.notebookText = saved.notebook || '速记收件箱';
+    this.editorTier = saved.editorLevel || 'simple';
+    this.baseTitle = saved.title;
+    this.baseContent = saved.content;
+    this.savedEditRevision = this.editRevision;
+    this.conflictVisible = false;
+    this.saveStatus = status;
+    LexiStorageService.clearPendingCrashRecoverySync(this.context(), this.note.id);
+    this.refreshDerived();
+    this.toast(status);
+  }
+
+  private async resolveConflictChoice(resolution: string): Promise<void> {
+    if (resolution === 'save-copy') {
+      this.showHistorySheet = false;
+      await this.saveConflictCopy();
+      return;
+    }
+    if (this.conflictResolving) { return; }
+    this.conflictResolving = true;
+    try {
+      const snapshot = JSON.parse(JSON.stringify(this.note)) as NoteItem;
+      snapshot.title = this.titleText.trim();
+      snapshot.content = this.contentText;
+      snapshot.notebook = this.notebookText.trim() || '速记收件箱';
+      snapshot.editorLevel = this.editorTier;
+      const saved = await LexiStorageService.saveNoteResolvingConflict(this.context(), snapshot, resolution);
+      this.showHistorySheet = false;
+      this.applyRestoredNote(saved, resolution === 'use-theirs-backup-mine' ?
+        '已采用最新版本（我的草稿已存历史）' : '已保存我的草稿（对方版本已存历史）');
+    } catch (error) {
+      this.saveStatus = LexiStorageService.friendlySaveError(error as Error);
+    } finally {
+      this.conflictResolving = false;
+    }
+  }
+
+  private checkPendingCrashRecovery(): void {
+    if (this.externalFileMode || this.templateMode || !this.note.id) { return; }
+    const pending = LexiStorageService.getPendingCrashDraftSync(this.context(), this.note.id);
+    if (!pending || (pending.title.trim() === this.baseTitle && pending.content === this.baseContent)) {
+      LexiStorageService.clearPendingCrashRecoverySync(this.context(), this.note.id);
+      return;
+    }
+    try {
+      this.getUIContext().showAlertDialog({
+        title: '检测到异常退出前未保存的内容',
+        message: '系统已将该草稿自动存入“异常退出恢复”历史快照，可立即恢复或对比版本差异。',
+        buttons: [
+          {
+            value: '恢复该草稿',
+            action: (): void => {
+              this.titleText = pending.title;
+              this.contentText = pending.content;
+              this.scheduleSave();
+              LexiStorageService.clearPendingCrashRecoverySync(this.context(), this.note.id);
+            }
+          },
+          {
+            value: '查看差异对比',
+            action: (): void => {
+              LexiStorageService.clearPendingCrashRecoverySync(this.context(), this.note.id);
+              this.openHistorySheet(false);
+            }
+          },
+          {
+            value: '保留已保存版本',
+            action: (): void => {
+              LexiStorageService.clearPendingCrashRecoverySync(this.context(), this.note.id);
+            }
+          }
+        ]
+      });
+    } catch {}
+  }
+
+  @Builder
+  private historySheetContent() {
+    Column() {
+      LexiHistoryPanel({
+        openSignal: this.historyOpenSignal,
+        noteId: this.note.id,
+        liveTitle: this.titleText,
+        liveContent: this.contentText,
+        hasLiveDraft: true,
+        conflictMode: this.historyConflictMode,
+        onRestored: (saved: NoteItem): void => {
+          this.showHistorySheet = false;
+          this.applyRestoredNote(saved, '已恢复选中版本（原版本已备份）');
+        },
+        onConflictResolve: (resolution: string): void => {
+          this.resolveConflictChoice(resolution).catch((): void => {});
+        },
+        onClose: (): void => { this.showHistorySheet = false; }
+      })
+    }.width('100%').height('100%').padding(20).backgroundColor(this.palette.surface)
   }
 
   private restoreRouteSelection(): void {
@@ -1479,7 +1702,7 @@ export struct NoteEditorPage {
   @Builder
   private renderedBody() {
     LexiMarkdownPreview({ frameless: true, blocks: this.blocks, outgoingLinks: this.outgoingLinks,
-      availableNotes: this.allVaultNotes, notePath: this.note.path, anchorPrefix: `note-block-${this.note.id}`,
+      allLinks: this.allVaultLinks, availableNotes: this.allVaultNotes, notePath: this.note.path, anchorPrefix: `note-block-${this.note.id}`,
       onOpenTarget: (target: string): void => { this.openWikiLinkTarget(target); },
       onToggleTodo: (lineIndex: number): void => { this.toggleTodoAtLine(lineIndex); } })
   }
@@ -1517,8 +1740,8 @@ export struct NoteEditorPage {
             this.sourceBody()
             if (this.viewMode === 'split') { Divider().color(this.palette.divider); this.renderedBody(); }
           }
-        }.width('100%').constraintSize({ maxWidth: this.editorLimitWidth ? 800 : 10000 })
-          .padding({ left: 24, right: 24, top: 8, bottom: 80 }).alignItems(HorizontalAlign.Start)
+        }.width('100%').constraintSize({ maxWidth: this.editorLimitWidth ? LexiTokens.LAYOUT_PAGE_MAX_WIDTH : 10000 })
+          .padding({ left: LexiTokens.SPACE_7, right: LexiTokens.SPACE_7, top: LexiTokens.SPACE_3, bottom: 80 }).alignItems(HorizontalAlign.Start)
       }.id(`note-preview-scroll-${this.note.id}`).width('100%').layoutWeight(1).align(Alignment.Top).scrollBar(BarState.Auto)
         .enableScrollInteraction(!this.wheelZoomLock)
       this.inlineCompletion()
@@ -1557,7 +1780,7 @@ export struct NoteEditorPage {
             .onClick((): void => { this.openOutlineSheet(); })
         }
         if (!this.externalFileMode || this.viewportWidth >= 440) {
-          Text(`${this.contentText.length} 字`).fontSize(11).fontColor(this.palette.text_secondary)
+          Text(`${this.contentText.length} 字`).fontSize(LexiTokens.TYPE_CAPTION).fontFeature('"tnum" 1').fontColor(this.palette.text_secondary)
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
         } else {
           Blank().layoutWeight(1)
@@ -1565,7 +1788,7 @@ export struct NoteEditorPage {
         if (this.editorViewStatus && this.viewportWidth >= 480) {
           Button(this.viewMode === 'live' ? '实时预览' : this.viewMode === 'preview' ? '阅读视图' : '源码',
             { type: ButtonType.Normal, buttonStyle: ButtonStyleMode.TEXTUAL })
-            .id('note-view-status').fontSize(11).fontColor(this.palette.text_secondary)
+            .id('note-view-status').fontSize(LexiTokens.TYPE_CAPTION).fontColor(this.palette.text_secondary)
             .onClick((): void => {
               this.liveController.finishEditing();
               this.selectViewMode(this.viewMode === 'preview' ? (this.editorDefaultMode === 'source' ? 'edit' : 'live') : 'preview');
@@ -1612,6 +1835,10 @@ export struct NoteEditorPage {
     .bindSheet($$this.showAssistantPanel, this.assistantSheet, {
       height: SheetSize.LARGE, dragBar: true, showClose: true, title: { title: '语音与本地整理' },
       backgroundColor: this.palette.surface, onDisappear: (): void => { this.assistantDisappeared(); }
+    })
+    .bindSheet($$this.showHistorySheet, this.historySheetContent, {
+      height: SheetSize.LARGE, dragBar: true, showClose: true,
+      backgroundColor: this.palette.surface
     })
     .onKeyEventDispatch((event: KeyEvent): boolean => this.handleShortcut(event))
     .onBackPressed((): boolean => {

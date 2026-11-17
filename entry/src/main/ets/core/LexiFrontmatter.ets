@@ -7,6 +7,16 @@ export class LexiFrontmatterResult {
   tags: string[] = [];
   properties: NoteProperty[] = [];
   rawHeader: string = '';
+  id: string = '';
+  title: string = '';
+  notebook: string = '';
+  noteType: string = '';
+  editorLevel: string = '';
+  pinned: boolean | undefined = undefined;
+  favorite: boolean | undefined = undefined;
+  createdAt: number = 0;
+  updatedAt: number = 0;
+  trashedAt: number = 0;
 }
 
 class LexiYamlField {
@@ -82,6 +92,43 @@ export class LexiFrontmatter {
     return text ? [LexiFrontmatter.scalar(text)] : [];
   }
 
+  private static parseDateMs(raw: string): number {
+    const clean = raw.trim();
+    if (!clean) { return 0; }
+    const asNum = Number(clean);
+    if (Number.isFinite(asNum) && asNum > 0) {
+      return asNum < 1e11 ? asNum * 1000 : asNum;
+    }
+    const parsed = Date.parse(clean);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  }
+
+  private static parsePropertyPairs(header: string): NoteProperty[] {
+    const pairs: NoteProperty[] = [];
+    const lines = header.split('\n');
+    let inProps = false;
+    let pendingKey = '';
+    let hasPending = false;
+    for (const line of lines) {
+      if (!inProps) {
+        if (/^properties:\s*$/.test(line.trim())) { inProps = true; }
+        continue;
+      }
+      if (line.startsWith('  - key:')) {
+        pendingKey = LexiFrontmatter.scalar(line.slice('  - key:'.length));
+        hasPending = true;
+        continue;
+      }
+      if (line.startsWith('    value:') && hasPending) {
+        pairs.push(new NoteProperty(pendingKey, LexiFrontmatter.scalar(line.slice('    value:'.length))));
+        hasPending = false;
+        continue;
+      }
+      if (line.trim() && !/^\s/.test(line)) { break; }
+    }
+    return pairs;
+  }
+
   static parse(raw: string): LexiFrontmatterResult {
     const result = new LexiFrontmatterResult(); result.body = raw;
     const normalized = raw.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
@@ -92,12 +139,28 @@ export class LexiFrontmatter {
     if (end < 0) { return result; }
     result.hasFrontmatter = true; result.bodyLineOffset = end + 1;
     result.rawHeader = lines.slice(1, end).join('\n'); result.body = lines.slice(end + 1).join('\n');
+    const pairProps = LexiFrontmatter.parsePropertyPairs(result.rawHeader);
+    for (const pair of pairProps) {
+      result.properties.push(pair);
+    }
     for (const field of LexiFrontmatter.fields(result.rawHeader)) {
-      if (field.key === 'tags' || field.key === 'tag') {
+      const lower = field.key.toLowerCase();
+      if (lower === 'tags' || lower === 'tag') {
         for (const tag of LexiFrontmatter.list(field.parsed)) {
           const cleaned = tag.replace(/^#/, '').trim(); if (cleaned && !result.tags.includes(cleaned)) { result.tags.push(cleaned); }
         }
-      } else if (field.key && field.supported) { result.properties.push(new NoteProperty(field.key, field.parsed)); }
+      } else if (lower === 'id' && field.parsed) { result.id = field.parsed; }
+      else if (lower === 'title' && field.parsed) { result.title = field.parsed; }
+      else if (lower === 'notebook' && field.parsed) { result.notebook = field.parsed; }
+      else if (lower === 'type' && field.parsed) { result.noteType = field.parsed; }
+      else if (lower === 'level' && field.parsed) { result.editorLevel = field.parsed; }
+      else if (lower === 'pinned' && field.parsed) { result.pinned = field.parsed.toLowerCase() === 'true'; }
+      else if (lower === 'favorite' && field.parsed) { result.favorite = field.parsed.toLowerCase() === 'true'; }
+      else if (lower === 'created' && field.parsed) { result.createdAt = LexiFrontmatter.parseDateMs(field.parsed); }
+      else if (lower === 'updated' && field.parsed) { result.updatedAt = LexiFrontmatter.parseDateMs(field.parsed); }
+      else if (lower === 'trashed' && field.parsed) { result.trashedAt = LexiFrontmatter.parseDateMs(field.parsed); }
+      else if (lower === 'properties') { /* handled by parsePropertyPairs */ }
+      else if (field.key && field.supported) { result.properties.push(new NoteProperty(field.key, field.parsed)); }
     }
     return result;
   }
@@ -105,7 +168,69 @@ export class LexiFrontmatter {
   static apply(note: NoteItem, raw: string): void {
     note.content = raw;
     const parsed = LexiFrontmatter.parse(raw);
-    if (parsed.hasFrontmatter) { note.tags = parsed.tags; note.properties = parsed.properties; }
+    if (parsed.hasFrontmatter) {
+      if (parsed.id) { note.id = parsed.id; }
+      if (parsed.title) { note.title = parsed.title; }
+      if (parsed.notebook) { note.notebook = parsed.notebook; }
+      if (parsed.noteType === 'quick' || parsed.noteType === 'study' || parsed.noteType === 'markdown') {
+        note.noteType = parsed.noteType;
+      }
+      if (parsed.editorLevel === 'simple' || parsed.editorLevel === 'study' || parsed.editorLevel === 'pro') {
+        note.editorLevel = parsed.editorLevel;
+      }
+      if (parsed.pinned !== undefined) { note.pinned = parsed.pinned; }
+      if (parsed.favorite !== undefined) { note.favorite = parsed.favorite; }
+      if (parsed.createdAt > 0) { note.createdAt = parsed.createdAt; }
+      if (parsed.updatedAt > 0) { note.updatedAt = parsed.updatedAt; }
+      if (parsed.trashedAt > 0) { note.trashedAt = parsed.trashedAt; }
+      note.tags = parsed.tags;
+      note.properties = parsed.properties;
+    }
+  }
+
+  static serializeFull(note: NoteItem): string {
+    const parsed = LexiFrontmatter.parse(note.content);
+    const now = Date.now();
+    const iso = (ms: number): string => new Date(ms > 0 ? ms : now).toISOString();
+    const tags = note.tags.filter((tag: string): boolean => !!tag.trim()).map((tag: string): string => tag.replace(/^#/, '').trim());
+    const systemKeys = new Set<string>([
+      'id', 'title', 'notebook', 'type', 'level', 'pinned', 'favorite',
+      'tags', 'tag', 'created', 'updated', 'trashed', 'properties'
+    ]);
+    const lines: string[] = [
+      '---',
+      `id: ${JSON.stringify(note.id)}`,
+      `title: ${JSON.stringify(note.title || '未命名笔记')}`,
+      `notebook: ${JSON.stringify(note.notebook || '默认')}`,
+      `type: ${note.noteType || 'markdown'}`,
+      `level: ${note.editorLevel || 'pro'}`,
+      `pinned: ${note.pinned ? 'true' : 'false'}`,
+      `favorite: ${note.favorite ? 'true' : 'false'}`,
+      `tags: [${tags.map((t: string): string => JSON.stringify(t)).join(', ')}]`,
+      `created: ${iso(note.createdAt)}`,
+      `updated: ${iso(note.updatedAt)}`
+    ];
+    if (note.trashedAt > 0) {
+      lines.push(`trashed: ${iso(note.trashedAt)}`);
+    }
+    for (const field of LexiFrontmatter.fields(parsed.rawHeader)) {
+      if (!field.key || !field.supported) {
+        if (field.text.trim() && !systemKeys.has(field.key.toLowerCase())) {
+          lines.push(field.text);
+        }
+      }
+    }
+    const customProps = note.properties.filter((p: NoteProperty): boolean => !!p.key.trim() && !systemKeys.has(p.key.toLowerCase()));
+    if (customProps.length > 0) {
+      lines.push('properties:');
+      for (const prop of customProps) {
+        lines.push(`  - key: ${JSON.stringify(prop.key)}`);
+        lines.push(`    value: ${JSON.stringify(prop.propValue)}`);
+      }
+    }
+    lines.push('---', '');
+    lines.push(parsed.body.replace(/^\n+/, ''));
+    return lines.join('\n');
   }
 
   static serialize(note: NoteItem): string {

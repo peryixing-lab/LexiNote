@@ -49,6 +49,7 @@ export class NoteItem {
   trashedAt: number = 0;
   createdAt: number = 0;
   updatedAt: number = 0;
+  lastOpenedAt: number = 0;
 }
 
 export class NoteLink {
@@ -247,5 +248,36 @@ export const CREATE_ENTRIES: CreateEntry[] = [
 export class NoteRevision {
   id: string = '';
   savedAt: number = 0;
+  reason: string = 'autosave';
+  contentHash: string = '';
+  byteSize: number = 0;
   snapshot: NoteItem = new NoteItem();
+}
+
+export class LexiHighlightSpan {
+  id: string = '';
+  text: string = '';
+  hit: boolean = false;
+}
+
+export class LexiLinkTargetPreview {
+  exists: boolean = false;
+  noteId: string = '';
+  title: string = '';
+  targetName: string = '';
+  anchor: string = '';
+  notebook: string = '';
+  tags: string[] = [];
+  snippet: string = '';
+  outgoingCount: number = 0;
+  backlinkCount: number = 0;
+  updatedAt: number = 0;
+  lastOpenedAt: number = 0;
+}
+
+export class LexiLinkCandidate {
+  noteId: string = '';
+  title: string = '';
+  notebook: string = '';
+  reason: string = '';
 }

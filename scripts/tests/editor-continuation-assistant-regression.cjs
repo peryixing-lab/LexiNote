@@ -6,10 +6,10 @@ function load(name){if(cache.has(name))return cache.get(name);const m={exports:{
 const {LexiContinuationSession:Session}=load('LexiContinuationSession');const {LexiContinuationData:Data}=load('LexiContinuationData');const {NoteItem}=load('LexiModels');
 const source=fs.readFileSync(path.join(root,'pages/NoteEditorPage.ets'),'utf8');
 function section(start,end){const i=source.indexOf(start);assert.ok(i>=0,start);const j=source.indexOf(end,i);assert.ok(j>i,end);return source.slice(i,j);}
-const selected=section('  private sourceInputId(','  @Builder\n  private assistantSheet(')+section('  private mapSavedCursor(','  private refreshCompletion(')+section('  private insertPendingToolSnippet(','  private insertWikiLink(');
+const selected=section('  private sourceInputId(','  @Builder\n  private historySheetContent(')+section('  private restoreRouteSelection(','  @Builder\n  private assistantSheet(')+section('  private mapSavedCursor(','  private refreshCompletion(')+section('  private insertPendingToolSnippet(','  private insertWikiLink(');
 const frame=section('class LexiNoteEditorFrame extends FrameCallback','interface LexiNotePopupState');
 const openingTasks=[];
-const sandbox={setTimeout:fn=>openingTasks.push(fn),FrameCallback:class{},LexiContinuationSession:Session,LexiContinuationData:Data};vm.createContext(sandbox);vm.runInContext(ts.transpileModule(frame+'\nclass Editor {'+selected+'};globalThis.Editor=Editor;',{compilerOptions:{target:ts.ScriptTarget.ES2021}}).outputText,sandbox);
+const sandbox={setTimeout:fn=>openingTasks.push(fn),FrameCallback:class{},LexiContinuationSession:Session,LexiContinuationData:Data,LexiStorageService:{getPendingCrashDraftSync:()=>undefined,clearPendingCrashRecoverySync:()=>{},friendlySaveError:(_e,f)=>f||'保存失败'}};vm.createContext(sandbox);vm.runInContext(ts.transpileModule(frame+'\nclass Editor {'+selected+'};globalThis.Editor=Editor;',{compilerOptions:{target:ts.ScriptTarget.ES2021}}).outputText,sandbox);
 function editor(id='noteA'){
  const p=new sandbox.Editor();const frames=[];const calls=[];const nodeState={attached:true,visible:true};
  const ui={postFrameCallback:f=>frames.push(f),getAttachedFrameNodeById:id=>({isAttached:()=>nodeState.attached,isVisible:()=>nodeState.visible}),getFocusController:()=>({requestFocus:id=>calls.push(['focus',id])})};

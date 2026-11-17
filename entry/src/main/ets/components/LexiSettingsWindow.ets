@@ -1,4 +1,6 @@
 import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
+import { LexiTokens } from '../core/LexiTokens';
+import { LexiMotion } from '../core/LexiMotion';
 import { LexiHotkeySettings } from '../core/LexiHotkeySettings';
 import { LexiHotkeyRecorder } from '../core/LexiHotkeyRecorder';
 import { LexiSystemShortcuts } from '../core/LexiSystemShortcuts';
@@ -7,7 +9,7 @@ import { LexiI18n } from '../core/LexiI18n';
 // Obsidian-style settings window: one surface, left category rail, right content pane.
 // Appearance, editor, data and about all live here.
 
-import { bundleManager } from '@kit.AbilityKit';
+import { bundleManager, common } from '@kit.AbilityKit';
 import { CustomTheme } from '@kit.ArkUI';
 import { LexiAppearancePicker } from './LexiAppearancePicker';
 import { LexiThemePicker } from './LexiThemePicker';
@@ -15,6 +17,7 @@ import { LexiAppearanceSettings, LexiCssSnippet } from '../core/LexiAppearanceSe
 import { LexiInterfaceSettings } from '../core/LexiInterfaceSettings';
 import { LexiEditorSettings } from '../core/LexiEditorSettings';
 import { LexiStorageService } from '../core/LexiStorageService';
+import { LexiHistoryRetentionPolicy, LexiHistoryUsageSummary, LexiNoteHistory } from '../core/LexiNoteHistory';
 import { LexiFolderStore } from '../core/LexiFolderStore';
 import { LexiWorkspacePreferences } from '../core/LexiWorkspacePreferences';
 import { LexiIcon } from './LexiIcon';
@@ -122,6 +125,45 @@ export struct LexiSettingsWindow {
   @State private settingsWidth: number = 900;
   @State private phoneRoot: boolean = true;
   @State private phoneMotionReady: boolean = false;
+  @State private historyPolicy: LexiHistoryRetentionPolicy = LexiNoteHistory.defaultPolicy();
+  @State private historyUsage: LexiHistoryUsageSummary = new LexiHistoryUsageSummary();
+  @State private historyNotice: string = '';
+
+  private settingsContext(): common.UIAbilityContext {
+    return this.getUIContext().getHostContext() as common.UIAbilityContext;
+  }
+
+  private async refreshHistoryPolicyAndUsage(): Promise<void> {
+    try {
+      this.historyPolicy = await LexiStorageService.getHistoryPolicy();
+      this.historyUsage = await LexiStorageService.getHistoryUsage();
+    } catch {}
+  }
+
+  private async updateHistoryPolicy(ageDays: number, maxCount: number, maxTotalMb: number): Promise<void> {
+    const next = new LexiHistoryRetentionPolicy();
+    next.maxAgeDays = ageDays;
+    next.maxCountPerNote = maxCount;
+    next.maxBytesPerNote = this.historyPolicy.maxBytesPerNote;
+    next.maxTotalBytes = maxTotalMb * 1024 * 1024;
+    try {
+      this.historyPolicy = await LexiStorageService.setHistoryPolicy(this.settingsContext(), next);
+      this.historyUsage = await LexiStorageService.getHistoryUsage();
+      this.historyNotice = '已更新快照保留策略并清理超出限额的旧版本';
+    } catch (error) {
+      this.historyNotice = (error as Error).message || '更新失败';
+    }
+  }
+
+  private async triggerHistoryCleanup(): Promise<void> {
+    try {
+      const removed = await LexiStorageService.pruneAllHistory(this.settingsContext());
+      this.historyUsage = await LexiStorageService.getHistoryUsage();
+      this.historyNotice = removed > 0 ? `已清理 ${removed} 个过期或超额历史快照` : '所有历史快照均在保留限额内';
+    } catch (error) {
+      this.historyNotice = (error as Error).message || '清理失败';
+    }
+  }
   private phoneTitleTheme(): CustomTheme {
     return {
       colors: { compBackgroundGray: this.palette.background }
@@ -144,6 +186,7 @@ export struct LexiSettingsWindow {
     LexiStorageService.getSetting('workspaceOpenMode', 'ask').then((raw: string): void => {
       AppStorage.setOrCreate('lexiWorkspaceOpenMode', LexiWorkspacePreferences.openMode(raw));
     }).catch((): void => { this.editorSettingError(); });
+    this.refreshHistoryPolicyAndUsage().catch((): void => {});
     try {
       this.appVersion = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT).versionName;
     } catch {
@@ -687,6 +730,67 @@ export struct LexiSettingsWindow {
   }
 
   @Builder
+  private historyRetentionSection() {
+    this.groupHeader({ text: this.tr('版本历史与自动清理') })
+    Column({ space: 10 }) {
+      Text(`当前已保留 ${this.historyUsage.revisionCount} 个历史快照（${this.historyUsage.noteCount} 篇笔记），共占用 ${LexiNoteHistory.formatBytes(this.historyUsage.totalBytes)}`)
+        .fontSize(12).lineHeight(18).fontColor(this.palette.text_secondary).width('100%')
+
+      Row({ space: 6 }) {
+        Text('保留天数').fontSize(12).fontColor(this.palette.text_primary).layoutWeight(1)
+        ForEach([7, 30, 90], (days: number) => {
+          Button(`${days}天`, { type: ButtonType.Normal })
+            .height(30).fontSize(11).borderRadius(8).padding({ left: 10, right: 10 })
+            .backgroundColor(this.historyPolicy.maxAgeDays === days ? this.palette.brand : this.insetColor())
+            .fontColor(this.historyPolicy.maxAgeDays === days ? this.palette.inverse_text : this.palette.text_primary)
+            .onClick((): void => {
+              this.updateHistoryPolicy(days, this.historyPolicy.maxCountPerNote, Math.round(this.historyPolicy.maxTotalBytes / (1024 * 1024)));
+            })
+        }, (days: number): string => String(days))
+      }.width('100%')
+
+      Row({ space: 6 }) {
+        Text('单篇快照上限').fontSize(12).fontColor(this.palette.text_primary).layoutWeight(1)
+        ForEach([20, 30, 50], (cnt: number) => {
+          Button(`${cnt}条`, { type: ButtonType.Normal })
+            .height(30).fontSize(11).borderRadius(8).padding({ left: 10, right: 10 })
+            .backgroundColor(this.historyPolicy.maxCountPerNote === cnt ? this.palette.brand : this.insetColor())
+            .fontColor(this.historyPolicy.maxCountPerNote === cnt ? this.palette.inverse_text : this.palette.text_primary)
+            .onClick((): void => {
+              this.updateHistoryPolicy(this.historyPolicy.maxAgeDays, cnt, Math.round(this.historyPolicy.maxTotalBytes / (1024 * 1024)));
+            })
+        }, (cnt: number): string => String(cnt))
+      }.width('100%')
+
+      Row({ space: 6 }) {
+        Text('历史总存储上限').fontSize(12).fontColor(this.palette.text_primary).layoutWeight(1)
+        ForEach([20, 50, 100], (mb: number) => {
+          Button(`${mb} MB`, { type: ButtonType.Normal })
+            .height(30).fontSize(11).borderRadius(8).padding({ left: 10, right: 10 })
+            .backgroundColor(Math.round(this.historyPolicy.maxTotalBytes / (1024 * 1024)) === mb ? this.palette.brand : this.insetColor())
+            .fontColor(Math.round(this.historyPolicy.maxTotalBytes / (1024 * 1024)) === mb ? this.palette.inverse_text : this.palette.text_primary)
+            .onClick((): void => {
+              this.updateHistoryPolicy(this.historyPolicy.maxAgeDays, this.historyPolicy.maxCountPerNote, mb);
+            })
+        }, (mb: number): string => String(mb))
+      }.width('100%')
+
+      Button('立即按时间与容量清理历史快照', { type: ButtonType.Normal })
+        .width('100%').height(38).fontSize(13).borderRadius(10)
+        .backgroundColor(this.insetColor()).fontColor(this.palette.text_primary)
+        .onClick((): void => { this.triggerHistoryCleanup(); })
+
+      if (this.historyNotice.length > 0) {
+        Text(this.historyNotice).fontSize(12).fontColor(this.palette.brand_ink).width('100%')
+      }
+    }
+    .width('100%')
+    .padding(this.cardInset())
+    .backgroundColor(this.cardColor())
+    .borderRadius(this.cardRadius())
+  }
+
+  @Builder
   private dataSection() {
     Column({ space: 12 }) {
       if (!this.phoneLayout()) {
@@ -765,6 +869,8 @@ export struct LexiSettingsWindow {
       .padding(this.cardInset())
       .backgroundColor(this.cardColor())
       .borderRadius(this.cardRadius())
+
+      this.historyRetentionSection()
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)
@@ -846,6 +952,8 @@ export struct LexiSettingsWindow {
       .padding(this.cardInset())
       .backgroundColor(this.cardColor())
       .borderRadius(this.cardRadius())
+
+      this.historyRetentionSection()
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)
@@ -1146,9 +1254,11 @@ export struct LexiSettingsWindow {
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
     .onAppear((): void => { this.phoneMotionReady = true; })
     .transition(this.phoneMotionReady
-      ? TransitionEffect.move(TransitionEdge.START)
-        .combine(TransitionEffect.OPACITY)
-        .animation({ duration: 220, curve: Curve.FastOutSlowIn })
+      ? (LexiMotion.reduced()
+        ? TransitionEffect.OPACITY.animation(LexiMotion.param(LexiMotion.DUR_FAST, LexiMotion.easeOut(), true))
+        : TransitionEffect.move(TransitionEdge.START)
+          .combine(TransitionEffect.OPACITY)
+          .animation({ duration: LexiMotion.DUR_BASE, curve: LexiMotion.easeDrawer() }))
       : TransitionEffect.IDENTITY)
   }
 
@@ -1231,9 +1341,11 @@ export struct LexiSettingsWindow {
           .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
           .onAppear((): void => { this.phoneMotionReady = true; })
           .transition(this.phoneMotionReady
-            ? TransitionEffect.move(TransitionEdge.END)
-              .combine(TransitionEffect.OPACITY)
-              .animation({ duration: 240, curve: Curve.FastOutSlowIn })
+            ? (LexiMotion.reduced()
+              ? TransitionEffect.OPACITY.animation(LexiMotion.param(LexiMotion.DUR_FAST, LexiMotion.easeOut(), true))
+              : TransitionEffect.move(TransitionEdge.END)
+                .combine(TransitionEffect.OPACITY)
+                .animation({ duration: LexiMotion.DUR_BASE, curve: LexiMotion.easeDrawer() }))
             : TransitionEffect.IDENTITY)
         }
       }
@@ -1360,7 +1472,7 @@ export struct LexiSettingsWindow {
     .clip(true)
     .focusable(true)
     .defaultFocus(true)
-    .borderRadius(this.phoneLayout() ? 0 : 12)
+    .borderRadius(this.phoneLayout() ? 0 : LexiTokens.RADIUS_LG)
     .backgroundColor(this.phoneLayout() ? this.palette.background : this.palette.workspace_page)
     .onAppear((): void => {
       // The full-screen phone sheet cannot host a keyboard focus scope; requesting

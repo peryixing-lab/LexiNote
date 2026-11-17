@@ -52,6 +52,26 @@ export class PluginRpcMethod {
   static readonly STORAGE_SET: string = 'storage.set';
   static readonly STORAGE_REMOVE: string = 'storage.remove';
 
+  static readonly MINDMAP_LIST: string = 'mindmap.list';
+  static readonly MINDMAP_GET: string = 'mindmap.get';
+  static readonly MINDMAP_CREATE: string = 'mindmap.create';
+  static readonly MINDMAP_UPDATE: string = 'mindmap.update';
+  static readonly MINDMAP_DELETE: string = 'mindmap.delete';
+  static readonly MINDMAP_OPEN: string = 'mindmap.open';
+
+  static readonly CANVAS_LIST: string = 'canvas.list';
+  static readonly CANVAS_GET: string = 'canvas.get';
+  static readonly CANVAS_CREATE: string = 'canvas.create';
+  static readonly CANVAS_UPDATE: string = 'canvas.update';
+  static readonly CANVAS_DELETE: string = 'canvas.delete';
+  static readonly CANVAS_OPEN: string = 'canvas.open';
+
+  static readonly SETTINGS_GET: string = 'settings.get';
+  static readonly SETTINGS_SET: string = 'settings.set';
+
+  static readonly COMMANDS_LIST_HOST: string = 'commands.listHost';
+  static readonly COMMANDS_EXECUTE_HOST: string = 'commands.executeHost';
+
   static readonly ALL: string[] = [
     PluginRpcMethod.PING,
     PluginRpcMethod.VAULT_LIST,
@@ -71,6 +91,8 @@ export class PluginRpcMethod {
     PluginRpcMethod.EDITOR_REPLACE_ALL,
     PluginRpcMethod.COMMANDS_REGISTER,
     PluginRpcMethod.COMMANDS_UNREGISTER,
+    PluginRpcMethod.COMMANDS_LIST_HOST,
+    PluginRpcMethod.COMMANDS_EXECUTE_HOST,
     PluginRpcMethod.EVENTS_ON,
     PluginRpcMethod.EVENTS_OFF,
     PluginRpcMethod.UI_NOTICE,
@@ -85,7 +107,21 @@ export class PluginRpcMethod {
     PluginRpcMethod.VIEWS_OPEN,
     PluginRpcMethod.STORAGE_GET,
     PluginRpcMethod.STORAGE_SET,
-    PluginRpcMethod.STORAGE_REMOVE
+    PluginRpcMethod.STORAGE_REMOVE,
+    PluginRpcMethod.MINDMAP_LIST,
+    PluginRpcMethod.MINDMAP_GET,
+    PluginRpcMethod.MINDMAP_CREATE,
+    PluginRpcMethod.MINDMAP_UPDATE,
+    PluginRpcMethod.MINDMAP_DELETE,
+    PluginRpcMethod.MINDMAP_OPEN,
+    PluginRpcMethod.CANVAS_LIST,
+    PluginRpcMethod.CANVAS_GET,
+    PluginRpcMethod.CANVAS_CREATE,
+    PluginRpcMethod.CANVAS_UPDATE,
+    PluginRpcMethod.CANVAS_DELETE,
+    PluginRpcMethod.CANVAS_OPEN,
+    PluginRpcMethod.SETTINGS_GET,
+    PluginRpcMethod.SETTINGS_SET
   ];
 
   static known(method: string): boolean {
@@ -95,21 +131,36 @@ export class PluginRpcMethod {
   /** Capability required to invoke a method, or '' for methods without one. */
   static capabilityOf(method: string): string {
     if (method.startsWith('vault.list') || method === PluginRpcMethod.VAULT_READ ||
-      method === PluginRpcMethod.VAULT_GET_BY_PATH || method === PluginRpcMethod.VAULT_GET_BY_ID) { return 'vault.read'; }
+      method === PluginRpcMethod.VAULT_GET_BY_PATH || method === PluginRpcMethod.VAULT_GET_BY_ID ||
+      method === PluginRpcMethod.MINDMAP_LIST || method === PluginRpcMethod.MINDMAP_GET ||
+      method === PluginRpcMethod.CANVAS_LIST || method === PluginRpcMethod.CANVAS_GET) { return 'vault.read'; }
     if (method === PluginRpcMethod.VAULT_CREATE || method === PluginRpcMethod.VAULT_WRITE ||
       method === PluginRpcMethod.VAULT_RENAME || method === PluginRpcMethod.VAULT_DELETE ||
+      method === PluginRpcMethod.MINDMAP_CREATE || method === PluginRpcMethod.MINDMAP_UPDATE ||
+      method === PluginRpcMethod.MINDMAP_DELETE || method === PluginRpcMethod.CANVAS_CREATE ||
+      method === PluginRpcMethod.CANVAS_UPDATE || method === PluginRpcMethod.CANVAS_DELETE ||
       method.startsWith('vault.')) { return 'vault.write'; }
     if (method === PluginRpcMethod.METADATA_GET) { return 'notes.metadata.read'; }
     if (method === PluginRpcMethod.WORKSPACE_ACTIVE_FILE || method === PluginRpcMethod.WORKSPACE_OPEN_FILE ||
-      method === PluginRpcMethod.WORKSPACE_SNAPSHOT) { return 'workspace.views'; }
+      method === PluginRpcMethod.WORKSPACE_SNAPSHOT || method === PluginRpcMethod.MINDMAP_OPEN ||
+      method === PluginRpcMethod.CANVAS_OPEN) { return 'workspace.views'; }
     if (method === PluginRpcMethod.EDITOR_ACTIVE) { return 'editor.read'; }
     if (method === PluginRpcMethod.EDITOR_REPLACE_SELECTION || method === PluginRpcMethod.EDITOR_REPLACE_ALL) { return 'editor.write'; }
-    if (method === PluginRpcMethod.COMMANDS_REGISTER || method === PluginRpcMethod.COMMANDS_UNREGISTER) { return 'ui.commands'; }
+    if (method === PluginRpcMethod.COMMANDS_REGISTER || method === PluginRpcMethod.COMMANDS_UNREGISTER ||
+      method === PluginRpcMethod.COMMANDS_EXECUTE_HOST || method === PluginRpcMethod.SETTINGS_SET) { return 'ui.commands'; }
     if (method === PluginRpcMethod.UI_NOTICE) { return 'ui.notice'; }
     if (method === PluginRpcMethod.UI_CONFIRM) { return 'ui.modal'; }
     if (method.startsWith('ai.')) { return 'ai.inference'; }
     if (method.startsWith('views.')) { return 'ui.views'; }
     if (method.startsWith('storage.')) { return 'plugin.storage'; }
+    return '';
+  }
+
+  static capabilityOfEvent(event: string): string {
+    if (event.startsWith('vault.')) { return 'vault.read'; }
+    if (event.startsWith('workspace.')) { return 'workspace.views'; }
+    if (event.startsWith('editor.')) { return 'editor.read'; }
+    if (event.startsWith('metadata.')) { return 'notes.metadata.read'; }
     return '';
   }
 }
@@ -398,6 +449,18 @@ export class PluginAiChatParams {
   }
 }
 
+export class PluginAiCompatParams {
+  maxTokensField: string = '';
+  thinkingFormat: string = '';
+  supportsDeveloperRole: boolean = false;
+  hasSupportsDeveloperRole: boolean = false;
+}
+
+export class PluginAiRetryPolicyParams {
+  mode: string = '';
+  maxRetries: number = -1;
+}
+
 /** Model binding. The API key is stored on the host and never returned to the plugin. */
 export class PluginAiConfigureParams {
   action: string = '';
@@ -407,11 +470,16 @@ export class PluginAiConfigureParams {
   baseUrl: string = '';
   model: string = '';
   apiKey: string = '';
+  credentialRef: string = '';
+  hasCredentialRef: boolean = false;
   maxTokens: number = 0;
   temperature: number = -1;
   select: boolean = true;
   remove: boolean = false;
   clear: boolean = false;
+  clearApiKey: boolean = false;
+  compat: PluginAiCompatParams | undefined = undefined;
+  retryPolicy: PluginAiRetryPolicyParams | undefined = undefined;
 
   static from(raw: string): PluginAiConfigureParams {
     const parsed = JSON.parse(raw) as Record<string, Object>;
@@ -423,11 +491,38 @@ export class PluginAiConfigureParams {
     if (typeof parsed['baseUrl'] === 'string') { params.baseUrl = parsed['baseUrl'] as string; }
     if (typeof parsed['model'] === 'string') { params.model = parsed['model'] as string; }
     if (typeof parsed['apiKey'] === 'string') { params.apiKey = parsed['apiKey'] as string; }
+    if (typeof parsed['credentialRef'] === 'string') {
+      params.credentialRef = parsed['credentialRef'] as string;
+      params.hasCredentialRef = true;
+    }
     if (typeof parsed['maxTokens'] === 'number') { params.maxTokens = parsed['maxTokens'] as number; }
     if (typeof parsed['temperature'] === 'number') { params.temperature = parsed['temperature'] as number; }
     if (parsed['select'] === false) { params.select = false; }
     if (parsed['remove'] === true) { params.remove = true; }
     if (parsed['clear'] === true) { params.clear = true; }
+    if (parsed['clearApiKey'] === true) { params.clearApiKey = true; }
+    const rawCompat = parsed['compat'] as Record<string, Object> | undefined;
+    if (rawCompat && typeof rawCompat === 'object' && !Array.isArray(rawCompat)) {
+      const compat = new PluginAiCompatParams();
+      if (typeof rawCompat['maxTokensField'] === 'string') {
+        compat.maxTokensField = rawCompat['maxTokensField'] as string;
+      }
+      if (typeof rawCompat['thinkingFormat'] === 'string') {
+        compat.thinkingFormat = rawCompat['thinkingFormat'] as string;
+      }
+      if (typeof rawCompat['supportsDeveloperRole'] === 'boolean') {
+        compat.supportsDeveloperRole = rawCompat['supportsDeveloperRole'] as boolean;
+        compat.hasSupportsDeveloperRole = true;
+      }
+      params.compat = compat;
+    }
+    const rawRetry = parsed['retryPolicy'] as Record<string, Object> | undefined;
+    if (rawRetry && typeof rawRetry === 'object' && !Array.isArray(rawRetry)) {
+      const retry = new PluginAiRetryPolicyParams();
+      if (typeof rawRetry['mode'] === 'string') { retry.mode = rawRetry['mode'] as string; }
+      if (typeof rawRetry['maxRetries'] === 'number') { retry.maxRetries = rawRetry['maxRetries'] as number; }
+      params.retryPolicy = retry;
+    }
     return params;
   }
 }
@@ -484,6 +579,73 @@ export class PluginEditorWriteParams {
     if (typeof parsed.expectedVersion === 'number') { params.expectedVersion = parsed.expectedVersion; }
     if (typeof parsed.from === 'number') { params.from = parsed.from; }
     if (typeof parsed.to === 'number') { params.to = parsed.to; }
+    return params;
+  }
+}
+
+export class PluginMindMapParams {
+  vaultId: string = '';
+  id: string = '';
+  title: string = '';
+  layoutKind: string = '';
+  fromNoteId: string = '';
+  markdown: string = '';
+  nodes: Record<string, Object>[] = [];
+  open: boolean = true;
+  hasOpen: boolean = false;
+
+  static from(raw: string): PluginMindMapParams {
+    const parsed = JSON.parse(raw) as Record<string, Object>;
+    const params = new PluginMindMapParams();
+    if (typeof parsed['vaultId'] === 'string') { params.vaultId = parsed['vaultId'] as string; }
+    if (typeof parsed['id'] === 'string') { params.id = parsed['id'] as string; }
+    if (typeof parsed['title'] === 'string') { params.title = parsed['title'] as string; }
+    if (typeof parsed['layoutKind'] === 'string') { params.layoutKind = parsed['layoutKind'] as string; }
+    if (typeof parsed['fromNoteId'] === 'string') { params.fromNoteId = parsed['fromNoteId'] as string; }
+    if (typeof parsed['markdown'] === 'string') { params.markdown = parsed['markdown'] as string; }
+    if (Array.isArray(parsed['nodes'])) { params.nodes = parsed['nodes'] as Record<string, Object>[]; }
+    if (typeof parsed['open'] === 'boolean') {
+      params.open = parsed['open'] as boolean;
+      params.hasOpen = true;
+    }
+    return params;
+  }
+}
+
+export class PluginCanvasParams {
+  vaultId: string = '';
+  id: string = '';
+  title: string = '';
+  cards: Record<string, Object>[] = [];
+  edges: Record<string, Object>[] = [];
+  open: boolean = true;
+  hasOpen: boolean = false;
+
+  static from(raw: string): PluginCanvasParams {
+    const parsed = JSON.parse(raw) as Record<string, Object>;
+    const params = new PluginCanvasParams();
+    if (typeof parsed['vaultId'] === 'string') { params.vaultId = parsed['vaultId'] as string; }
+    if (typeof parsed['id'] === 'string') { params.id = parsed['id'] as string; }
+    if (typeof parsed['title'] === 'string') { params.title = parsed['title'] as string; }
+    if (Array.isArray(parsed['cards'])) { params.cards = parsed['cards'] as Record<string, Object>[]; }
+    if (Array.isArray(parsed['edges'])) { params.edges = parsed['edges'] as Record<string, Object>[]; }
+    if (typeof parsed['open'] === 'boolean') {
+      params.open = parsed['open'] as boolean;
+      params.hasOpen = true;
+    }
+    return params;
+  }
+}
+
+export class PluginSettingsParams {
+  patch: Record<string, Object> = {};
+
+  static from(raw: string): PluginSettingsParams {
+    const parsed = JSON.parse(raw) as Record<string, Object>;
+    const params = new PluginSettingsParams();
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      params.patch = parsed;
+    }
     return params;
   }
 }

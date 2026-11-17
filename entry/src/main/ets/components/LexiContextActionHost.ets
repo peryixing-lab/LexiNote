@@ -1,4 +1,5 @@
 import { LexiTheme, LexiThemePalette } from '../core/LexiTheme';
+import { LexiTokens } from '../core/LexiTokens';
 import { common } from '@kit.AbilityKit';
 import { CanvasBoard, LexiProject, MindMapDoc, NoteItem, NoteRevision, VaultItem } from '../core/LexiModels';
 import { LexiContextCommand, LexiContextTarget } from '../core/LexiContextModels';
@@ -6,6 +7,7 @@ import { LexiStorageService as Storage } from '../core/LexiStorageService';
 import { LexiFileActions } from '../core/LexiFileActions';
 import { LexiShareService } from '../core/LexiShareService';
 import { MarkdownEngine } from '../core/MarkdownEngine';
+import { LexiHistoryPanel } from './LexiHistoryPanel';
 
 @Component
 export struct LexiContextActionHost {
@@ -26,6 +28,7 @@ export struct LexiContextActionHost {
   @State private selectedProject: string = '';
   @State private selectedNote: string = '';
   @State private selectedRevision: string = '';
+  @State private historySignal: number = 0;
   @State private searchText: string = '';
   onOpen: (id: string, mode: string) => void = (_id: string, _mode: string): void => {};
   onSearch: (target: LexiContextTarget) => void = (_target: LexiContextTarget): void => {};
@@ -112,7 +115,7 @@ export struct LexiContextActionHost {
     }
     if (action === 'history') {
       this.revisions = await Storage.getNoteHistory(this.target.id); this.selectedRevision = '';
-      this.phase = 'history'; this.panelTitle = '版本历史'; this.showPanel = true; return;
+      this.phase = 'history'; this.panelTitle = '版本历史与差异对比'; this.historySignal++; this.showPanel = true; return;
     }
     if (action === 'delete') {
       const note = this.target.kind === 'note' || this.target.kind === 'folder';
@@ -247,17 +250,18 @@ export struct LexiContextActionHost {
   @Builder
   private nameForm() {
     Column({ space: 16 }) {
-      Text(this.panelTitle).fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.palette.text_primary).width('100%')
+      Text(this.panelTitle).fontSize(LexiTokens.TYPE_H2).lineHeight(LexiTokens.LH_H2).fontWeight(FontWeight.Bold).fontColor(this.palette.text_primary).width('100%')
       TextInput({ text: this.nameText, placeholder: '请输入名称' }).id('context-name-input').height(48).width('100%')
-        .fontColor(this.palette.text_primary).backgroundColor(this.palette.soft_surface).borderRadius(12)
+        .fontColor(this.palette.text_primary).backgroundColor(this.palette.soft_surface).borderRadius(LexiTokens.RADIUS_MD)
+        .border({ width: 0.5, color: this.palette.workspace_line })
         .onChange((text: string): void => { this.nameText = text; })
         .enterKeyType(EnterKeyType.Done).onSubmit((): void => { this.getUIContext().getFocusController().clearFocus(); this.commit(); })
       if (this.phase === 'rename' && (this.target.kind === 'workspace' || this.target.kind === 'project')) {
-        Text('修改应用内显示名称，磁盘目录保留原名。').fontSize(13).lineHeight(21).fontColor(this.palette.text_secondary).width('100%')
+        Text('修改应用内显示名称，磁盘目录保留原名。').fontSize(LexiTokens.TYPE_UI).lineHeight(LexiTokens.LH_UI).fontColor(this.palette.text_secondary).width('100%')
       }
-      if (this.message) { Text(this.message).fontSize(13).fontColor(this.palette.error).width('100%'); }
+      if (this.message) { Text(this.message).fontSize(LexiTokens.TYPE_UI).fontColor(this.palette.error).width('100%'); }
       Button(this.working ? '正在处理…' : '确定', { type: ButtonType.Normal }).id('context-confirm')
-        .width('100%').height(48).fontSize(15).borderRadius(14).enabled(!this.working && !!this.nameText.trim())
+        .width('100%').height(48).fontSize(LexiTokens.TYPE_PHONE_UI).borderRadius(LexiTokens.RADIUS_MD).enabled(!this.working && !!this.nameText.trim())
         .fontColor(this.palette.inverse_text).backgroundColor(this.palette.brand)
         .onClick((): void => { this.getUIContext().getFocusController().clearFocus(); this.commit(); })
       Button('取消', { buttonStyle: ButtonStyleMode.TEXTUAL }).width('100%').height(40).fontSize(14)
@@ -298,25 +302,23 @@ export struct LexiContextActionHost {
                 })
             }, (note: NoteItem): string => `${note.id}-${note.updatedAt}`)
           } else if (this.phase === 'history') {
-            Text('保留最近 20 次正文或标题修改。恢复版本前的内容会继续保留。').fontSize(13).lineHeight(22).fontColor(this.palette.text_secondary)
-            if (this.revisions.length === 0) {
-              Text('还没有历史版本。后续修改并保存后，旧版本会自动出现在这里。').fontSize(14).lineHeight(24).fontColor(this.palette.text_primary)
-            }
-            ForEach(this.revisions, (revision: NoteRevision) => {
-              Button(`${this.selectedRevision === revision.id ? '✓  ' : ''}${new Date(revision.savedAt).toLocaleString()}`, { type: ButtonType.Normal })
-                .id(`context-revision-${revision.id}`).width('100%').height(48).fontSize(14).borderRadius(12)
-                .backgroundColor(this.palette.soft_surface).fontColor(this.palette.text_primary)
-                .onClick((): void => { this.selectedRevision = revision.id; })
-              if (this.selectedRevision === revision.id) {
-                Text(revision.snapshot.content || '空白正文').width('100%').fontSize(14).lineHeight(23)
-                  .fontColor(this.palette.text_primary).padding(16).backgroundColor(this.palette.soft_surface).borderRadius(12)
-              }
-            }, (revision: NoteRevision): string => revision.id)
+            LexiHistoryPanel({
+              openSignal: this.historySignal,
+              noteId: this.target.id,
+              hasLiveDraft: false,
+              conflictMode: false,
+              onRestored: (_saved: NoteItem): void => {
+                this.notify();
+                this.showPanel = false;
+                this.toast('已恢复，恢复前的内容已保留在历史中');
+              },
+              onClose: (): void => { this.showPanel = false; }
+            }).height(540)
           }
         }.width('100%')
       }.width('100%').layoutWeight(1).align(Alignment.Top)
       if (this.message) { Text(this.message).fontSize(13).fontColor(this.palette.error).width('100%'); }
-      if (this.phase !== 'location') {
+      if (this.phase !== 'location' && this.phase !== 'history') {
         Button(this.working ? '正在处理…' : this.phase === 'history' ? '恢复此版本' : this.phase === 'merge' ? '确认合并' : '确定', { type: ButtonType.Normal })
           .id('context-confirm').height(48).width('100%').fontSize(15).borderRadius(14)
           .backgroundColor(this.palette.brand).fontColor(this.palette.inverse_text)

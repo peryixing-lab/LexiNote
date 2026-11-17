@@ -4,7 +4,6 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const { LexiTheme } = require('./lib/theme-harness.cjs').loadTheme();
 const ts = require('/Applications/DevEco-Studio.app/Contents/tools/hvigor/hvigor/node_modules/typescript');
 const { createSandbox } = require('./lib/plugin-sandbox.cjs');
 const box = createSandbox(); box.reset();
@@ -32,7 +31,7 @@ source = source.replace(/@\w+(?:\([^)]*\))?\s*/g, '').replace('export struct Lex
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2021 } }).outputText;
 const exported = {};
 vm.runInThisContext('(function(require,module,exports){' + compiled + '\n})', { filename: sourcePath })(
-  name => name.endsWith('LexiTheme') ? { LexiTheme } : name.endsWith('PluginModels') ? models : { PluginManager: manager }, { exports: exported }, exported);
+  name => name.endsWith('PluginModels') ? models : name.endsWith('LexiTheme') ? { LexiTheme: { current: () => ({}) } } : { PluginManager: manager }, { exports: exported }, exported);
 global.$r = name => name;
 let dialogChoice = 0;
 let lastDialog;

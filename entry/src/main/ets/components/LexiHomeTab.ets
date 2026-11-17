@@ -5,6 +5,7 @@ import {
   NoteLink
 } from '../core/LexiModels';
 import { MarkdownEngine } from '../core/MarkdownEngine';
+import { LexiSearch } from '../core/LexiSearch';
 import { LexiIcon } from './LexiIcon';
 import { LexiHeroHeading, LexiNoteCard } from './LexiNoteCard';
 
@@ -52,6 +53,7 @@ export struct LexiHomeTab {
   @State private activeList: NoteItem[] = [];
   @State private pinnedList: NoteItem[] = [];
   @State private recentList: NoteItem[] = [];
+  @State private recentMode: string = 'accessed';
   @State private resolvedLinks: number = 0;
   private outgoingMap: Map<string, number> = new Map<string, number>();
   private backlinkMap: Map<string, number> = new Map<string, number>();
@@ -74,15 +76,24 @@ export struct LexiHomeTab {
     this.recompute();
   }
 
+  private rebuildRecentList(): void {
+    const nonPinned = this.activeList.filter((n: NoteItem): boolean => !n.pinned);
+    this.recentList = LexiSearch.sortNotes(nonPinned, this.recentMode).slice(0, 5);
+  }
+
+  private setRecentMode(mode: string): void {
+    if (this.recentMode === mode) {
+      return;
+    }
+    this.recentMode = mode;
+    this.rebuildRecentList();
+  }
+
   private recompute(): void {
     const active = this.notes.filter((n: NoteItem): boolean => n.trashedAt === 0);
     this.activeList = active;
     this.pinnedList = active.filter((n: NoteItem): boolean => n.pinned);
-    this.recentList = active
-      .filter((n: NoteItem): boolean => !n.pinned)
-      .slice()
-      .sort((a: NoteItem, b: NoteItem): number => b.updatedAt - a.updatedAt)
-      .slice(0, 5);
+    this.rebuildRecentList();
     const outMap = new Map<string, number>();
     const backMap = new Map<string, number>();
     const activeIds = new Set<string>(active.map((note: NoteItem): string => note.id));
@@ -126,10 +137,12 @@ export struct LexiHomeTab {
   }
 
   @Builder
-  renderNoteCard(note: NoteItem) {
+  renderNoteCard(note: NoteItem, showAccess: boolean) {
     LexiNoteCard({
       note: note,
       query: '',
+      showAccessTime: showAccess,
+      isUnconnected: this.outgoingCount(note.id) === 0 && this.backlinkCount(note.id) === 0,
       outgoingCount: this.outgoingCount(note.id),
       backlinkCount: this.backlinkCount(note.id),
       onOpen: (id: string): void => {
@@ -266,9 +279,9 @@ export struct LexiHomeTab {
           ForEach(
             this.pinnedList,
             (note: NoteItem) => {
-              this.renderNoteCard(note)
+              this.renderNoteCard(note, false)
             },
-            (note: NoteItem): string => `pin-${note.id}-${note.updatedAt}`
+            (note: NoteItem): string => `pin-${note.id}-${note.updatedAt}-${this.outgoingCount(note.id)}-${this.backlinkCount(note.id)}`
           )
         }
         .width('100%')
@@ -276,14 +289,38 @@ export struct LexiHomeTab {
 
       if (this.activeList.length > 0) {
         Column({ space: 10 }) {
-          Row() {
+          Row({ space: 8 }) {
             Text(this.tr('最近笔记')).fontSize(15).fontWeight(FontWeight.Bold).fontColor(this.palette.text_primary)
+            Row({ space: 4 }) {
+              Button(this.tr('最近访问'), { type: ButtonType.Normal })
+                .height(26)
+                .padding({ left: 8, right: 8 })
+                .fontSize(11)
+                .borderRadius(999)
+                .backgroundColor(this.recentMode === 'accessed' ? this.palette.brand : this.palette.surface)
+                .fontColor(this.recentMode === 'accessed' ? this.palette.inverse_text : this.palette.text_secondary)
+                .onClick((): void => {
+                  this.setRecentMode('accessed');
+                })
+              Button(this.tr('最近编辑'), { type: ButtonType.Normal })
+                .height(26)
+                .padding({ left: 8, right: 8 })
+                .fontSize(11)
+                .borderRadius(999)
+                .backgroundColor(this.recentMode === 'updated' ? this.palette.brand : this.palette.surface)
+                .fontColor(this.recentMode === 'updated' ? this.palette.inverse_text : this.palette.text_secondary)
+                .onClick((): void => {
+                  this.setRecentMode('updated');
+                })
+            }
             Blank()
             Button(this.tr('全部笔记 →'), { buttonStyle: ButtonStyleMode.TEXTUAL })
               .fontSize(12).fontColor(this.palette.brand).onClick((): void => { this.onViewAllNotes(); })
-          }.width('100%')
-          ForEach(this.recentList, (note: NoteItem) => { this.renderNoteCard(note); },
-            (note: NoteItem): string => `recent-${note.id}-${note.updatedAt}`)
+          }
+          .width('100%')
+          .alignItems(VerticalAlign.Center)
+          ForEach(this.recentList, (note: NoteItem) => { this.renderNoteCard(note, this.recentMode === 'accessed'); },
+            (note: NoteItem): string => `${this.recentMode}-${note.id}-${note.updatedAt}-${note.lastOpenedAt}-${this.outgoingCount(note.id)}-${this.backlinkCount(note.id)}`)
         }.width('100%')
       }
     }

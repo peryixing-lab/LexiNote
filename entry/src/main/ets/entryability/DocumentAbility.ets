@@ -16,11 +16,15 @@ export default class DocumentAbility extends UIAbility {
   private mainWindow: window.Window | undefined;
   private windowKey: string = `DocumentAbility:${Date.now()}:${Math.floor(Math.random() * 10000)}`;
   onBackground(): void {
+    AppStorage.setOrCreate<boolean>('lexiAbilityForeground', false);
     LexiOfflineSpeech.interruptAll();
     LexiShareService.unregisterWindow(this.windowKey);
+    LexiStorageService.flushRegisteredDrafts().catch((): void => {});
   }
   onForeground(): void {
+    AppStorage.setOrCreate<boolean>('lexiAbilityForeground', true);
     LexiShareService.registerWindow(this.windowKey, this.context, this.mainWindow);
+    AppStorage.setOrCreate<number>('lexiWorkspaceRevision', (AppStorage.get<number>('lexiWorkspaceRevision') || 0) + 1);
   }
   onCreate(want: Want, _launchParam: AbilityConstant.LaunchParam): void {
     this.onConfigurationUpdate(this.context.config);
@@ -59,6 +63,7 @@ export default class DocumentAbility extends UIAbility {
     }).catch((): void => { this.context.terminateSelf(); });
   }
   onWindowStageDestroy(): void {
+    LexiStorageService.flushRegisteredDrafts().catch((): void => {});
     LexiTheme.bindWindow(undefined);
     LexiInterfaceSettings.detachStage();
     LexiShareService.unregisterWindow(this.windowKey);

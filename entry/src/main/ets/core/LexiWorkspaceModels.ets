@@ -1,4 +1,4 @@
-import { NoteLink, NoteProperty, OutlineHeading } from './LexiModels';
+import { LexiLinkCandidate, NoteLink, NoteProperty, OutlineHeading } from './LexiModels';
 
 export class LexiWorkspaceInspectorSnapshot {
   noteId: string = '';
@@ -7,6 +7,8 @@ export class LexiWorkspaceInspectorSnapshot {
   outgoing: NoteLink[] = [];
   backlinks: NoteLink[] = [];
   properties: NoteProperty[] = [];
+  isUnconnected: boolean = false;
+  candidates: LexiLinkCandidate[] = [];
 }
 
 export class LexiWorkspaceSelection { start: number = 0; end: number = 0; }
@@ -22,6 +24,7 @@ export class LexiWorkspaceEditorController {
   inspectorSnapshot: () => LexiWorkspaceInspectorSnapshot = (): LexiWorkspaceInspectorSnapshot => new LexiWorkspaceInspectorSnapshot();
   revealHeading: (heading: OutlineHeading) => void = (_heading: OutlineHeading): void => {};
   openTarget: (target: string) => Promise<void> = async (_target: string): Promise<void> => {};
+  insertWikiLink: (title: string) => void = (_title: string): void => {};
 }
 
 export class LexiWorkspaceTab {

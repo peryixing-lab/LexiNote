@@ -5,8 +5,9 @@ const path = require('node:path');
 const { createRuntime, makeFile } = require('./lib/js-runtime-harness.cjs');
 
 const ROOT = path.resolve(__dirname, '../..');
-const SOURCE = fs.readFileSync(path.join(ROOT, 'plugins/harness/dist/main.js'), 'utf8');
-const MANIFEST = JSON.parse(fs.readFileSync(path.join(ROOT, 'plugins/harness/manifest.json'), 'utf8'));
+const HARNESS_DIR = process.env.LEXINOTE_HARNESS_DIR || path.resolve(ROOT, '../lexinote-Harness');
+const SOURCE = fs.readFileSync(path.join(HARNESS_DIR, 'dist/main.js'), 'utf8');
+const MANIFEST = JSON.parse(fs.readFileSync(path.join(HARNESS_DIR, 'manifest.json'), 'utf8'));
 const PLUGIN_ID = MANIFEST.id;
 
 let assertions = 0;

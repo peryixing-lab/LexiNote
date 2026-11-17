@@ -27,6 +27,14 @@ import { LexiTemplateItem, LexiTemplateLibrary, LexiTemplateLibraryState } from 
 import { LexiFormService } from './LexiFormService';
 import { LexiStorageLock } from './LexiStorageLock';
 import { LexiWorkspacePreferences } from './LexiWorkspacePreferences';
+import {
+  LexiDraftWalEntry,
+  LexiHistoryNoteEntry,
+  LexiHistoryRetentionPolicy,
+  LexiHistoryUsageSummary,
+  LexiNoteHistory
+} from './LexiNoteHistory';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 
 const STORAGE_ACCESS_PROMPT_STATE: string = 'storageAccessPrompt:v1';
 
@@ -70,6 +78,7 @@ export class LexiStorageService {
   private static store: relationalStore.RdbStore | undefined;
   private static notesIndexReady: boolean = false;
   private static settings: preferences.Preferences | undefined;
+  private static pluginSecrets: preferences.Preferences | undefined;
   private static initPromise: Promise<void> | undefined;
   private static writeQueue: Promise<void> = Promise.resolve();
   private static mutationQueue: Promise<void> = Promise.resolve();
@@ -78,6 +87,7 @@ export class LexiStorageService {
   private static appContext: common.Context | undefined;
   private static nativeSnapshotTimer: number = -1;
   private static storagePromptNoteId: string = '';
+  private static draftFlushers: Map<string, () => Promise<void>> = new Map<string, () => Promise<void>>();
   // Each workspace window runs in its own process. Never read another window's last selection.
   private static windowVaultId: string = '';
 
@@ -182,6 +192,8 @@ export class LexiStorageService {
     const appContext = context.getApplicationContext();
     preferences.removePreferencesFromCacheSync(appContext, 'lexinote_settings');
     LexiStorageService.settings = await preferences.getPreferences(appContext, 'lexinote_settings');
+    preferences.removePreferencesFromCacheSync(appContext, 'lexinote_plugin_secrets');
+    LexiStorageService.pluginSecrets = await preferences.getPreferences(appContext, 'lexinote_plugin_secrets');
   }
 
   private static db(): relationalStore.RdbStore {
@@ -249,8 +261,47 @@ export class LexiStorageService {
     }
   }
 
+  private static async readNoteAccessMap(): Promise<Map<string, number>> {
+    const map = new Map<string, number>();
+    if (!LexiStorageService.store) { return map; }
+    try {
+      await LexiStorageService.writeQueue;
+      const rows = await LexiStorageService.db().querySql('SELECT value FROM kv_store WHERE key = ?', ['note_access_times']);
+      try {
+        if (!rows.goToFirstRow()) { return map; }
+        const parsed = JSON.parse(rows.getString(0)) as Record<string, number>;
+        if (parsed && typeof parsed === 'object') {
+          Object.entries(parsed).forEach((entry: [string, number]): void => {
+            if (typeof entry[1] === 'number' && entry[1] > 0) {
+              map.set(entry[0], entry[1]);
+            }
+          });
+        }
+        return map;
+      } finally {
+        rows.close();
+      }
+    } catch {
+      return map;
+    }
+  }
+
+  static async recordNoteOpened(context: common.Context, noteId: string, openedAt: number = 0): Promise<number> {
+    if (!noteId) { return 0; }
+    const stamp = openedAt > 0 ? openedAt : Date.now();
+    await LexiStorageService.withStorageLock<void>(context, async (): Promise<void> => {
+      const current = await LexiStorageService.readNoteAccessMap();
+      current.set(noteId, Math.max(stamp, current.get(noteId) ?? 0));
+      const payload: Record<string, number> = {};
+      current.forEach((value: number, key: string): void => { payload[key] = value; });
+      await LexiStorageService.setRawValueUnlocked('note_access_times', JSON.stringify(payload));
+    });
+    return stamp;
+  }
+
   private static async indexedNotes(vaultId: string = '', noteId: string = '', metadataOnly: boolean = false): Promise<NoteItem[]> {
     await LexiStorageService.writeQueue;
+    const accessMap = await LexiStorageService.readNoteAccessMap();
     let sql = metadataOnly ? 'SELECT metadata_json FROM notes_meta' :
       'SELECT notes_meta.metadata_json, notes_content.content FROM notes_meta JOIN notes_content ON notes_meta.id = notes_content.id';
     const args: string[] = [];
@@ -261,6 +312,7 @@ export class LexiStorageService {
       while (rows.goToNextRow()) {
         const note = JSON.parse(rows.getString(0)) as NoteItem;
         if (!metadataOnly) { note.content = rows.getString(1); }
+        note.lastOpenedAt = Math.max(note.lastOpenedAt || 0, accessMap.get(note.id) ?? 0);
         result.push(note);
       }
     } finally { rows.close(); }
@@ -302,7 +354,7 @@ export class LexiStorageService {
 
   private static ensureVaultDirs(context: common.Context, vaultId: string): string {
     const base = `${context.filesDir}/vaults/${vaultId}`;
-    const subDirs: string[] = [base, `${base}/notes`, `${base}/maps`, `${base}/canvases`, `${base}/backups`];
+    const subDirs: string[] = [base, `${base}/notes`, `${base}/maps`, `${base}/canvases`, `${base}/attachments`, `${base}/backups`];
     for (let i = 0; i < subDirs.length; i++) {
       if (!fs.accessSync(subDirs[i])) {
         fs.mkdirSync(subDirs[i], true);
@@ -311,17 +363,145 @@ export class LexiStorageService {
     return base;
   }
 
+  static isDiskFullError(error: Error | Object | undefined): boolean {
+    if (!error) { return false; }
+    const msg = ((error as Error).message || '').toLowerCase();
+    const code = (error as Record<string, Object>)['code'];
+    return code === 28 || code === 13900025 || code === 'ENOSPC' ||
+      msg.includes('enospc') || msg.includes('no space') || msg.includes('disk full') || msg.includes('存储空间已满');
+  }
+
+  static friendlySaveError(error: Error | Object | undefined, fallback: string = '保存失败，当前草稿已保留'): string {
+    if (LexiStorageService.isDiskFullError(error)) {
+      return '存储空间已满，无法写入磁盘，当前内容已保留在编辑缓冲区中';
+    }
+    const msg = error ? ((error as Error).message || '') : '';
+    if (msg === 'DOCUMENT_CHANGED_ELSEWHERE') {
+      return '笔记已在其他窗口更新，当前草稿仍然保留';
+    }
+    return msg || fallback;
+  }
+
   private static writeTextAtomic(filePath: string, content: string): void {
     const tmpPath = `${filePath}.tmp`;
-    const file = fs.openSync(tmpPath, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+    let file: fs.File | undefined = undefined;
     try {
+      file = fs.openSync(tmpPath, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
       fs.writeSync(file.fd, content);
       fs.fsyncSync(file.fd);
-    } finally {
+    } catch (error) {
+      if (file) {
+        try { fs.closeSync(file); } catch {}
+        file = undefined;
+      }
+      try { if (fs.accessSync(tmpPath)) { fs.unlinkSync(tmpPath); } } catch {}
+      throw error as Error;
+    }
+    if (file) {
       fs.closeSync(file);
     }
     // Replace only after the complete temporary file is durable.
-    fs.renameSync(tmpPath, filePath);
+    try {
+      fs.renameSync(tmpPath, filePath);
+    } catch (error) {
+      try { if (fs.accessSync(tmpPath)) { fs.unlinkSync(tmpPath); } } catch {}
+      throw error as Error;
+    }
+  }
+
+  static registerDraftFlusher(ownerId: string, flusher: () => Promise<void>): void {
+    if (!ownerId) { return; }
+    LexiStorageService.draftFlushers.set(ownerId, flusher);
+  }
+
+  static unregisterDraftFlusher(ownerId: string): void {
+    LexiStorageService.draftFlushers.delete(ownerId);
+  }
+
+  static async flushRegisteredDrafts(): Promise<void> {
+    const callbacks = Array.from(LexiStorageService.draftFlushers.values());
+    for (let i = 0; i < callbacks.length; i++) {
+      try { await callbacks[i](); } catch {}
+    }
+    await LexiStorageService.flushPendingWrites().catch((): void => {});
+  }
+
+  private static walDir(context: common.Context | undefined): string {
+    const ctx = context || LexiStorageService.appContext;
+    if (!ctx || !ctx.filesDir) { return ''; }
+    return `${ctx.filesDir}/draft-wal`;
+  }
+
+  private static safeWalName(noteId: string): string {
+    return noteId.replace(/[^A-Za-z0-9_.-]/g, '_');
+  }
+
+  private static walPath(context: common.Context | undefined, noteId: string, pending: boolean = false): string {
+    const dir = LexiStorageService.walDir(context);
+    if (!dir || !noteId) { return ''; }
+    const suffix = pending ? '.pending.json' : '.json';
+    return `${dir}/${LexiStorageService.safeWalName(noteId)}${suffix}`;
+  }
+
+  static writeDraftWalSync(context: common.Context | undefined, entry: LexiDraftWalEntry): boolean {
+    const dir = LexiStorageService.walDir(context);
+    const path = LexiStorageService.walPath(context, entry.noteId, false);
+    if (!dir || !path) { return false; }
+    try {
+      if (!fs.accessSync(dir)) { fs.mkdirSync(dir, true); }
+      const payload = JSON.stringify(entry);
+      LexiStorageService.writeTextAtomic(path, payload);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  static clearDraftWalSync(context: common.Context | undefined, noteId: string): void {
+    const active = LexiStorageService.walPath(context, noteId, false);
+    if (active) {
+      try { if (fs.accessSync(active)) { fs.unlinkSync(active); } } catch {}
+    }
+  }
+
+  static clearPendingCrashRecoverySync(context: common.Context | undefined, noteId: string): void {
+    const pending = LexiStorageService.walPath(context, noteId, true);
+    if (pending) {
+      try { if (fs.accessSync(pending)) { fs.unlinkSync(pending); } } catch {}
+    }
+  }
+
+  static getPendingCrashDraftSync(context: common.Context | undefined, noteId: string): LexiDraftWalEntry | undefined {
+    const pending = LexiStorageService.walPath(context, noteId, true);
+    if (!pending) { return undefined; }
+    try {
+      if (!fs.accessSync(pending)) { return undefined; }
+      return JSON.parse(fs.readTextSync(pending)) as LexiDraftWalEntry;
+    } catch {
+      return undefined;
+    }
+  }
+
+  static async listDraftWalEntries(context: common.Context | undefined, pending: boolean = false): Promise<LexiDraftWalEntry[]> {
+    const dir = LexiStorageService.walDir(context);
+    if (!dir) { return []; }
+    try {
+      if (!fs.accessSync(dir)) { return []; }
+      const entries: LexiDraftWalEntry[] = [];
+      const files = await fs.listFile(dir);
+      for (let i = 0; i < files.length; i++) {
+        const name = files[i];
+        const isPending = name.endsWith('.pending.json');
+        if (pending !== isPending || !name.endsWith('.json')) { continue; }
+        try {
+          const parsed = JSON.parse(await fs.readText(`${dir}/${name}`)) as LexiDraftWalEntry;
+          if (parsed && parsed.noteId) { entries.push(parsed); }
+        } catch {}
+      }
+      return entries;
+    } catch {
+      return [];
+    }
   }
 
   static async getRawValue(key: string, fallback: string = ''): Promise<string> {
@@ -404,6 +584,47 @@ export class LexiStorageService {
       LexiWorkspacePreferences.key(await LexiStorageService.getActiveVaultId(), key) : key;
     await LexiStorageService.settings.put(scopedKey, value);
     await LexiStorageService.settings.flush();
+  }
+
+  static async deleteSetting(key: string, vaultId: string = ''): Promise<void> {
+    const scopedKey = LexiWorkspacePreferences.contains(key) ?
+      LexiWorkspacePreferences.key(vaultId || LexiStorageService.windowVaultId || await LexiStorageService.getActiveVaultId(), key) : key;
+    return LexiStorageService.withStorageLock<void>(LexiStorageService.appContext, async (): Promise<void> => {
+      if (!LexiStorageService.settings) {
+        return;
+      }
+      await LexiStorageService.settings.delete(scopedKey);
+      await LexiStorageService.settings.flush();
+    });
+  }
+
+  static async getPluginSecret(key: string): Promise<string> {
+    return LexiStorageService.withStorageLock<string>(LexiStorageService.appContext, async (): Promise<string> => {
+      if (!LexiStorageService.pluginSecrets) {
+        return '';
+      }
+      return (await LexiStorageService.pluginSecrets.get(key, '')) as string;
+    });
+  }
+
+  static async setPluginSecret(key: string, value: string): Promise<void> {
+    return LexiStorageService.withStorageLock<void>(LexiStorageService.appContext, async (): Promise<void> => {
+      if (!LexiStorageService.pluginSecrets) {
+        throw new Error('Plugin secret store is not initialized');
+      }
+      await LexiStorageService.pluginSecrets.put(key, value);
+      await LexiStorageService.pluginSecrets.flush();
+    });
+  }
+
+  static async deletePluginSecret(key: string): Promise<void> {
+    return LexiStorageService.withStorageLock<void>(LexiStorageService.appContext, async (): Promise<void> => {
+      if (!LexiStorageService.pluginSecrets) {
+        return;
+      }
+      await LexiStorageService.pluginSecrets.delete(key);
+      await LexiStorageService.pluginSecrets.flush();
+    });
   }
 
   static async setPluginEnabled(pluginId: string, enabled: boolean, vaultId: string = ''): Promise<void> {
@@ -795,11 +1016,14 @@ export class LexiStorageService {
   }
 
   private static importFolderNote(snapshot: LexiFolderSnapshot, relative: string, path: string, vaultId: string,
-    projectId: string, all: NoteItem[]): NoteItem {
+    projectId: string, all: NoteItem[], documentContent: string = ''): NoteItem {
     const metadata = snapshot.catalog.notes.find((item: NoteItem): boolean => item.path === relative);
     const note = new NoteItem();
-    note.id = metadata && typeof metadata.id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(metadata.id) &&
-      !all.some((item: NoteItem): boolean => item.id === metadata.id) ? metadata.id : util.generateRandomUUID(true);
+    const frontmatter = LexiFrontmatter.parse(documentContent);
+    const fmId = frontmatter.id;
+    const preferredId = metadata && typeof metadata.id === 'string' ? metadata.id : fmId;
+    note.id = preferredId && /^[A-Za-z0-9_-]{1,100}$/.test(preferredId) &&
+      !all.some((item: NoteItem): boolean => item.id === preferredId) ? preferredId : util.generateRandomUUID(true);
     note.vaultId = vaultId;
     note.projectId = projectId;
     note.path = path;
@@ -830,7 +1054,7 @@ export class LexiStorageService {
       const path = `${root}/${document.relativePath}`;
       let note = notes.find((item: NoteItem): boolean => item.path === path && item.vaultId === vault.id);
       if (!note) {
-        note = LexiStorageService.importFolderNote(snapshot, document.relativePath, path, vault.id, projectId, notes);
+        note = LexiStorageService.importFolderNote(snapshot, document.relativePath, path, vault.id, projectId, notes, document.content);
         note.createdAt = document.modifiedAt || Date.now();
         notes.push(note);
       }
@@ -989,22 +1213,321 @@ export class LexiStorageService {
     });
   }
 
+  static async getHistoryPolicy(): Promise<LexiHistoryRetentionPolicy> {
+    const policy = new LexiHistoryRetentionPolicy();
+    policy.maxAgeDays = Number(await LexiStorageService.getSetting('historyMaxAgeDays', '30')) || 30;
+    policy.maxCountPerNote = Number(await LexiStorageService.getSetting('historyMaxCountPerNote', '30')) || 30;
+    const perNoteMb = Number(await LexiStorageService.getSetting('historyMaxBytesPerNoteMb', '2')) || 2;
+    const totalMb = Number(await LexiStorageService.getSetting('historyMaxTotalBytesMb', '50')) || 50;
+    policy.maxBytesPerNote = Math.round(perNoteMb * 1024 * 1024);
+    policy.maxTotalBytes = Math.round(totalMb * 1024 * 1024);
+    return LexiNoteHistory.clampPolicy(policy);
+  }
+
+  static async setHistoryPolicy(context: common.Context, nextPolicy: LexiHistoryRetentionPolicy): Promise<LexiHistoryRetentionPolicy> {
+    return LexiStorageService.withStorageLock<LexiHistoryRetentionPolicy>(context, async (): Promise<LexiHistoryRetentionPolicy> =>
+      LexiStorageService.setHistoryPolicyUnlocked(context, nextPolicy));
+  }
+
+  private static async setHistoryPolicyUnlocked(context: common.Context, nextPolicy: LexiHistoryRetentionPolicy): Promise<LexiHistoryRetentionPolicy> {
+    return LexiStorageService.actionMutation<LexiHistoryRetentionPolicy>(async (): Promise<LexiHistoryRetentionPolicy> => {
+      const clamped = LexiNoteHistory.clampPolicy(nextPolicy);
+      await LexiStorageService.setSettingUnlocked('historyMaxAgeDays', String(clamped.maxAgeDays));
+      await LexiStorageService.setSettingUnlocked('historyMaxCountPerNote', String(clamped.maxCountPerNote));
+      await LexiStorageService.setSettingUnlocked('historyMaxBytesPerNoteMb', String(Math.max(1, Math.round(clamped.maxBytesPerNote / (1024 * 1024)))));
+      await LexiStorageService.setSettingUnlocked('historyMaxTotalBytesMb', String(Math.max(1, Math.round(clamped.maxTotalBytes / (1024 * 1024)))));
+      await LexiStorageService.pruneAllHistoryDirect(clamped);
+      return clamped;
+    });
+  }
+
+  private static async trackedHistoryNoteIds(): Promise<string[]> {
+    const ids: string[] = [];
+    const seen = new Set<string>();
+    try {
+      const rawIndex = await LexiStorageService.getRawValue('history:index', '[]');
+      const indexed = JSON.parse(rawIndex) as string[];
+      if (Array.isArray(indexed)) {
+        for (let i = 0; i < indexed.length; i++) {
+          if (indexed[i] && !seen.has(indexed[i])) { seen.add(indexed[i]); ids.push(indexed[i]); }
+        }
+      }
+    } catch {}
+    const notes = await LexiStorageService.getNotes('');
+    for (let i = 0; i < notes.length; i++) {
+      if (notes[i].id && !seen.has(notes[i].id)) { seen.add(notes[i].id); ids.push(notes[i].id); }
+    }
+    return ids;
+  }
+
   static async getNoteHistory(noteId: string): Promise<NoteRevision[]> {
-    return JSON.parse(await LexiStorageService.getRawValue(`history:${noteId}`, '[]')) as NoteRevision[];
+    try {
+      const raw = JSON.parse(await LexiStorageService.getRawValue(`history:${noteId}`, '[]')) as NoteRevision[];
+      if (!Array.isArray(raw)) { return []; }
+      return raw.map((entry: NoteRevision): NoteRevision => LexiNoteHistory.normalizeRevision(entry))
+        .sort((a: NoteRevision, b: NoteRevision): number => b.savedAt - a.savedAt);
+    } catch {
+      return [];
+    }
   }
 
-  static async restoreNoteRevision(context: common.Context, noteId: string, revisionId: string): Promise<NoteItem> {
+  static async getHistoryUsage(): Promise<LexiHistoryUsageSummary> {
+    const ids = await LexiStorageService.trackedHistoryNoteIds();
+    const entries: LexiHistoryNoteEntry[] = [];
+    for (let i = 0; i < ids.length; i++) {
+      const revisions = await LexiStorageService.getNoteHistory(ids[i]);
+      if (revisions.length > 0) {
+        entries.push(new LexiHistoryNoteEntry(ids[i], revisions));
+      }
+    }
+    return LexiNoteHistory.summarize(entries);
+  }
+
+  static async pruneAllHistory(context: common.Context): Promise<number> {
+    return LexiStorageService.withStorageLock<number>(context, async (): Promise<number> =>
+      LexiStorageService.pruneAllHistoryUnlocked(context));
+  }
+
+  private static async pruneAllHistoryUnlocked(_context: common.Context, explicitPolicy?: LexiHistoryRetentionPolicy): Promise<number> {
+    return LexiStorageService.actionMutation<number>(async (): Promise<number> => {
+      return LexiStorageService.pruneAllHistoryDirect(explicitPolicy);
+    });
+  }
+
+  private static async pruneAllHistoryDirect(explicitPolicy?: LexiHistoryRetentionPolicy): Promise<number> {
+    const policy = explicitPolicy || await LexiStorageService.getHistoryPolicy();
+    const ids = await LexiStorageService.trackedHistoryNoteIds();
+    const entries: LexiHistoryNoteEntry[] = [];
+    const originalCounts = new Map<string, number>();
+    for (let i = 0; i < ids.length; i++) {
+      const revisions = await LexiStorageService.getNoteHistory(ids[i]);
+      originalCounts.set(ids[i], revisions.length);
+      if (revisions.length > 0) {
+        entries.push(new LexiHistoryNoteEntry(ids[i], revisions));
+      }
+    }
+    const pruned = LexiNoteHistory.pruneAllEntries(entries, policy, Date.now());
+    const keptMap = new Map<string, NoteRevision[]>();
+    const activeIds: string[] = [];
+    for (let i = 0; i < pruned.entries.length; i++) {
+      keptMap.set(pruned.entries[i].noteId, pruned.entries[i].revisions);
+      activeIds.push(pruned.entries[i].noteId);
+    }
+    for (let i = 0; i < ids.length; i++) {
+      const noteId = ids[i];
+      const nextList = keptMap.get(noteId) || [];
+      const prevCount = originalCounts.get(noteId) || 0;
+      if (prevCount > 0 || nextList.length > 0) {
+        if (nextList.length !== prevCount || nextList.length > 0) {
+          await LexiStorageService.setRawValueUnlocked(`history:${noteId}`, JSON.stringify(nextList));
+        }
+      }
+    }
+    await LexiStorageService.setRawValueUnlocked('history:index', JSON.stringify(activeIds));
+    return pruned.removedCount;
+  }
+
+  private static async recordHistoryEntryUnlocked(noteId: string, snapshot: NoteItem, savedAt: number, reason: string): Promise<void> {
+    const policy = await LexiStorageService.getHistoryPolicy();
+    const candidate = LexiNoteHistory.buildRevision(util.generateRandomUUID(true), snapshot, savedAt, reason);
+    const existing = await LexiStorageService.getNoteHistory(noteId);
+    const perNoteNext = LexiNoteHistory.appendAndPrune(existing, candidate, policy, Date.now(), reason === 'restore-backup' || reason === 'conflict-backup' || reason === 'crash-recovery');
+    const ids = await LexiStorageService.trackedHistoryNoteIds();
+    const entries: LexiHistoryNoteEntry[] = [];
+    for (let i = 0; i < ids.length; i++) {
+      if (ids[i] === noteId) {
+        entries.push(new LexiHistoryNoteEntry(noteId, perNoteNext));
+      } else {
+        const revList = await LexiStorageService.getNoteHistory(ids[i]);
+        if (revList.length > 0) {
+          entries.push(new LexiHistoryNoteEntry(ids[i], revList));
+        }
+      }
+    }
+    if (!ids.includes(noteId) && perNoteNext.length > 0) {
+      entries.push(new LexiHistoryNoteEntry(noteId, perNoteNext));
+    }
+    const globalResult = LexiNoteHistory.pruneAllEntries(entries, policy, Date.now());
+    const nextIndex: string[] = [];
+    for (let i = 0; i < globalResult.entries.length; i++) {
+      const entry = globalResult.entries[i];
+      nextIndex.push(entry.noteId);
+      if (entry.noteId === noteId) {
+        await LexiStorageService.setRawValueUnlocked(`history:${entry.noteId}`, JSON.stringify(entry.revisions));
+      } else {
+        const prev = await LexiStorageService.getNoteHistory(entry.noteId);
+        if (prev.length !== entry.revisions.length) {
+          await LexiStorageService.setRawValueUnlocked(`history:${entry.noteId}`, JSON.stringify(entry.revisions));
+        }
+      }
+    }
+    for (let i = 0; i < ids.length; i++) {
+      if (!nextIndex.includes(ids[i])) {
+        const prev = await LexiStorageService.getNoteHistory(ids[i]);
+        if (prev.length > 0) {
+          await LexiStorageService.setRawValueUnlocked(`history:${ids[i]}`, '[]');
+        }
+      }
+    }
+    await LexiStorageService.setRawValueUnlocked('history:index', JSON.stringify(nextIndex));
+  }
+
+  static async createNoteSnapshot(
+    context: common.Context,
+    noteId: string,
+    reason: string = 'manual',
+    draftTitle?: string,
+    draftContent?: string
+  ): Promise<NoteRevision> {
+    return LexiStorageService.withStorageLock<NoteRevision>(context, async (): Promise<NoteRevision> =>
+      LexiStorageService.createNoteSnapshotUnlocked(noteId, reason, draftTitle, draftContent));
+  }
+
+  private static async createNoteSnapshotUnlocked(
+    noteId: string,
+    reason: string = 'manual',
+    draftTitle?: string,
+    draftContent?: string
+  ): Promise<NoteRevision> {
+    return LexiStorageService.actionMutation<NoteRevision>(async (): Promise<NoteRevision> => {
+      const current = await LexiStorageService.getNoteById(noteId);
+      if (!current) { throw new Error('笔记不存在'); }
+      const snap = LexiNoteHistory.cloneNote(current);
+      if (draftTitle !== undefined) { snap.title = draftTitle.trim(); }
+      if (draftContent !== undefined) { snap.content = draftContent; }
+      const stamp = Date.now();
+      await LexiStorageService.recordHistoryEntryUnlocked(noteId, snap, stamp, reason);
+      const history = await LexiStorageService.getNoteHistory(noteId);
+      if (history.length > 0) { return history[0]; }
+      return LexiNoteHistory.buildRevision(util.generateRandomUUID(true), snap, stamp, reason);
+    });
+  }
+
+  static async restoreNoteRevision(
+    context: common.Context,
+    noteId: string,
+    revisionId: string,
+    draftTitle?: string,
+    draftContent?: string
+  ): Promise<NoteItem> {
     return LexiStorageService.withStorageLock<NoteItem>(context, async (): Promise<NoteItem> =>
-      LexiStorageService.restoreNoteRevisionUnlocked(context, noteId, revisionId));
+      LexiStorageService.restoreNoteRevisionUnlocked(context, noteId, revisionId, draftTitle, draftContent));
   }
 
-  private static async restoreNoteRevisionUnlocked(context: common.Context, noteId: string, revisionId: string): Promise<NoteItem> {
+  private static async restoreNoteRevisionUnlocked(
+    context: common.Context,
+    noteId: string,
+    revisionId: string,
+    draftTitle?: string,
+    draftContent?: string
+  ): Promise<NoteItem> {
     return LexiStorageService.actionMutation<NoteItem>(async (): Promise<NoteItem> => {
       const current = await LexiStorageService.getNoteById(noteId);
       const revision = (await LexiStorageService.getNoteHistory(noteId)).find((entry: NoteRevision): boolean => entry.id === revisionId);
       if (!current || !revision) { throw new Error('该版本已不存在'); }
-      current.title = revision.snapshot.title; current.content = revision.snapshot.content;
-      return LexiStorageService.saveNoteSnapshot(context, current);
+      if (draftTitle !== undefined && draftContent !== undefined) {
+        const cleanDraftTitle = draftTitle.trim();
+        if (cleanDraftTitle !== current.title || draftContent !== current.content) {
+          const liveSnap = LexiNoteHistory.cloneNote(current);
+          liveSnap.title = cleanDraftTitle;
+          liveSnap.content = draftContent;
+          liveSnap.updatedAt = Date.now();
+          await LexiStorageService.saveNoteSnapshot(context, liveSnap, 'restore-backup');
+        }
+      }
+      const next = LexiNoteHistory.cloneNote(current);
+      next.title = revision.snapshot.title;
+      next.content = revision.snapshot.content;
+      next.tags = (revision.snapshot.tags || []).slice();
+      next.properties = (revision.snapshot.properties || []).map((prop: NoteProperty): NoteProperty => new NoteProperty(prop.key, prop.propValue));
+      return LexiStorageService.saveNoteSnapshot(context, next, 'restore-backup');
+    });
+  }
+
+  static async saveNoteResolvingConflict(
+    context: common.Context,
+    snapshot: NoteItem,
+    resolution: string
+  ): Promise<NoteItem> {
+    const captured = LexiNoteHistory.cloneNote(snapshot);
+    return LexiStorageService.withStorageLock<NoteItem>(context, async (): Promise<NoteItem> =>
+      LexiStorageService.saveNoteResolvingConflictUnlocked(context, captured, resolution));
+  }
+
+  private static async saveNoteResolvingConflictUnlocked(
+    context: common.Context,
+    snapshot: NoteItem,
+    resolution: string
+  ): Promise<NoteItem> {
+    return LexiStorageService.actionMutation<NoteItem>(async (): Promise<NoteItem> => {
+      const latest = await LexiStorageService.getNoteById(snapshot.id);
+      if (!latest || latest.trashedAt > 0) {
+        return LexiStorageService.saveNoteSnapshot(context, snapshot, 'conflict-backup');
+      }
+      if (resolution === 'use-theirs-backup-mine') {
+        if (snapshot.title !== latest.title || snapshot.content !== latest.content) {
+          await LexiStorageService.recordHistoryEntryUnlocked(snapshot.id, snapshot, Date.now(), 'conflict-backup');
+        }
+        LexiStorageService.clearDraftWalSync(context, snapshot.id);
+        LexiStorageService.clearPendingCrashRecoverySync(context, snapshot.id);
+        return latest;
+      }
+      // 'use-mine-backup-theirs': saveNoteSnapshot automatically records `latest` (`previous`) with `'conflict-backup'`.
+      return LexiStorageService.saveNoteSnapshot(context, snapshot, 'conflict-backup');
+    });
+  }
+
+  static async recoverCrashDrafts(context: common.Context): Promise<NoteItem[]> {
+    return LexiStorageService.withStorageLock<NoteItem[]>(context, async (): Promise<NoteItem[]> =>
+      LexiStorageService.recoverCrashDraftsUnlocked(context));
+  }
+
+  private static async recoverCrashDraftsUnlocked(context: common.Context): Promise<NoteItem[]> {
+    return LexiStorageService.actionMutation<NoteItem[]>(async (): Promise<NoteItem[]> => {
+      const walEntries = await LexiStorageService.listDraftWalEntries(context, false);
+      const recovered: NoteItem[] = [];
+      for (let i = 0; i < walEntries.length; i++) {
+        const entry = walEntries[i];
+        const existing = await LexiStorageService.getNoteById(entry.noteId);
+        if (!existing) {
+          if (entry.title.trim() || entry.content.trim()) {
+            const fresh = new NoteItem();
+            fresh.id = entry.noteId;
+            fresh.vaultId = entry.vaultId || await LexiStorageService.getActiveVaultId();
+            fresh.projectId = entry.projectId || '';
+            fresh.title = entry.title;
+            fresh.content = entry.content;
+            fresh.notebook = entry.notebook || '速记收件箱';
+            fresh.editorLevel = entry.editorLevel || 'simple';
+            fresh.tags = entry.tags ? entry.tags.slice() : [];
+            fresh.properties = entry.properties ? entry.properties.map((p: NoteProperty): NoteProperty => new NoteProperty(p.key, p.propValue)) : [];
+            const saved = await LexiStorageService.saveNoteSnapshot(context, fresh, 'crash-recovery');
+            recovered.push(saved);
+          }
+          LexiStorageService.clearDraftWalSync(context, entry.noteId);
+          continue;
+        }
+        if (entry.title.trim() !== existing.title || entry.content !== existing.content) {
+          const snap = LexiNoteHistory.cloneNote(existing);
+          snap.title = entry.title.trim();
+          snap.content = entry.content;
+          if (entry.notebook) { snap.notebook = entry.notebook; }
+          if (entry.tags && entry.tags.length > 0) { snap.tags = entry.tags.slice(); }
+          try {
+            await LexiStorageService.recordHistoryEntryUnlocked(entry.noteId, snap, entry.updatedAt || Date.now(), 'crash-recovery');
+          } catch {}
+          // Move WAL into a pending recovery marker so opening this note offers recovery & diff choice.
+          const pendingPath = LexiStorageService.walPath(context, entry.noteId, true);
+          if (pendingPath) {
+            try { LexiStorageService.writeTextAtomic(pendingPath, JSON.stringify(entry)); } catch {}
+          }
+          LexiStorageService.clearDraftWalSync(context, entry.noteId);
+          recovered.push(snap);
+        } else {
+          LexiStorageService.clearDraftWalSync(context, entry.noteId);
+        }
+      }
+      return recovered;
     });
   }
 
@@ -1323,9 +1846,13 @@ export class LexiStorageService {
       if (!Array.isArray(all)) {
         return [];
       }
+      const accessMap = LexiStorageService.notesIndexReady ? new Map<string, number>() : await LexiStorageService.readNoteAccessMap();
       const filtered = vaultId.length > 0
         ? all.filter((n: NoteItem): boolean => n.vaultId === vaultId)
         : all;
+      for (let i = 0; i < filtered.length; i++) {
+        filtered[i].lastOpenedAt = Math.max(filtered[i].lastOpenedAt || 0, accessMap.get(filtered[i].id) ?? 0);
+      }
       return filtered.sort((a: NoteItem, b: NoteItem): number => {
         if (a.pinned !== b.pinned) {
           return a.pinned ? -1 : 1;
@@ -1390,7 +1917,7 @@ export class LexiStorageService {
     });
   }
 
-  private static async saveNoteSnapshot(context: common.Context, note: NoteItem): Promise<NoteItem> {
+  private static async saveNoteSnapshot(context: common.Context, note: NoteItem, historyReason: string = 'autosave'): Promise<NoteItem> {
     let all = await LexiStorageService.noteMetadata();
     const previous = note.id ? await LexiStorageService.getNoteById(note.id) : undefined;
     const incomingHeader = LexiFrontmatter.parse(note.content);
@@ -1410,6 +1937,9 @@ export class LexiStorageService {
     const now = Date.now();
     if (!note.createdAt) {
       note.createdAt = now;
+    }
+    if (!note.lastOpenedAt && previous && previous.lastOpenedAt > 0) {
+      note.lastOpenedAt = previous.lastOpenedAt;
     }
     note.updatedAt = now;
 
@@ -1513,11 +2043,30 @@ export class LexiStorageService {
       }
     }
     if (previous && (previous.title !== note.title || previous.content !== note.content)) {
-      const versions = await LexiStorageService.getNoteHistory(note.id);
-      const version = new NoteRevision(); version.id = util.generateRandomUUID(true);
-      version.savedAt = previous.updatedAt; version.snapshot = previous;
-      await LexiStorageService.setRawValueUnlocked(`history:${note.id}`, JSON.stringify([version].concat(versions).slice(0, 20)));
+      try {
+        await LexiStorageService.recordHistoryEntryUnlocked(note.id, previous, previous.updatedAt || Date.now(), historyReason);
+      } catch (historyError) {
+        if (LexiStorageService.isDiskFullError(historyError as Error)) {
+          // Under disk pressure, aggressively compact optional older history to rescue disk space while keeping the primary note save durable.
+          try {
+            const tightPolicy = new LexiHistoryRetentionPolicy();
+            tightPolicy.maxAgeDays = 7;
+            tightPolicy.maxCountPerNote = 3;
+            tightPolicy.maxBytesPerNote = 512 * 1024;
+            tightPolicy.maxTotalBytes = 4 * 1024 * 1024;
+            await LexiStorageService.pruneAllHistoryDirect(tightPolicy);
+            await LexiStorageService.recordHistoryEntryUnlocked(note.id, previous, previous.updatedAt || Date.now(), historyReason);
+          } catch (retryError) {
+            hilog.warn(0x0000, 'LexiStorageService', 'History snapshot skipped under disk pressure: %{public}s',
+              (retryError as Error).message || 'unknown');
+          }
+        } else {
+          hilog.warn(0x0000, 'LexiStorageService', 'History snapshot write warning: %{public}s',
+            (historyError as Error).message || 'unknown');
+        }
+      }
     }
+    LexiStorageService.clearDraftWalSync(context, note.id);
     if (!previous && !binding.folderUri) { LexiStorageService.storagePromptNoteId = note.id; }
     return note;
   }
@@ -1765,6 +2314,13 @@ export class LexiStorageService {
     const next = all.filter((n: NoteItem): boolean => n.id !== noteId);
     await LexiStorageService.setRawValueUnlocked('notes', JSON.stringify(next));
     await LexiStorageService.setRawValueUnlocked(`history:${noteId}`, '[]');
+    try {
+      const rawIdx = await LexiStorageService.getRawValue('history:index', '[]');
+      const idx = (JSON.parse(rawIdx) as string[]).filter((id: string): boolean => id !== noteId);
+      await LexiStorageService.setRawValueUnlocked('history:index', JSON.stringify(idx));
+    } catch {}
+    LexiStorageService.clearDraftWalSync(LexiStorageService.appContext, noteId);
+    LexiStorageService.clearPendingCrashRecoverySync(LexiStorageService.appContext, noteId);
     await LexiStorageService.setSettingUnlocked(`noteRedirect:${noteId}`, '');
     await LexiStorageService.syncLinkTable(next);
     if (target) {
@@ -2154,11 +2710,22 @@ export class LexiStorageService {
     const notes = (await LexiStorageService.getNotes(vaultId)).filter((n: NoteItem): boolean => n.trashedAt === 0);
     const maps = await LexiStorageService.getMindMaps(vaultId);
     const canvases = await LexiStorageService.getCanvases(vaultId);
+    const vault = (await LexiStorageService.getVaults(true)).find((v: VaultItem): boolean => v.id === vaultId);
     const stamp = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
     const stagingDir = `${context.cacheDir}/zip-export-${stamp}`;
     const zipPath = `${context.cacheDir}/zip-export-${stamp}.zip`;
     fs.mkdirSync(stagingDir, true);
     try {
+      const manifestJson = JSON.stringify({
+        format: 'LexiNote.Workspace',
+        version: 1,
+        vaultId: vaultId,
+        vaultName: vault ? vault.name : '工作区',
+        exportedAt: new Date().toISOString(),
+        platform: 'harmonyos'
+      }, null, 2);
+      LexiStorageService.writeTextAtomic(`${stagingDir}/lexinote-manifest.json`, manifestJson);
+
       const usedPaths = new Set<string>();
       for (const note of notes) {
         const folderPart = note.notebook && note.notebook !== '默认' ? `${LexiFolderPolicy.fileName(note.notebook)}/` : '';
@@ -2170,7 +2737,7 @@ export class LexiStorageService {
         const full = `${stagingDir}/${rel}`;
         const parent = full.substring(0, full.lastIndexOf('/'));
         if (!fs.accessSync(parent)) { fs.mkdirSync(parent, true); }
-        LexiStorageService.writeTextAtomic(full, LexiFrontmatter.serialize(note));
+        LexiStorageService.writeTextAtomic(full, LexiFrontmatter.serializeFull(note));
       }
       if (maps.length > 0) {
         fs.mkdirSync(`${stagingDir}/思维导图`, true);
@@ -2183,6 +2750,21 @@ export class LexiStorageService {
         for (const board of canvases) {
           LexiStorageService.writeTextAtomic(`${stagingDir}/白板/${board.id}.canvas.json`, JSON.stringify(board, null, 2));
         }
+      }
+      const internalAttachments = `${context.filesDir}/vaults/${vaultId}/attachments`;
+      if (fs.accessSync(internalAttachments)) {
+        fs.mkdirSync(`${stagingDir}/attachments`, true);
+        LexiStorageService.copyExtractedTree(internalAttachments, stagingDir, `${stagingDir}/attachments`);
+      }
+      if (vault && vault.folderUri) {
+        const extRoot = LexiFolderStore.path(vault.folderUri);
+        const extAttachments = `${extRoot}/attachments`;
+        try {
+          if (extRoot && fs.accessSync(extAttachments)) {
+            fs.mkdirSync(`${stagingDir}/attachments`, true);
+            LexiStorageService.copyExtractedTree(extAttachments, stagingDir, `${stagingDir}/attachments`);
+          }
+        } catch {}
       }
       await zlib.compressFile(stagingDir, zipPath, {});
       const stat = fs.statSync(zipPath);
@@ -2258,7 +2840,17 @@ export class LexiStorageService {
       }
       await zlib.decompressFile(localZip, extractDir);
       const fileCount = LexiStorageService.copyExtractedTree(extractDir, targetRoot, targetRoot);
-      const folderName = LexiFolderStore.folderName(folderUri);
+      let folderName = LexiFolderStore.folderName(folderUri);
+      const manifestPath = `${targetRoot}/lexinote-manifest.json`;
+      try {
+        if (fs.accessSync(manifestPath)) {
+          const mRaw = fs.readTextSync(manifestPath);
+          const mObj = JSON.parse(mRaw) as Record<string, string>;
+          if (mObj && typeof mObj['vaultName'] === 'string' && mObj['vaultName'].trim()) {
+            folderName = mObj['vaultName'].trim();
+          }
+        }
+      } catch {}
       await LexiStorageService.createFolderWorkspace(folderName, folderUri, false, folderUri);
       return `已解压 ${fileCount} 个文件到「${folderName}」并打开工作区`;
     } finally {
@@ -2323,6 +2915,8 @@ export class LexiStorageService {
     }
     let importedNotes = 0;
     let importedMaps = 0;
+    let importedCanvases = 0;
+    const existingNotes = await LexiStorageService.getNotes(vaultId);
     for (let i = 0; i < uris.length; i++) {
       const uri = uris[i];
       const rawName = decodeURIComponent(uri.substring(uri.lastIndexOf('/') + 1).split('?')[0]);
@@ -2355,6 +2949,15 @@ export class LexiStorageService {
           importedMaps++;
           continue;
         }
+        const canvasCandidate = JSON.parse(content) as CanvasBoard;
+        if (canvasCandidate && Array.isArray(canvasCandidate.cards)) {
+          LexiBackupValidation.validateCanvas(canvasCandidate);
+          canvasCandidate.id = `canvas-${Date.now()}-${i}`;
+          canvasCandidate.vaultId = vaultId;
+          await LexiStorageService.saveCanvas(context, canvasCandidate);
+          importedCanvases++;
+          continue;
+        }
       }
 
       const note = new NoteItem();
@@ -2365,11 +2968,58 @@ export class LexiStorageService {
       note.noteType = rawName.toLowerCase().endsWith('.md') ? 'markdown' : 'quick';
       note.editorLevel = rawName.toLowerCase().endsWith('.md') ? 'pro' : 'simple';
       LexiFrontmatter.apply(note, content);
+      if (existingNotes.some((other: NoteItem): boolean => other.id === note.id)) {
+        note.id = util.generateRandomUUID(true);
+      }
       if (!note.tags.includes('导入')) { note.tags.push('导入'); }
       await LexiStorageService.saveNote(context, note);
       importedNotes++;
     }
-    return `成功导入 ${importedNotes} 篇笔记${importedMaps > 0 ? `、${importedMaps} 幅思维导图` : ''}`;
+    return `成功导入 ${importedNotes} 篇笔记${importedMaps > 0 ? `、${importedMaps} 幅思维导图` : ''}${importedCanvases > 0 ? `、${importedCanvases} 个白板` : ''}`;
+  }
+
+  static async importAttachmentForNote(context: common.Context, noteId: string): Promise<string> {
+    const note = await LexiStorageService.getNoteById(noteId);
+    if (!note) { throw new Error('未找到当前笔记'); }
+    const docPicker = new picker.DocumentViewPicker(context);
+    const uris = await docPicker.select({ maxSelectNumber: 1 });
+    if (!uris || uris.length === 0) { return ''; }
+    const uri = uris[0];
+    const rawName = decodeURIComponent(uri.substring(uri.lastIndexOf('/') + 1).split('?')[0]);
+    const cleanName = LexiFolderPolicy.fileName(rawName || 'attachment');
+    const vaultBase = LexiStorageService.ensureVaultDirs(context, note.vaultId);
+    const binding = await LexiStorageService.folderBinding(note.vaultId, note.projectId);
+    let attachDir = `${vaultBase}/attachments`;
+    if (binding.folderUri) {
+      const root = await LexiFolderStore.activate(binding);
+      attachDir = `${root}/attachments`;
+    }
+    if (!fs.accessSync(attachDir)) { fs.mkdirSync(attachDir, true); }
+    const dot = cleanName.lastIndexOf('.');
+    const base = dot > 0 ? cleanName.substring(0, dot) : cleanName;
+    const ext = dot > 0 ? cleanName.substring(dot) : '';
+    let targetName = cleanName;
+    let suffix = 1;
+    while (fs.accessSync(`${attachDir}/${targetName}`)) {
+      targetName = `${base}-${suffix++}${ext}`;
+    }
+    const destPath = `${attachDir}/${targetName}`;
+    const srcFile = await fs.open(uri, fs.OpenMode.READ_ONLY);
+    try {
+      const stat = await fs.stat(srcFile.fd);
+      const buf = new ArrayBuffer(stat.size);
+      await fs.read(srcFile.fd, buf);
+      const dstFile = fs.openSync(destPath, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+      try { fs.writeSync(dstFile.fd, buf); }
+      finally { fs.closeSync(dstFile); }
+    } finally {
+      await fs.close(srcFile);
+    }
+    const isRootNote = binding.folderUri && note.path &&
+      note.path.substring(0, note.path.lastIndexOf('/')) === LexiFolderStore.path(binding.folderUri);
+    const relPath = isRootNote ? `attachments/${targetName}` : `../attachments/${targetName}`;
+    const isImg = /\.(png|jpe?g|gif|webp|svg|bmp|heic)$/i.test(targetName);
+    return isImg ? `![${targetName}](${relPath})` : `[${targetName}](${relPath})`;
   }
 
   static async restoreFromBackupPackage(context: common.Context, pkg: LexiBackupPackage, destinationUri: string = ''): Promise<void> {

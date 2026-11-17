@@ -1,7 +1,7 @@
 /** Only user preferences belong to a workspace; install/storage bookkeeping stays global. */
 export class LexiWorkspacePreferences {
   static readonly keys: string[] = [
-    'theme', 'language', 'defaultTier', 'vaultViewMode', 'graphShowTags', 'lastEditedNoteId', 'lastBackup',
+    'theme', 'language', 'defaultTier', 'vaultViewMode', 'vaultSortMode', 'sidebarSortMode', 'graphShowTags', 'lastEditedNoteId', 'lastBackup',
     'editorDefaultView', 'editorDefaultMode', 'editorShowTitle', 'editorLimitWidth', 'editorViewStatus',
     'appearanceAccent', 'appearanceThemeColors', 'appearanceFontSize', 'appearanceQuickZoom', 'appearanceSnippets',
     'interfaceTabHeaders', 'interfaceRibbon', 'interfaceHiddenCommands', 'interfaceZoom', 'interfaceSidebarWidth',

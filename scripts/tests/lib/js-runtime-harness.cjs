@@ -57,7 +57,23 @@ const METHOD_TABLE = {
   'ai.balance': {},
   'views.register': { id: 'string', title: 'string' },
   'views.unregister': { id: 'string' },
-  'views.open': { id: 'string' }
+  'views.open': { id: 'string' },
+  'mindmap.list': { vaultId: 'string' },
+  'mindmap.get': { vaultId: 'string' },
+  'mindmap.create': { vaultId: 'string' },
+  'mindmap.update': { vaultId: 'string', id: 'string' },
+  'mindmap.delete': { vaultId: 'string', id: 'string' },
+  'mindmap.open': { vaultId: 'string', id: 'string' },
+  'canvas.list': { vaultId: 'string' },
+  'canvas.get': { vaultId: 'string' },
+  'canvas.create': { vaultId: 'string' },
+  'canvas.update': { vaultId: 'string', id: 'string' },
+  'canvas.delete': { vaultId: 'string', id: 'string' },
+  'canvas.open': { vaultId: 'string', id: 'string' },
+  'settings.get': {},
+  'settings.set': {},
+  'commands.listHost': {},
+  'commands.executeHost': { id: 'string' }
 };
 
 const DEFAULT_CAPABILITIES = [
@@ -170,6 +186,28 @@ function createFakeHost(options) {
     aiCalls: [],
     views: new Map(),
     openedViews: [],
+    mindmaps: [],
+    canvases: [],
+    appSettings: {
+      theme: 'system',
+      language: 'zh-Hans',
+      defaultTier: 'simple',
+      vaultViewMode: 'list',
+      graphShowTags: false,
+      workspaceOpenMode: 'ask',
+      appearance: { accent: '#6C5CE7', fontSize: 16, quickZoom: true },
+      editor: { defaultView: 'edit', defaultMode: 'live', showTitle: true, limitWidth: true, viewStatus: true, spellcheck: false },
+      interface: { tabHeaders: true, showRibbon: true, zoom: 100, sidebarWidth: 244, rightSidebarWidth: 280 }
+    },
+    hostCommands: [
+      { id: 'daily', title: '打开今日笔记', hint: '' },
+      { id: 'new', title: '新建 Markdown 笔记', hint: '' },
+      { id: 'map', title: '新建思维导图', hint: '' },
+      { id: 'canvas', title: '新建白板', hint: '' },
+      { id: 'light', title: '使用浅色外观', hint: '' },
+      { id: 'dark', title: '使用深色外观', hint: '' }
+    ],
+    executedHostCommands: [],
     strictWrite: true,
     clock: 1000,
     seq: 0
@@ -263,6 +301,12 @@ function createFakeHost(options) {
         focused: editor.focused === true
       };
       state.editorRevision = state.editor.revision;
+      if (editor.selection && typeof editor.selection === 'object') {
+        const len = state.editor.content.length;
+        const from = Math.max(0, Math.min(len, Math.floor(Number(editor.selection.from) || 0)));
+        const to = Math.max(from, Math.min(len, Math.floor(Number(editor.selection.to) || from)));
+        state.editorSelection = { from, to };
+      }
     } else {
       state.editor = null;
       state.editorRevision = 0;
@@ -468,8 +512,25 @@ function createFakeHost(options) {
             revision: state.editorRevision
           }
         };
-      case 'editor.active':
-        return { result: state.editor ? clone(state.editor) : null };
+      case 'editor.active': {
+        if (!state.editor) {
+          return { result: null };
+        }
+        const content = typeof state.editor.content === 'string' ? state.editor.content : '';
+        const from = Math.max(0, Math.min(content.length, Math.floor(Number(state.editorSelection.from) || 0)));
+        const to = Math.max(from, Math.min(content.length, Math.floor(Number(state.editorSelection.to) || from)));
+        const prefix = content.slice(0, from);
+        const lines = prefix.split('\n');
+        const line = Math.max(0, lines.length - 1);
+        const ch = lines[lines.length - 1].length;
+        return {
+          result: {
+            ...clone(state.editor),
+            selection: { from, to },
+            cursor: { line, ch }
+          }
+        };
+      }
       case 'editor.replaceSelection': {
         if (!state.editor) {
           return { error: { code: 'E_UNSUPPORTED_API', message: '当前没有活动编辑器' } };
@@ -576,6 +637,135 @@ function createFakeHost(options) {
       case 'views.open':
         state.openedViews.push(params.id);
         return { result: null };
+      case 'mindmap.list':
+        return { result: clone(state.mindmaps) };
+      case 'mindmap.get': {
+        const found = state.mindmaps.find((m) => m.id === params.id || (params.title && m.title === params.title)) || null;
+        return { result: found ? clone(found) : null };
+      }
+      case 'mindmap.create': {
+        const id = `map-${state.mindmaps.length + 1}`;
+        const doc = {
+          id,
+          vaultId: params.vaultId || state.vaultId,
+          title: params.title || '新建思维导图',
+          layoutKind: params.layoutKind || 'right',
+          rootNodeId: 'root',
+          nodes: Array.isArray(params.nodes) && params.nodes.length > 0
+            ? clone(params.nodes)
+            : [{ id: 'root', parentId: '', text: params.title || '核心主题', colorTag: 'purple', order: 0 }],
+          createdAt: tick(),
+          updatedAt: state.clock,
+          trashedAt: 0
+        };
+        state.mindmaps.unshift(doc);
+        return { result: clone(doc) };
+      }
+      case 'mindmap.update': {
+        const doc = state.mindmaps.find((m) => m.id === params.id);
+        if (!doc) {
+          return { error: { code: 'E_NOT_FOUND', message: `思维导图不存在 ${params.id}` } };
+        }
+        if (params.title) { doc.title = params.title; }
+        if (params.layoutKind) { doc.layoutKind = params.layoutKind; }
+        if (Array.isArray(params.nodes) && params.nodes.length > 0) { doc.nodes = clone(params.nodes); }
+        doc.updatedAt = tick();
+        return { result: clone(doc) };
+      }
+      case 'mindmap.delete': {
+        const idx = state.mindmaps.findIndex((m) => m.id === params.id);
+        if (idx < 0) {
+          return { error: { code: 'E_NOT_FOUND', message: `思维导图不存在 ${params.id}` } };
+        }
+        state.mindmaps.splice(idx, 1);
+        return { result: true };
+      }
+      case 'mindmap.open': {
+        const doc = state.mindmaps.find((m) => m.id === params.id);
+        if (!doc) {
+          return { error: { code: 'E_NOT_FOUND', message: `思维导图不存在 ${params.id}` } };
+        }
+        state.activeFileId = `map:${doc.id}`;
+        return { result: true };
+      }
+      case 'canvas.list':
+        return { result: clone(state.canvases) };
+      case 'canvas.get': {
+        const found = state.canvases.find((c) => c.id === params.id || (params.title && c.title === params.title)) || null;
+        return { result: found ? clone(found) : null };
+      }
+      case 'canvas.create': {
+        const id = `canvas-${state.canvases.length + 1}`;
+        const board = {
+          id,
+          vaultId: params.vaultId || state.vaultId,
+          title: params.title || '新建自由白板',
+          cards: Array.isArray(params.cards) ? clone(params.cards) : [],
+          edges: Array.isArray(params.edges) ? clone(params.edges) : [],
+          createdAt: tick(),
+          updatedAt: state.clock,
+          trashedAt: 0
+        };
+        state.canvases.unshift(board);
+        return { result: clone(board) };
+      }
+      case 'canvas.update': {
+        const board = state.canvases.find((c) => c.id === params.id);
+        if (!board) {
+          return { error: { code: 'E_NOT_FOUND', message: `白板不存在 ${params.id}` } };
+        }
+        if (params.title) { board.title = params.title; }
+        if (Array.isArray(params.cards)) { board.cards = clone(params.cards); }
+        if (Array.isArray(params.edges)) { board.edges = clone(params.edges); }
+        board.updatedAt = tick();
+        return { result: clone(board) };
+      }
+      case 'canvas.delete': {
+        const idx = state.canvases.findIndex((c) => c.id === params.id);
+        if (idx < 0) {
+          return { error: { code: 'E_NOT_FOUND', message: `白板不存在 ${params.id}` } };
+        }
+        state.canvases.splice(idx, 1);
+        return { result: true };
+      }
+      case 'canvas.open': {
+        const board = state.canvases.find((c) => c.id === params.id);
+        if (!board) {
+          return { error: { code: 'E_NOT_FOUND', message: `白板不存在 ${params.id}` } };
+        }
+        state.activeFileId = `canvas:${board.id}`;
+        return { result: true };
+      }
+      case 'settings.get':
+        return { result: clone(state.appSettings) };
+      case 'settings.set': {
+        if (typeof params.theme === 'string') { state.appSettings.theme = params.theme; }
+        if (typeof params.language === 'string') { state.appSettings.language = params.language; }
+        if (typeof params.defaultTier === 'string') { state.appSettings.defaultTier = params.defaultTier; }
+        if (typeof params.vaultViewMode === 'string') { state.appSettings.vaultViewMode = params.vaultViewMode; }
+        if (typeof params.graphShowTags === 'boolean') { state.appSettings.graphShowTags = params.graphShowTags; }
+        if (typeof params.workspaceOpenMode === 'string') { state.appSettings.workspaceOpenMode = params.workspaceOpenMode; }
+        if (typeof params.accent === 'string') { state.appSettings.appearance.accent = params.accent; }
+        if (typeof params.fontSize === 'number') { state.appSettings.appearance.fontSize = params.fontSize; }
+        if (typeof params.quickZoom === 'boolean') { state.appSettings.appearance.quickZoom = params.quickZoom; }
+        if (typeof params.editorDefaultView === 'string') { state.appSettings.editor.defaultView = params.editorDefaultView; }
+        if (typeof params.editorDefaultMode === 'string') { state.appSettings.editor.defaultMode = params.editorDefaultMode; }
+        if (typeof params.editorShowTitle === 'boolean') { state.appSettings.editor.showTitle = params.editorShowTitle; }
+        if (typeof params.editorLimitWidth === 'boolean') { state.appSettings.editor.limitWidth = params.editorLimitWidth; }
+        if (typeof params.editorViewStatus === 'boolean') { state.appSettings.editor.viewStatus = params.editorViewStatus; }
+        if (typeof params.editorSpellcheck === 'boolean') { state.appSettings.editor.spellcheck = params.editorSpellcheck; }
+        if (typeof params.interfaceTabHeaders === 'boolean') { state.appSettings.interface.tabHeaders = params.interfaceTabHeaders; }
+        if (typeof params.interfaceRibbon === 'boolean') { state.appSettings.interface.showRibbon = params.interfaceRibbon; }
+        if (typeof params.interfaceZoom === 'number') { state.appSettings.interface.zoom = params.interfaceZoom; }
+        if (typeof params.interfaceSidebarWidth === 'number') { state.appSettings.interface.sidebarWidth = params.interfaceSidebarWidth; }
+        if (typeof params.interfaceRightSidebarWidth === 'number') { state.appSettings.interface.rightSidebarWidth = params.interfaceRightSidebarWidth; }
+        return { result: clone(state.appSettings) };
+      }
+      case 'commands.listHost':
+        return { result: clone(state.hostCommands) };
+      case 'commands.executeHost':
+        state.executedHostCommands.push(params.id);
+        return { result: { ok: true, id: params.id, title: params.title || params.id } };
       default:
         return {
           error: {
@@ -754,6 +944,13 @@ function createFakeHost(options) {
     state.editor.content = String(content);
     state.editorRevision += 1;
     state.editor.revision = state.editorRevision;
+  };
+  host.setEditorSelection = function setEditorSelection(from, to) {
+    const len = state.editor && typeof state.editor.content === 'string' ? state.editor.content.length : 0;
+    const clampedFrom = Math.max(0, Math.min(len, Math.floor(Number(from) || 0)));
+    const clampedTo = Math.max(clampedFrom, Math.min(len, Math.floor(Number(to) || clampedFrom)));
+    state.editorSelection = { from: clampedFrom, to: clampedTo };
+    return { ...state.editorSelection };
   };
   host.setFileContent = function setFileContent(pathOrId, content) {
     const file = findById(pathOrId) || findByPath(pathOrId);

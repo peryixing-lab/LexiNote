@@ -271,11 +271,22 @@ export class LexiFolderStore {
     LexiFolderStore.recoverWrite(root, path);
     const temporary = `${path}.lexinote-tmp`;
     LexiFolderStore.guardPath(root, temporary);
-    LexiFolderStore.writeDirect(temporary, text);
+    try {
+      LexiFolderStore.writeDirect(temporary, text);
+    } catch (writeErr) {
+      try { if (fs.accessSync(temporary)) { fs.unlinkSync(temporary); } } catch {}
+      throw writeErr as Error;
+    }
     try { fs.renameSync(temporary, path); }
     catch (error) {
       if ((error as BusinessError).code !== 13900012) {
-        throw new Error(`无法替换文件「${path.substring(root.length + 1)}」：${(error as Error).message}`);
+        try { if (fs.accessSync(temporary)) { fs.unlinkSync(temporary); } } catch {}
+        const msg = (error as Error).message || '';
+        const lower = msg.toLowerCase();
+        if (lower.includes('no space') || lower.includes('disk full') || lower.includes('enospc') || (error as BusinessError).code === 13900025) {
+          throw new Error(`存储空间已满，无法保存「${path.substring(root.length + 1)}」，原文件与当前草稿均已保留`);
+        }
+        throw new Error(`无法替换文件「${path.substring(root.length + 1)}」：${msg}`);
       }
       // Some public-directory providers allow writes but deny rename. Keep a
       // durable recovery record before changing the destination in place.
@@ -488,7 +499,7 @@ export class LexiFolderStore {
       }
     }
     for (const name of names) {
-      if (name === '.lexinote' || name === '.git' || name === 'node_modules' || name.startsWith('.')) { continue; }
+      if (name === '.lexinote' || name === '.git' || name === 'node_modules' || name === 'attachments' || name === '思维导图' || name === '白板' || name.startsWith('.')) { continue; }
       const path = `${directory}/${name}`;
       if (excluded.some((skip: string): boolean => path === skip || path.startsWith(`${skip}/`))) { continue; }
       let stat: fs.Stat;

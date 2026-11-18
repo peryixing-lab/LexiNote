@@ -822,10 +822,10 @@ final class AppModel: ObservableObject {
         plugins.notifyVaultModify(note: updated)
     }
 
-    func updateNoteTitle(_ id: String, title: String) {
+    func updateNoteTitle(_ id: String, title: String, saveImmediately: Bool = true) {
         let oldPath = note(id)?.path ?? ""
         let clean = title.replacingOccurrences(of: "\n", with: " ")
-        guard let updated = applyNoteMutation(id, saveImmediately: true, mutate: { note in
+        guard let updated = applyNoteMutation(id, saveImmediately: saveImmediately, mutate: { note in
             guard note.title != clean else { return false }
             note.title = clean
             return true

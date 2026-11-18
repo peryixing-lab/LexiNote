@@ -320,7 +320,7 @@ enum SelfTest {
         check(scrollView.documentVisibleRect.minY > textView.frame.minY, "下滚后标题应离开可视区域")
 
         func selectionIsVisible() -> Bool {
-            guard let manager = textView.layoutManager, let container = textView.textContainer else { return false }
+            guard let manager = textView.layoutManager else { return false }
             let glyph = manager.glyphIndexForCharacter(at: textView.selectedRange().location)
             var line = manager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
             line.origin.y += textView.textContainerOrigin.y
@@ -339,6 +339,128 @@ enum SelfTest {
         check(scrollView.editorDocument.frame.height > oldHeight, "缩窄窗口后应重新换行并更新文档高度")
         controller.selectLine(140)
         check(selectionIsVisible(), "窗口缩放后目录定位仍应正确")
+
+        // Cursor stability checks during mid-document edits, IME composition, header title editing, and commands
+        let cursorSuiteName = "com.lexinote.mac.selftest.cursor"
+        let cursorDefaults = UserDefaults(suiteName: cursorSuiteName) ?? .standard
+        cursorDefaults.removePersistentDomain(forName: cursorSuiteName)
+        defer { cursorDefaults.removePersistentDomain(forName: cursorSuiteName) }
+        let editSettings = SettingsStore(defaults: cursorDefaults)
+        editSettings.showWelcome = false
+        editSettings.useMaterial = false
+        editSettings.defaultPresentation = .source
+        editSettings.editorDefaultMode = "source"
+        let editModel = AppModel(settings: editSettings, inMemory: true, seedDemo: false)
+        let editNote = editModel.createNote(
+            title: "测试标题光标",
+            content: "第一段内容，在这里输入文字，后面的内容\n第二行正文",
+            notebook: "测试"
+        )
+        let workspaceView = NoteWorkspaceView(model: editModel, settings: editSettings, note: editNote)
+            .environment(\.lexiPalette, ThemeEngine.original(dark: false))
+        let editHosting = NSHostingView(rootView: workspaceView)
+        let editWindow = NSWindow(contentRect: NSRect(x: 120, y: 120, width: 760, height: 520),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+        editWindow.isReleasedWhenClosed = false
+        editWindow.contentView = editHosting
+        editWindow.orderFrontRegardless()
+        editWindow.makeKey()
+        defer { editWindow.orderOut(nil); editWindow.contentView = nil }
+        editHosting.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.12))
+
+        func findEditableTextField(in view: NSView) -> NSTextField? {
+            if let field = view as? NSTextField, field.isEditable { return field }
+            for sub in view.subviews {
+                if let found = findEditableTextField(in: sub) { return found }
+            }
+            return nil
+        }
+
+        if let activeController = EditorController.active,
+           let activeTV = activeController.textView,
+           let docView = activeTV.superview as? MarkdownEditorDocumentView {
+            // 1. Mid-document typing + SwiftUI re-render keeps cursor in place
+            editWindow.makeFirstResponder(activeTV)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            activeTV.setSelectedRange(NSRange(location: 11, length: 0))
+            activeTV.insertText("X", replacementRange: activeTV.selectedRange())
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            editModel.saveState = .saving
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            editModel.saveState = .saved(Date())
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            check(activeTV.selectedRange() == NSRange(location: 12, length: 0),
+                  "正文中段输入并触发重绘后光标应保持在 12，实际 \(activeTV.selectedRange())")
+
+            // 2. IME marked text survives autosave/SwiftUI updateNSView without jumping cursor
+            activeTV.setMarkedText("ceshi",
+                                   selectedRange: NSRange(location: 5, length: 0),
+                                   replacementRange: activeTV.selectedRange())
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            editModel.saveState = .saving
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            editModel.saveState = .saved(Date())
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            check(activeTV.hasMarkedText(), "输入法组字期间触发 SwiftUI 更新不应清空 markedText")
+            let marked = activeTV.markedRange()
+            let markedSlice = marked.location != NSNotFound
+                ? (activeTV.string as NSString).substring(with: marked)
+                : ""
+            check(markedSlice == "ceshi", "输入法候选拼音文本应完整保留，实际「\(markedSlice)」")
+            check(activeTV.selectedRange() == NSRange(location: 17, length: 0),
+                  "输入法组字期间光标不应向后跳变，实际 \(activeTV.selectedRange())")
+            activeTV.insertText("测试", replacementRange: activeTV.markedRange())
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            check(!activeTV.hasMarkedText() && activeTV.selectedRange() == NSRange(location: 14, length: 0),
+                  "输入法上屏提交后光标应停留在提交词末尾 14，实际 \(activeTV.selectedRange())")
+
+            // 3. Heading command keeps caret on transformed line before trailing newline
+            let line2Start = (activeTV.string as NSString).range(of: "第二行正文").location
+            if line2Start != NSNotFound {
+                activeTV.setSelectedRange(NSRange(location: line2Start, length: 0))
+                activeController.apply(.h1)
+                RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+                let expectedEnd = line2Start + ("# 第二行正文" as NSString).length
+                check(activeTV.selectedRange() == NSRange(location: expectedEnd, length: 0),
+                      "设置标题格式后光标应留在当前行末尾，实际 \(activeTV.selectedRange())，期望 \(expectedEnd)")
+            }
+
+            // 4. Header title TextField keeps cursor in place across typing + model update
+            if let titleField = findEditableTextField(in: docView) {
+                editWindow.makeFirstResponder(titleField)
+                RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+                if let fieldEditor = titleField.currentEditor() as? NSTextView {
+                    fieldEditor.setSelectedRange(NSRange(location: 2, length: 0))
+                    fieldEditor.insertText("中", replacementRange: fieldEditor.selectedRange())
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.08))
+                    let postSelection = (titleField.currentEditor() as? NSTextView)?.selectedRange()
+                    check(titleField.stringValue == "测试中标题光标",
+                          "标题编辑后内容应为「测试中标题光标」，实际「\(titleField.stringValue)」")
+                    check(postSelection == NSRange(location: 3, length: 0),
+                          "标题中间输入文字后光标应保持在 3 而不是跳到末尾，实际 \(String(describing: postSelection))")
+                } else {
+                    failures.append("编辑器滚动：未能获取标题输入框的 fieldEditor")
+                }
+            } else {
+                failures.append("编辑器滚动：未找到文档头部标题输入框")
+            }
+
+            // 5. External content update (e.g. version restore / link insert) still updates textView when not composing
+            editWindow.makeFirstResponder(activeTV)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            activeTV.setSelectedRange(NSRange(location: 4, length: 0))
+            let updatedExternal = "外部同步内容：保留光标在合法范围内"
+            editModel.updateNoteContent(editNote.id, content: updatedExternal)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.08))
+            check(activeTV.string == updatedExternal,
+                  "外部更新正文时应同步到编辑器，实际「\(activeTV.string)」")
+            check(activeTV.selectedRange() == NSRange(location: 4, length: 0),
+                  "外部更新正文后光标应保持在 4，实际 \(activeTV.selectedRange())")
+        } else {
+            failures.append("编辑器滚动：未能挂载 NoteWorkspaceView 源码编辑器以测试光标稳定性")
+        }
+
         if failures.isEmpty { print("EDITOR_SCROLL_SELFTEST PASS") }
         return failures
     }

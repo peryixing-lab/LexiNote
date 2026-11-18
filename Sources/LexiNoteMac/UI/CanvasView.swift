@@ -12,6 +12,15 @@ struct CanvasWorkspaceView: View {
     @State private var dragOffsets: [String: CGSize] = [:]
     @State private var zoom: CGFloat = 1
     @State private var pan: CGSize = .zero
+    @State private var draftTitle: String
+    @FocusState private var titleFocused: Bool
+
+    init(model: AppModel, settings: SettingsStore, board: CanvasBoard) {
+        self.model = model
+        self.settings = settings
+        self.board = board
+        _draftTitle = State(initialValue: model.canvas(board.id)?.title ?? board.title)
+    }
 
     private var current: CanvasBoard { model.canvas(board.id) ?? board }
 
@@ -24,6 +33,14 @@ struct CanvasWorkspaceView: View {
             .background(palette.workspacePage)
         }
         .background(palette.workspacePage)
+        .onChange(of: board.id) { _, _ in
+            draftTitle = model.canvas(board.id)?.title ?? board.title
+        }
+        .onChange(of: current.title) { _, updatedTitle in
+            if !titleFocused && draftTitle != updatedTitle {
+                draftTitle = updatedTitle
+            }
+        }
         .sheet(item: $editingCard) { card in
             CanvasCardEditorSheet(card: card, notes: model.notes.filter { !$0.isTrashed }) { title, content, note in
                 update(card: card, title: title, content: content, note: note)
@@ -33,11 +50,19 @@ struct CanvasWorkspaceView: View {
 
     private var toolbar: some View {
         HStack(spacing: 8) {
-            TextField("未命名白板", text: titleBinding)
+            TextField("未命名白板", text: $draftTitle)
                 .textFieldStyle(.plain)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(palette.textPrimary)
                 .frame(maxWidth: 260, alignment: .leading)
+                .focused($titleFocused)
+                .onChange(of: draftTitle) { _, value in
+                    guard value != current.title else { return }
+                    var copy = current
+                    copy.title = value
+                    copy.updatedAt = Date()
+                    model.updateCanvas(copy)
+                }
             Text("\(current.cards.count) 张卡片 · \(current.edges.count) 条连线")
                 .font(.system(size: 11))
                 .foregroundStyle(palette.textSecondary)
@@ -180,15 +205,6 @@ struct CanvasWorkspaceView: View {
             }
         }
         .allowsHitTesting(false)
-    }
-
-    private var titleBinding: Binding<String> {
-        Binding(get: { current.title }, set: { value in
-            var copy = current
-            copy.title = value
-            copy.updatedAt = Date()
-            model.updateCanvas(copy)
-        })
     }
 
     private func canvasSize() -> CGSize {

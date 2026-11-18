@@ -17,10 +17,11 @@ struct NoteWorkspaceView: View {
     @State private var jumpTarget: String?
     @State private var tagPopover = false
     @State private var newTag = ""
-    @State private var metaHovering = false
     @State private var showCapture = false
     @State private var prompt: PromptRequest?
     @FocusState private var findFocused: Bool
+
+    private var currentNote: Note { model.note(note.id) ?? note }
 
     init(model: AppModel, settings: SettingsStore, note: Note) {
         self.model = model
@@ -106,14 +107,14 @@ struct NoteWorkspaceView: View {
             Image(systemName: "folder")
                 .font(.system(size: 12))
                 .foregroundStyle(palette.textSecondary)
-            Text(note.notebook.isEmpty ? "知识库" : note.notebook)
+            Text(currentNote.notebook.isEmpty ? "知识库" : currentNote.notebook)
                 .font(.system(size: 12))
                 .foregroundStyle(palette.textSecondary)
                 .lineLimit(1)
             Text("/")
                 .font(.system(size: 12))
                 .foregroundStyle(palette.textSecondary.opacity(0.8))
-            Text(note.displayTitle)
+            Text(currentNote.displayTitle)
                 .font(.system(size: 12))
                 .foregroundStyle(palette.textPrimary)
                 .lineLimit(1)
@@ -156,7 +157,7 @@ struct NoteWorkspaceView: View {
                 Button("查找…") { openFind() }
                 Divider()
                 Button("版本历史与差异对比…") { model.openVersionHistory(for: note.id) }
-                Button("生成思维导图") { model.convertNoteToMap(note) }
+                Button("生成思维导图") { model.convertNoteToMap(currentNote) }
                 Button("导出 PDF…") { model.exportCurrentPDF() }
                 Button("导出 Markdown…") { model.exportCurrentMarkdown() }
                 Button("复制文件路径") { model.copyNotePath(note.id) }
@@ -164,7 +165,7 @@ struct NoteWorkspaceView: View {
                 Divider()
                 Button("重命名…") {
                     prompt = PromptRequest(title: "重命名笔记", placeholder: "笔记标题",
-                                           initial: note.title, confirmTitle: "重命名") { value in
+                                           initial: currentNote.title, confirmTitle: "重命名") { value in
                         model.updateNoteTitle(note.id, title: value)
                         _ = model.saveNoteNow(note.id)
                     }
@@ -220,7 +221,7 @@ struct NoteWorkspaceView: View {
             editorPane(horizontalPadding: 56)
         default:
             MarkdownPreview(blocks: displayBlocks,
-                                note: note, fontSize: CGFloat(settings.editorFontSize),
+                                note: currentNote, fontSize: CGFloat(settings.editorFontSize),
                                 vaultURL: model.activeVault.map { model.vaultFolder($0) },
                                 jumpTarget: jumpTarget,
                                 onOpenTarget: { model.openWikiLink($0) },
@@ -239,12 +240,12 @@ struct NoteWorkspaceView: View {
     }
 
     private var displayBlocks: [MDBlock] {
-        var blocks = MarkdownParser.parse(note.content)
+        var blocks = MarkdownParser.parse(currentNote.content)
         if let first = blocks.first,
            case .heading(let level, let content, _) = first.kind,
            level == 1,
            MarkdownParser.inlinePlain(content).trimmingCharacters(in: .whitespacesAndNewlines)
-            .caseInsensitiveCompare(note.displayTitle) == .orderedSame {
+            .caseInsensitiveCompare(currentNote.displayTitle) == .orderedSame {
             blocks.removeFirst()
         } else if let first = blocks.first,
                   case .heading(let level, _, _) = first.kind,
@@ -255,57 +256,14 @@ struct NoteWorkspaceView: View {
     }
 
     private func documentHeader(maxWidth: CGFloat?, horizontalPadding: CGFloat = 56) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
-            if settings.editorShowTitle {
-                TextField("无标题笔记", text: titleBinding)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 30, weight: .bold))
-                    .foregroundStyle(palette.textPrimary)
-                    .lineLimit(1)
-                    .padding(.top, 2)
-            }
-
-            HStack(spacing: 8) {
-                Text(note.type.label)
-                    .font(.system(size: LexiTokens.typeCaption))
-                    .foregroundStyle(palette.brandInk)
-                Text("·")
-                    .font(.system(size: LexiTokens.typeCaption))
-                    .foregroundStyle(palette.textSecondary)
-                Text("\(note.characterCount) 字符")
-                    .font(.system(size: LexiTokens.typeCaption))
-                    .monospacedDigit()
-                    .foregroundStyle(palette.textSecondary)
-                ForEach(note.tags.prefix(3), id: \.self) { tag in
-                    Text("#\(tag)")
-                        .font(.system(size: LexiTokens.typeCaption))
-                        .foregroundStyle(palette.brandInk)
-                        .help("标签 \(tag)")
-                }
-                if metaHovering {
-                    Button {
-                        tagPopover = true
-                    } label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: 8, weight: .semibold))
-                            .foregroundStyle(palette.textSecondary)
-                            .frame(width: 16, height: 16)
-                            .background(Circle().fill(palette.controlFill))
-                    }
-                    .buttonStyle(.plain)
-                    .help("添加标签")
-                    .transition(.opacity)
-                }
-                Spacer()
-            }
-            .onHover { metaHovering = $0 }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, horizontalPadding)
-        .padding(.top, LexiTokens.space9)
-        .padding(.bottom, LexiTokens.space5)
-        .frame(maxWidth: maxWidth.map { $0 + horizontalPadding * 2 } ?? .infinity, alignment: .center)
-        .frame(maxWidth: .infinity, alignment: .center)
+        NoteDocumentHeaderView(model: model,
+                               settings: settings,
+                               noteID: note.id,
+                               fallbackNote: note,
+                               palette: palette,
+                               maxWidth: maxWidth,
+                               horizontalPadding: horizontalPadding,
+                               tagPopover: $tagPopover)
     }
 
     private func editorPane(horizontalPadding: CGFloat) -> some View {
@@ -365,13 +323,13 @@ struct NoteWorkspaceView: View {
             }
 
             if paneWidth >= 720 {
-                Text("\(model.backlinks(for: note).count) 个反向链接")
+                Text("\(model.backlinks(for: currentNote).count) 个反向链接")
                     .font(.system(size: LexiTokens.typeMicro))
                     .monospacedDigit()
                     .foregroundStyle(palette.textSecondary)
             }
             if paneWidth >= 520 {
-                Text("\(note.characterCount) 字符")
+                Text("\(currentNote.characterCount) 字符")
                     .font(.system(size: LexiTokens.typeMicro))
                     .monospacedDigit()
                     .foregroundStyle(palette.textSecondary)
@@ -520,7 +478,7 @@ struct NoteWorkspaceView: View {
                 Rectangle().fill(palette.workspaceLine).frame(height: 0.5)
             }
         }
-        if note.isTrashed {
+        if currentNote.isTrashed {
             HStack(spacing: 8) {
                 Image(systemName: "trash")
                     .font(.system(size: 12))
@@ -532,7 +490,7 @@ struct NoteWorkspaceView: View {
                 Spacer()
                 Button("恢复笔记") {
                     model.restoreNote(note.id)
-                    model.showToast("已恢复「\(note.displayTitle)」", symbol: "arrow.uturn.backward")
+                    model.showToast("已恢复「\(currentNote.displayTitle)」", symbol: "arrow.uturn.backward")
                 }
                 .buttonStyle(.plain)
                 .font(.system(size: 11, weight: .medium))
@@ -658,7 +616,7 @@ struct NoteWorkspaceView: View {
     private func commitTag() {
         let tag = newTag.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "#", with: "")
         guard !tag.isEmpty else { return }
-        var tags = note.tags
+        var tags = currentNote.tags
         if !tags.contains(tag) { tags.append(tag) }
         model.updateNoteTags(note.id, tags: tags)
         newTag = ""
@@ -666,11 +624,6 @@ struct NoteWorkspaceView: View {
     }
 
     // MARK: Actions
-
-    private var titleBinding: Binding<String> {
-        Binding(get: { model.note(note.id)?.title ?? note.title },
-                set: { model.updateNoteTitle(note.id, title: $0) })
-    }
 
     private var contentBinding: Binding<String> {
         Binding(get: { model.note(note.id)?.content ?? note.content },
@@ -855,5 +808,128 @@ struct QuickCaptureSheet: View {
                 .background(Capsule().fill(palette.brandSoft))
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct NoteDocumentHeaderView: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var settings: SettingsStore
+    let noteID: String
+    let fallbackNote: Note
+    let palette: ThemePalette
+    let maxWidth: CGFloat?
+    let horizontalPadding: CGFloat
+    @Binding var tagPopover: Bool
+
+    @State private var draftTitle: String
+    @State private var titleDirty = false
+    @State private var metaHovering = false
+    @FocusState private var titleFocused: Bool
+
+    init(model: AppModel,
+         settings: SettingsStore,
+         noteID: String,
+         fallbackNote: Note,
+         palette: ThemePalette,
+         maxWidth: CGFloat?,
+         horizontalPadding: CGFloat,
+         tagPopover: Binding<Bool>) {
+        self.model = model
+        self.settings = settings
+        self.noteID = noteID
+        self.fallbackNote = fallbackNote
+        self.palette = palette
+        self.maxWidth = maxWidth
+        self.horizontalPadding = horizontalPadding
+        _tagPopover = tagPopover
+        _draftTitle = State(initialValue: model.note(noteID)?.title ?? fallbackNote.title)
+    }
+
+    var body: some View {
+        let activeNote = model.note(noteID) ?? fallbackNote
+        VStack(alignment: .leading, spacing: 9) {
+            if settings.editorShowTitle {
+                TextField("无标题笔记", text: $draftTitle)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 30, weight: .bold))
+                    .foregroundStyle(palette.textPrimary)
+                    .lineLimit(1)
+                    .padding(.top, 2)
+                    .focused($titleFocused)
+                    .onChange(of: draftTitle) { _, newValue in
+                        let clean = newValue.replacingOccurrences(of: "\n", with: " ")
+                        if clean != newValue {
+                            draftTitle = clean
+                        }
+                        if clean != activeNote.title {
+                            titleDirty = true
+                            model.updateNoteTitle(noteID, title: clean, saveImmediately: false)
+                        }
+                    }
+                    .onSubmit {
+                        if titleDirty {
+                            titleDirty = false
+                            _ = model.saveNoteNow(noteID)
+                        }
+                    }
+                    .onChange(of: titleFocused) { _, focused in
+                        if !focused && titleDirty {
+                            titleDirty = false
+                            _ = model.saveNoteNow(noteID)
+                        }
+                    }
+                    .onChange(of: noteID) { _, _ in
+                        titleDirty = false
+                        draftTitle = model.note(noteID)?.title ?? fallbackNote.title
+                    }
+                    .onChange(of: activeNote.title) { _, updatedTitle in
+                        if !titleFocused && draftTitle != updatedTitle {
+                            titleDirty = false
+                            draftTitle = updatedTitle
+                        }
+                    }
+            }
+
+            HStack(spacing: 8) {
+                Text(activeNote.type.label)
+                    .font(.system(size: LexiTokens.typeCaption))
+                    .foregroundStyle(palette.brandInk)
+                Text("·")
+                    .font(.system(size: LexiTokens.typeCaption))
+                    .foregroundStyle(palette.textSecondary)
+                Text("\(activeNote.characterCount) 字符")
+                    .font(.system(size: LexiTokens.typeCaption))
+                    .monospacedDigit()
+                    .foregroundStyle(palette.textSecondary)
+                ForEach(activeNote.tags.prefix(3), id: \.self) { tag in
+                    Text("#\(tag)")
+                        .font(.system(size: LexiTokens.typeCaption))
+                        .foregroundStyle(palette.brandInk)
+                        .help("标签 \(tag)")
+                }
+                if metaHovering {
+                    Button {
+                        tagPopover = true
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(palette.textSecondary)
+                            .frame(width: 16, height: 16)
+                            .background(Circle().fill(palette.controlFill))
+                    }
+                    .buttonStyle(.plain)
+                    .help("添加标签")
+                    .transition(.opacity)
+                }
+                Spacer()
+            }
+            .onHover { metaHovering = $0 }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, horizontalPadding)
+        .padding(.top, LexiTokens.space9)
+        .padding(.bottom, LexiTokens.space5)
+        .frame(maxWidth: maxWidth.map { $0 + horizontalPadding * 2 } ?? .infinity, alignment: .center)
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 }

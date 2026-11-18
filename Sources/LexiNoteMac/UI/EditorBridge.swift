@@ -43,14 +43,20 @@ final class EditorController: ObservableObject {
         textView.scrollRangeToVisible(NSRange(location: safeLocation, length: 0))
     }
 
-    func replace(range: NSRange, with text: String) {
+    func replace(range: NSRange, with text: String, caretLocation: Int? = nil) {
         guard let textView else { return }
-        guard textView.shouldChangeText(in: range, replacementString: text) else { return }
-        textView.textStorage?.replaceCharacters(in: range, with: text)
+        let currentLength = (textView.string as NSString).length
+        let safeLoc = min(max(0, range.location), currentLength)
+        let safeLen = min(max(0, range.length), currentLength - safeLoc)
+        let safeRange = NSRange(location: safeLoc, length: safeLen)
+        guard textView.shouldChangeText(in: safeRange, replacementString: text) else { return }
+        textView.textStorage?.replaceCharacters(in: safeRange, with: text)
         textView.didChangeText()
-        let newLocation = range.location + (text as NSString).length
-        textView.setSelectedRange(NSRange(location: newLocation, length: 0))
-        textView.scrollRangeToVisible(NSRange(location: newLocation, length: 0))
+        let updatedLength = (textView.string as NSString).length
+        let targetLocation = caretLocation ?? (safeRange.location + (text as NSString).length)
+        let clampedLocation = min(max(0, targetLocation), updatedLength)
+        textView.setSelectedRange(NSRange(location: clampedLocation, length: 0))
+        textView.scrollRangeToVisible(NSRange(location: clampedLocation, length: 0))
         onChange?(textView.string)
     }
 
@@ -106,7 +112,10 @@ final class EditorController: ObservableObject {
             let range = lineRange(at: selection.location)
             let current = ns.substring(with: range)
             let replacement = transform(current)
-            replace(range: range, with: replacement)
+            let caretOffset = replacement.hasSuffix("\n")
+                ? max(0, (replacement as NSString).length - 1)
+                : (replacement as NSString).length
+            replace(range: range, with: replacement, caretLocation: range.location + caretOffset)
         }
 
         switch command {
@@ -186,12 +195,23 @@ final class EditorController: ObservableObject {
             insert("\n| 项目 | 内容 |\n| --- | --- |\n|  |  |\n")
         case .code:
             let selected = selection.length > 0 ? ns.substring(with: selection) : ""
-            insert("\n```\n\(selected)\n```\n")
+            if selection.length == 0 {
+                replace(range: selection, with: "\n```\n\n```\n", caretLocation: selection.location + 5)
+            } else {
+                insert("\n```\n\(selected)\n```\n")
+            }
         case .inlineCode:
             wrap(prefix: "`", suffix: "`", placeholder: "code")
         case .formula:
-            let selected = selection.length > 0 ? ns.substring(with: selection) : "f(n) = O(n \\log n)"
-            insert("\n$$\n\(selected)\n$$\n")
+            if selection.length == 0 {
+                let placeholder = "f(n) = O(n \\log n)"
+                replace(range: selection, with: "\n$$\n\(placeholder)\n$$\n")
+                textView.setSelectedRange(NSRange(location: selection.location + 4,
+                                                  length: (placeholder as NSString).length))
+            } else {
+                let selected = ns.substring(with: selection)
+                insert("\n$$\n\(selected)\n$$\n")
+            }
         case .inlineMath:
             wrap(prefix: "$", suffix: "$", placeholder: "x^2")
         case .callout:
@@ -322,8 +342,23 @@ final class MarkdownEditorScrollView: NSScrollView {
     }
 }
 
+private final class MarkdownSourceTextView: NSTextView {
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted {
+            (superview as? MarkdownEditorDocumentView)?.flushPendingHeaderIfNeeded()
+        }
+        return accepted
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        (superview as? MarkdownEditorDocumentView)?.expandHeightForTextViewIfNeeded()
+    }
+}
+
 final class MarkdownEditorDocumentView: NSView {
-    let textView = NSTextView()
+    let textView: NSTextView = MarkdownSourceTextView()
     private let headerView = NSHostingView(rootView: AnyView(EmptyView()))
     private let placeholder = MarkdownEditorPlaceholderField(labelWithString:
         "从一个想法开始。支持 Markdown、#标签 与 [[双向链接]]。")
@@ -332,8 +367,22 @@ final class MarkdownEditorDocumentView: NSView {
     private var lastHeaderWidth: CGFloat = -1
     private var contentMaxWidth: CGFloat?
     private var horizontalPadding: CGFloat = 56
+    private var isLayingOut = false
 
     override var isFlipped: Bool { true }
+
+    var isHeaderEditing: Bool {
+        guard let responder = window?.firstResponder else { return false }
+        if let responderView = responder as? NSView, responderView.isDescendant(of: headerView) {
+            return true
+        }
+        if let editor = responder as? NSTextView,
+           let delegateView = editor.delegate as? NSView,
+           delegateView.isDescendant(of: headerView) {
+            return true
+        }
+        return false
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -354,15 +403,39 @@ final class MarkdownEditorDocumentView: NSView {
         self.contentMaxWidth = contentMaxWidth
         self.horizontalPadding = horizontalPadding
         headerNeedsUpdate = true
-        placeholder.font = placeholderFont
-        placeholder.textColor = placeholderColor
+        if placeholder.font != placeholderFont {
+            placeholder.font = placeholderFont
+        }
+        if placeholder.textColor != placeholderColor {
+            placeholder.textColor = placeholderColor
+        }
+    }
+
+    func flushPendingHeaderIfNeeded() {
+        guard headerNeedsUpdate, !isHeaderEditing,
+              let scrollView = enclosingScrollView as? MarkdownEditorScrollView else { return }
+        scrollView.layoutDocument()
+    }
+
+    func expandHeightForTextViewIfNeeded() {
+        guard !isLayingOut else { return }
+        let requiredHeight = textView.frame.maxY + 20
+        if frame.size.height < requiredHeight {
+            setFrameSize(NSSize(width: frame.size.width, height: requiredHeight))
+        }
     }
 
     func layoutDocument(viewport: NSSize) {
+        isLayingOut = true
+        defer { isLayingOut = false }
+
         let width = viewport.width
-        if headerNeedsUpdate || lastHeaderWidth != width {
+        let editingHeader = isHeaderEditing
+        if (headerNeedsUpdate && !editingHeader) || lastHeaderWidth != width {
             headerView.rootView = AnyView(header.frame(width: width).fixedSize(horizontal: false, vertical: true))
-            headerNeedsUpdate = false
+            if !editingHeader {
+                headerNeedsUpdate = false
+            }
             lastHeaderWidth = width
         }
         let headerHeight = ceil(headerView.fittingSize.height)
@@ -370,11 +443,17 @@ final class MarkdownEditorDocumentView: NSView {
         let textX = (width - textWidth) / 2
         let textY = headerHeight + 2
         let minimumTextHeight = max(40, viewport.height - textY - 20)
-        textView.minSize = NSSize(width: 0, height: minimumTextHeight)
+        let minSize = NSSize(width: 0, height: minimumTextHeight)
+        if textView.minSize != minSize {
+            textView.minSize = minSize
+        }
         if textView.frame.width != textWidth {
             textView.setFrameSize(NSSize(width: textWidth, height: max(minimumTextHeight, textView.frame.height)))
         }
-        textView.textContainer?.containerSize = NSSize(width: textWidth, height: .greatestFiniteMagnitude)
+        if let container = textView.textContainer,
+           abs(container.containerSize.width - textWidth) > 0.5 {
+            container.containerSize = NSSize(width: textWidth, height: .greatestFiniteMagnitude)
+        }
         var textHeight = minimumTextHeight
         if let manager = textView.layoutManager, let container = textView.textContainer {
             manager.ensureLayout(for: container)
@@ -388,8 +467,14 @@ final class MarkdownEditorDocumentView: NSView {
         if textView.frame != textFrame { textView.frame = textFrame }
         let documentSize = NSSize(width: width, height: max(viewport.height, textFrame.maxY + 20))
         if frame.size != documentSize { setFrameSize(documentSize) }
-        placeholder.isHidden = !textView.string.isEmpty
-        placeholder.frame = NSRect(x: textX, y: textY + 12, width: textWidth, height: 54)
+        let shouldHidePlaceholder = !textView.string.isEmpty
+        if placeholder.isHidden != shouldHidePlaceholder {
+            placeholder.isHidden = shouldHidePlaceholder
+        }
+        let placeholderFrame = NSRect(x: textX, y: textY + 12, width: textWidth, height: 54)
+        if placeholder.frame != placeholderFrame {
+            placeholder.frame = placeholderFrame
+        }
     }
 }
 
@@ -410,6 +495,14 @@ struct MarkdownTextEditor: NSViewRepresentable {
     var documentHeader: AnyView? = nil
     var contentMaxWidth: CGFloat? = nil
     var horizontalPadding: CGFloat = 56
+
+    struct StyleKey: Equatable {
+        let fontSize: CGFloat
+        let lineHeight: CGFloat
+        let design: EditorFontDesign
+        let spellCheck: Bool
+        let palette: ThemePalette
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -447,10 +540,21 @@ struct MarkdownTextEditor: NSViewRepresentable {
         textView.smartInsertDeleteEnabled = false
         textView.usesFindBar = true
         textView.isIncrementalSearchingEnabled = true
-        textView.typingAttributes = baseAttributes()
+
+        let attrs = baseAttributes()
+        textView.typingAttributes = attrs
         textView.delegate = context.coordinator
         textView.string = text
+        if let storage = textView.textStorage, storage.length > 0 {
+            storage.setAttributes(attrs, range: NSRange(location: 0, length: storage.length))
+        }
         textView.setSelectedRange(NSRange(location: 0, length: 0))
+        textView.insertionPointColor = NSColor(palette.brand)
+        textView.selectedTextAttributes = [
+            .backgroundColor: NSColor(palette.brand).withAlphaComponent(0.22),
+            .foregroundColor: NSColor(palette.textPrimary)
+        ]
+
         scrollView.editorDocument.update(header: documentHeader, contentMaxWidth: contentMaxWidth,
                                          horizontalPadding: horizontalPadding,
                                          placeholderFont: editorFont(size: fontSize),
@@ -459,6 +563,8 @@ struct MarkdownTextEditor: NSViewRepresentable {
         context.coordinator.textView = textView
         context.coordinator.scrollView = scrollView
         context.coordinator.parent = self
+        context.coordinator.lastSyncedText = text
+        context.coordinator.lastStyleKey = currentStyleKey()
         controller.textView = textView
         controller.onChange = onTextChange
         EditorController.active = controller
@@ -473,26 +579,67 @@ struct MarkdownTextEditor: NSViewRepresentable {
         controller.textView = textView
         controller.onChange = onTextChange
         EditorController.active = controller
-        if textView.string != text {
-            let selection = textView.selectedRange()
-            textView.string = text
-            let ns = textView.string as NSString
-            let safe = min(selection.location, ns.length)
-            textView.setSelectedRange(NSRange(location: safe, length: 0))
+
+        let hasMarked = textView.hasMarkedText()
+        var textReplaced = false
+        if !hasMarked && textView.string != text {
+            let isFirstResponder = textView.window?.firstResponder === textView
+            let shouldSkipStaleEcho = isFirstResponder && text == context.coordinator.lastSyncedText
+            if !shouldSkipStaleEcho {
+                let selection = textView.selectedRange()
+                context.coordinator.highlighting = true
+                textView.string = text
+                let attrs = baseAttributes()
+                if let storage = textView.textStorage, storage.length > 0 {
+                    storage.setAttributes(attrs, range: NSRange(location: 0, length: storage.length))
+                }
+                let ns = textView.string as NSString
+                let safeLocation = min(max(0, selection.location), ns.length)
+                let safeLength = min(max(0, selection.length), ns.length - safeLocation)
+                textView.setSelectedRange(NSRange(location: safeLocation, length: safeLength))
+                context.coordinator.highlighting = false
+                context.coordinator.lastSyncedText = text
+                textReplaced = true
+            }
         }
-        textView.isContinuousSpellCheckingEnabled = spellCheck
-        textView.typingAttributes = baseAttributes()
-        textView.insertionPointColor = NSColor(palette.brand)
-        textView.selectedTextAttributes = [
-            .backgroundColor: NSColor(palette.brand).withAlphaComponent(0.22),
-            .foregroundColor: NSColor(palette.textPrimary)
-        ]
+
+        let styleKey = currentStyleKey()
+        let styleChanged = styleKey != context.coordinator.lastStyleKey
+        if styleChanged && !hasMarked {
+            let attrs = baseAttributes()
+            textView.isContinuousSpellCheckingEnabled = spellCheck
+            textView.typingAttributes = attrs
+            if let storage = textView.textStorage, storage.length > 0 {
+                let selection = textView.selectedRange()
+                context.coordinator.highlighting = true
+                storage.setAttributes(attrs, range: NSRange(location: 0, length: storage.length))
+                textView.setSelectedRange(selection)
+                context.coordinator.highlighting = false
+            }
+            textView.insertionPointColor = NSColor(palette.brand)
+            textView.selectedTextAttributes = [
+                .backgroundColor: NSColor(palette.brand).withAlphaComponent(0.22),
+                .foregroundColor: NSColor(palette.textPrimary)
+            ]
+            context.coordinator.lastStyleKey = styleKey
+        }
+
         scrollView.editorDocument.update(header: documentHeader, contentMaxWidth: contentMaxWidth,
                                          horizontalPadding: horizontalPadding,
                                          placeholderFont: editorFont(size: fontSize),
                                          placeholderColor: NSColor(palette.textSecondary).withAlphaComponent(0.65))
-        context.coordinator.applyStyling()
+        if (textReplaced || styleChanged) && !hasMarked {
+            context.coordinator.applyStyling()
+        }
         scrollView.layoutDocument()
+    }
+
+    private func currentStyleKey() -> StyleKey {
+        StyleKey(fontSize: fontSize,
+                 lineHeight: lineHeight,
+                 design: design,
+                 spellCheck: spellCheck,
+                 palette: palette)
     }
 
     private func baseAttributes() -> [NSAttributedString.Key: Any] {
@@ -528,7 +675,9 @@ struct MarkdownTextEditor: NSViewRepresentable {
         var parent: MarkdownTextEditor
         weak var textView: NSTextView?
         weak var scrollView: MarkdownEditorScrollView?
-        private var highlighting = false
+        var lastSyncedText: String = ""
+        var lastStyleKey: StyleKey?
+        var highlighting = false
 
         init(_ parent: MarkdownTextEditor) {
             self.parent = parent
@@ -536,6 +685,11 @@ struct MarkdownTextEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let textView, !highlighting else { return }
+            if textView.hasMarkedText() {
+                scrollView?.layoutDocument()
+                return
+            }
+            lastSyncedText = textView.string
             parent.onTextChange(textView.string)
             applyStyling()
             scrollView?.layoutDocument()
@@ -588,21 +742,19 @@ struct MarkdownTextEditor: NSViewRepresentable {
         }
 
         func applyStyling() {
-            guard let textView, let storage = textView.textStorage, let layout = textView.layoutManager else { return }
+            guard let textView, !textView.hasMarkedText(),
+                  let storage = textView.textStorage,
+                  let layout = textView.layoutManager else { return }
             highlighting = true
             defer { highlighting = false }
             let palette = parent.palette
             let full = NSRange(location: 0, length: storage.length)
             layout.removeTemporaryAttribute(.foregroundColor, forCharacterRange: full)
-            layout.removeTemporaryAttribute(.font, forCharacterRange: full)
             layout.removeTemporaryAttribute(.backgroundColor, forCharacterRange: full)
             layout.removeTemporaryAttribute(.underlineStyle, forCharacterRange: full)
             layout.removeTemporaryAttribute(.underlineColor, forCharacterRange: full)
 
             let text = storage.string as NSString
-            let size = parent.fontSize
-            let mono = NSFont.monospacedSystemFont(ofSize: max(11, size - 2), weight: .regular)
-            let headingFonts: [CGFloat] = [size * 1.55, size * 1.35, size * 1.16]
             let secondary = NSColor(palette.textSecondary)
             let brand = NSColor(palette.brand)
             let brandInk = NSColor(palette.brandInk)
@@ -611,10 +763,6 @@ struct MarkdownTextEditor: NSViewRepresentable {
             let lineRegex = try? NSRegularExpression(pattern: "(?m)^(#{1,3})\\s.*$")
             lineRegex?.enumerateMatches(in: text as String, range: full) { match, _, _ in
                 guard let match else { return }
-                let hashes = text.substring(with: NSRange(location: match.range.location, length: min(3, match.range.length)))
-                let level = min(3, hashes.filter { $0 == "#" }.count)
-                let font = NSFont.systemFont(ofSize: headingFonts[max(0, level - 1)], weight: .semibold)
-                layout.addTemporaryAttribute(.font, value: font, forCharacterRange: match.range)
                 layout.addTemporaryAttribute(.foregroundColor, value: NSColor(palette.textPrimary), forCharacterRange: match.range)
             }
 
@@ -622,7 +770,6 @@ struct MarkdownTextEditor: NSViewRepresentable {
             let fenceRegex = try? NSRegularExpression(pattern: "(?ms)^```[^\\n]*\\n.*?^```[ \\t]*$")
             fenceRegex?.enumerateMatches(in: text as String, range: full) { match, _, _ in
                 guard let match else { return }
-                layout.addTemporaryAttribute(.font, value: mono, forCharacterRange: match.range)
                 layout.addTemporaryAttribute(.foregroundColor, value: secondary, forCharacterRange: match.range)
                 layout.addTemporaryAttribute(.backgroundColor, value: accentBackground.withAlphaComponent(0.55), forCharacterRange: match.range)
             }
@@ -630,7 +777,6 @@ struct MarkdownTextEditor: NSViewRepresentable {
             let inlineCode = try? NSRegularExpression(pattern: "`[^`\\n]+`")
             inlineCode?.enumerateMatches(in: text as String, range: full) { match, _, _ in
                 guard let match else { return }
-                layout.addTemporaryAttribute(.font, value: mono, forCharacterRange: match.range)
                 layout.addTemporaryAttribute(.backgroundColor, value: accentBackground, forCharacterRange: match.range)
             }
 

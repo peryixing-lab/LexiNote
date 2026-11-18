@@ -207,7 +207,7 @@ struct SettingsView: View {
 
     private func keywords(for section: SettingsSection) -> String {
         switch section {
-        case .about: return "版本 语言 帮助 目录 文档 2.0.1"
+        case .about: return "版本 语言 帮助 目录 文档 2.0.2"
         case .appearance: return "明暗 主题 配色 鸢尾紫 玫瑰粉 CSS 字体 行高 字号 缩放"
         case .interface: return "标签页 标题栏 功能区 缩放 比例 ribbon zoom"
         case .editor: return "打开 视图 编辑 阅读 源码 实时 标题 行宽 简洁 学习 专业"
@@ -235,7 +235,7 @@ private struct AboutSettingsView: View {
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(palette.textPrimary)
                     Spacer()
-                    Text("2.0.1")
+                    Text("2.0.2")
                         .font(.system(size: 13))
                         .foregroundStyle(palette.textSecondary)
                 }

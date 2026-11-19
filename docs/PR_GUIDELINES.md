@@ -3,7 +3,6 @@
 按修改对象选择目标分支和规范。每个平台都有独立的构建、运行环境及验收要求。
 
 - **HarmonyOS**：base 为 `HarmonyOS`；[规范](pr/HarmonyOS.md)；[模板](../.github/PULL_REQUEST_TEMPLATE/HarmonyOS.md)。重点是 DevEco / SDK、ArkTS / ArkUI、设备形态、系统能力、授权和插件宿主。
-- **Windows**：base 为 `Windows`；[规范](pr/Windows.md)；[模板](../.github/PULL_REQUEST_TEMPLATE/Windows.md)。重点是 Electron / IPC、类型检查、x64 / ARM64 / ia32、Windows 原生验证及 NSIS 安装升级。
 - **macOS**：base 为 `macOS`；[规范](pr/macOS.md)；[模板](../.github/PULL_REQUEST_TEMPLATE/macOS.md)。重点是 SwiftUI / AppKit、Xcode、自检、原生交互、系统 API 回退和 DMG / 签名状态。
 - **Harness / 共享文档**：base 为 `main`；[规范](pr/main.md)；[模板](../.github/PULL_REQUEST_TEMPLATE/main.md)。重点是分支边界、文档链接、插件独立构建、权限及宿主兼容性。
 
@@ -15,7 +14,6 @@ GitHub 的可选模板集中放在默认分支 main 的 `.github/PULL_REQUEST_TE
 
 ```text
 https://github.com/peryixing-lab/LexiNote/compare/HarmonyOS...my-fix-branch?quick_pull=1&template=HarmonyOS.md
-https://github.com/peryixing-lab/LexiNote/compare/Windows...my-fix-branch?quick_pull=1&template=Windows.md
 https://github.com/peryixing-lab/LexiNote/compare/macOS...my-fix-branch?quick_pull=1&template=macOS.md
 https://github.com/peryixing-lab/LexiNote/compare/main...my-fix-branch?quick_pull=1&template=main.md
 ```

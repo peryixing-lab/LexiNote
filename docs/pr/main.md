@@ -1,11 +1,10 @@
 # main 贡献指南与 PR 规范
 
-**PR 的目标分支（base）为 `main`**。此分支接收 README、项目文档、PR 模板、Harness 独立插件及必要的许可声明。应用代码分别提交到 `HarmonyOS`、`Windows` 或 `macOS`。
+**PR 的目标分支（base）为 `main`**。此分支接收 README、项目文档、PR 模板、Harness 独立插件及必要的许可声明。应用代码分别提交到 `HarmonyOS` 或 `macOS`。
 
 ## 选择系统规范
 
 - [HarmonyOS PR 规范](https://github.com/peryixing-lab/LexiNote/blob/main/docs/pr/HarmonyOS.md)
-- [Windows PR 规范](https://github.com/peryixing-lab/LexiNote/blob/main/docs/pr/Windows.md)
 - [macOS PR 规范](https://github.com/peryixing-lab/LexiNote/blob/main/docs/pr/macOS.md)
 - [PR 模板选择方法](https://github.com/peryixing-lab/LexiNote/blob/main/docs/PR_GUIDELINES.md)
 
@@ -35,7 +34,7 @@ npm test
 LEXINOTE_HARMONY_ROOT=/absolute/path/to/HarmonyOS-checkout npm run test:host
 ```
 
-宿主实现位于 HarmonyOS 分支；Windows / macOS 兼容性变化需关联对应平台的宿主 PR 或兼容性验证结果。缺少平台环境时如实标明未验证范围。
+宿主实现位于 HarmonyOS 分支；macOS 兼容性变化需关联对应平台的宿主 PR 或兼容性验证结果。缺少平台环境时如实标明未验证范围。
 
 - 描述修改前后的插件行为、兼容宿主版本、权限 / 能力和清单变化。新增能力不得默认视作已获授权。
 - 更新依赖时同步锁文件并说明版本、用途和许可证；功能或版本变化同步 `manifest.json`、`package.json` 和 `CHANGELOG.md`。

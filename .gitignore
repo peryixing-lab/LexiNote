@@ -54,7 +54,7 @@ Thumbs.db
 *.swp
 *.swo
 
-# Desktop installers, local data and caches (assets under Windows/build are source)
+# Desktop installers, local data and caches
 *.dmg
 *.exe
 *.msi

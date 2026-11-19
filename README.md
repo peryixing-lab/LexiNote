@@ -1,15 +1,13 @@
 # 知萤 LexiNote
 
-知萤是一款本地优先的 Markdown 笔记与知识整理应用，提供 HarmonyOS、macOS 和 Windows 版本。三个平台共享写作、知识连接与可视化整理的产品方向，具体功能及系统集成以各平台说明为准。
+知萤是一款本地优先的 Markdown 笔记与知识整理应用，提供 HarmonyOS 和 macOS 版本。两个平台共享写作、知识连接与可视化整理的产品方向，具体功能及系统集成以各平台说明为准。
 
 ## 分支选择
 
 当前为 **HarmonyOS** 分支，应用项目位于仓库根目录。
 
 - [HarmonyOS：鸿蒙工程](https://github.com/peryixing-lab/LexiNote/tree/HarmonyOS)
-- [Windows：Windows 工程](https://github.com/peryixing-lab/LexiNote/tree/Windows)
 - [macOS：macOS 原生工程](https://github.com/peryixing-lab/LexiNote/tree/macOS)
-- [Android：Android 手机工程](https://github.com/peryixing-lab/LexiNote/tree/Android)
 - [main：项目概览、Harness 插件和共享文档](https://github.com/peryixing-lab/LexiNote/tree/main)
 
 克隆当前平台：
@@ -26,7 +24,7 @@ cd LexiNote
 
 ## 2.0.1 更新
 
-- 新增 macOS 原生版和 Windows 桌面版源码及安装包，三个平台统一使用 2.0.1 版本号。
+- 新增 macOS 原生版源码及安装包，两个平台统一使用 2.0.1 版本号。
 - HarmonyOS 新增主题选择与自定义配色，调整设置、命令面板和工作区界面，补齐内置命令的英文名称。
 - 增加设置与插件配置的导入导出，完善工作区偏好与本地存储相关操作。
 - 更新 **Harness 智能体 1.5.0**：多模型配置、会话与历史管理；API Key 由宿主隔离保存，插件无法读回。

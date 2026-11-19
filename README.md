@@ -5,9 +5,7 @@
 当前为 **macOS** 分支，应用项目位于仓库根目录。
 
 - [HarmonyOS：鸿蒙工程](https://github.com/peryixing-lab/LexiNote/tree/HarmonyOS)
-- [Windows：Windows 工程](https://github.com/peryixing-lab/LexiNote/tree/Windows)
 - [macOS：macOS 原生工程](https://github.com/peryixing-lab/LexiNote/tree/macOS)
-- [Android：Android 手机工程](https://github.com/peryixing-lab/LexiNote/tree/Android)
 - [main：项目概览、Harness 插件和共享文档](https://github.com/peryixing-lab/LexiNote/tree/main)
 
 克隆当前平台：
@@ -207,7 +205,7 @@ scripts/         构建、运行、自检、截图
 - 本项目继承原工程的 **GNU General Public License v3.0**，见 [LICENSE](LICENSE)。
 - **知萤 LexiNote**（HarmonyOS / ArkTS / ArkUI）的源码位于 [HarmonyOS 分支](https://github.com/peryixing-lab/LexiNote/tree/HarmonyOS)，macOS 版沿用其界面与设计体系，请遵循仓库的许可与署名要求。
 - 应用图标来自原工程 `docs/design/`；截图中的笔记内容为移植演示数据，仅用于文档，不随应用安装。
-- 感谢项目与社区贡献者。macOS、HarmonyOS 和 Windows 版在本仓库统一维护和发布。
+- 感谢项目与社区贡献者。macOS 和 HarmonyOS 版在本仓库统一维护和发布。
 
 ## 参与贡献
 
